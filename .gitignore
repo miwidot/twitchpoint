@@ -1,0 +1,7 @@
+bin/
+twitchpoint
+config.json
+config/config.json
+*.log
+debug.log
+.DS_Store

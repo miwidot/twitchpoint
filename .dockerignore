@@ -1,0 +1,26 @@
+# Binaries
+bin/
+*.exe
+twitchpoint-*
+
+# Config (will be mounted as volume)
+config.json
+config/
+
+# Logs
+*.log
+debug.log
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

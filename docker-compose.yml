@@ -1,0 +1,12 @@
+services:
+  twitchpoint:
+    build: .
+    container_name: twitchpoint
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config
+    # Optional: set timezone
+    environment:
+      - TZ=Europe/Berlin

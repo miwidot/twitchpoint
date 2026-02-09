@@ -1,0 +1,9 @@
+{
+  "auth_token": "",
+  "channel_configs": [
+    {"login": "example_channel", "priority": 2}
+  ],
+  "web_enabled": true,
+  "web_port": 8080,
+  "irc_enabled": true
+}

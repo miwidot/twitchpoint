@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TwitchPoint Farmer</title>
+    <style>
+        :root {
+            --twitch-purple: #9147ff;
+            --twitch-purple-dark: #772ce8;
+            --bg-dark: #0e0e10;
+            --bg-card: #18181b;
+            --bg-hover: #1f1f23;
+            --text-primary: #efeff1;
+            --text-secondary: #adadb8;
+            --text-muted: #848494;
+            --green: #00f593;
+            --yellow: #ffc000;
+            --red: #ff4d4d;
+            --border: #2f2f35;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 24px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+
+        /* Header */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--twitch-purple);
+        }
+        .header .user {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .refresh-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+        .refresh-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            opacity: 0.5;
+            transition: opacity 0.3s;
+        }
+        .refresh-dot.active {
+            opacity: 1;
+            animation: pulse 0.5s ease-out;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.5); }
+            100% { transform: scale(1); }
+        }
+
+        /* Stats Grid */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .stat-card .label {
+            color: var(--text-muted);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .stat-card .value {
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .stat-card .value.purple { color: var(--twitch-purple); }
+        .stat-card .value.green { color: var(--green); }
+
+        /* Channels Section */
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+        .section-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .btn {
+            background: var(--twitch-purple);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .btn:hover { background: var(--twitch-purple-dark); }
+        .btn-small {
+            padding: 4px 10px;
+            font-size: 12px;
+        }
+        .btn-danger { background: var(--red); }
+        .btn-danger:hover { background: #cc3d3d; }
+
+        /* Channel Table */
+        .table-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 24px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: var(--bg-hover);
+            color: var(--text-muted);
+            font-size: 12px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: var(--bg-hover); }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-live { background: var(--red); color: white; }
+        .status-watching { background: var(--green); color: var(--bg-dark); }
+        .status-offline { background: var(--border); color: var(--text-muted); }
+
+        .priority-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .priority-btn:hover { border-color: var(--twitch-purple); color: var(--twitch-purple); }
+        .priority-btn.p1 { border-color: var(--yellow); color: var(--yellow); background: rgba(255, 192, 0, 0.1); }
+        tr.priority-row td { background: rgba(255, 192, 0, 0.05); }
+        tr.priority-row:hover td { background: rgba(255, 192, 0, 0.1); }
+
+        /* Priority Legend */
+        .priority-legend {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 12px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .priority-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .priority-legend-badge {
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        .priority-legend-badge.p1 { background: rgba(255, 192, 0, 0.2); color: var(--yellow); }
+        .priority-legend-badge.p2 { background: var(--border); color: var(--text-muted); }
+
+        .game-name {
+            color: var(--text-secondary);
+            font-size: 13px;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .viewers { color: var(--text-muted); font-size: 13px; }
+        .points { font-weight: 500; }
+        .earned { color: var(--green); }
+
+        /* Logs Section */
+        .logs-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border);
+            font-family: 'SF Mono', 'Consolas', monospace;
+            font-size: 12px;
+            display: flex;
+            gap: 12px;
+        }
+        .log-entry:last-child { border-bottom: none; }
+        .log-time { color: var(--text-muted); flex-shrink: 0; }
+        .log-msg { color: var(--text-secondary); word-break: break-word; }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .modal h3 { margin-bottom: 16px; }
+        .modal input {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+        .modal input:focus { outline: none; border-color: var(--twitch-purple); }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+        .btn-secondary {
+            background: var(--bg-hover);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover { background: var(--border); }
+
+        /* Empty state */
+        .empty {
+            padding: 48px;
+            text-align: center;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>TwitchPoint Farmer</h1>
+            <div class="header-right">
+                <div class="refresh-indicator">
+                    <span class="refresh-dot" id="refresh-dot"></span>
+                    <span id="last-update">--:--:--</span>
+                </div>
+                <span class="user" id="user-info">Loading...</span>
+            </div>
+        </header>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="label">Uptime</div>
+                <div class="value" id="stat-uptime">--:--:--</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Points Earned</div>
+                <div class="value purple" id="stat-points">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Claims</div>
+                <div class="value green" id="stat-claims">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Channels</div>
+                <div class="value" id="stat-channels">0/0/0</div>
+            </div>
+        </div>
+
+        <div class="section-header">
+            <h2>Channels</h2>
+            <button class="btn" onclick="showAddModal()">+ Add Channel</button>
+        </div>
+
+        <div class="priority-legend">
+            <div class="priority-legend-item">
+                <span class="priority-legend-badge p1">P1</span>
+                <span>Always watch (max 2 slots)</span>
+            </div>
+            <div class="priority-legend-item">
+                <span class="priority-legend-badge p2">P2</span>
+                <span>Rotate every 5 min</span>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Pri</th>
+                        <th>Channel</th>
+                        <th>Status</th>
+                        <th>Game</th>
+                        <th>Viewers</th>
+                        <th>Balance</th>
+                        <th>Earned</th>
+                        <th>Claims</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="channels-body">
+                    <tr><td colspan="9" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section-header">
+            <h2>Event Log</h2>
+        </div>
+        <div class="logs-container" id="logs-container">
+            <div class="log-entry"><span class="log-msg">Loading...</span></div>
+        </div>
+    </div>
+
+    <!-- Add Channel Modal -->
+    <div class="modal-overlay" id="add-modal">
+        <div class="modal">
+            <h3>Add Channel</h3>
+            <input type="text" id="channel-input" placeholder="Channel name (e.g., xqc)" autocomplete="off">
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="hideAddModal()">Cancel</button>
+                <button class="btn" onclick="addChannel()">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = '';
+        let refreshInterval;
+
+        async function fetchStats() {
+            try {
+                const res = await fetch(API + '/api/stats');
+                const data = await res.json();
+                document.getElementById('user-info').textContent = data.user;
+                document.getElementById('stat-uptime').textContent = data.uptime;
+                document.getElementById('stat-points').textContent = data.total_points.toLocaleString();
+                document.getElementById('stat-claims').textContent = data.total_claims;
+                document.getElementById('stat-channels').textContent =
+                    `${data.channels_watching}/${data.channels_online}/${data.channels_total}`;
+            } catch (e) {
+                console.error('Failed to fetch stats:', e);
+            }
+        }
+
+        async function fetchChannels() {
+            try {
+                const res = await fetch(API + '/api/channels');
+                const channels = await res.json();
+                renderChannels(channels);
+            } catch (e) {
+                console.error('Failed to fetch channels:', e);
+            }
+        }
+
+        function renderChannels(channels) {
+            const tbody = document.getElementById('channels-body');
+            if (!channels || channels.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="empty">No channels configured</td></tr>';
+                return;
+            }
+
+            // Sort: priority first, then online, then by name
+            channels.sort((a, b) => {
+                if (a.priority !== b.priority) return a.priority - b.priority;
+                if (a.is_online !== b.is_online) return b.is_online - a.is_online;
+                return a.display_name.localeCompare(b.display_name);
+            });
+
+            tbody.innerHTML = channels.map(ch => {
+                let statusBadge = '<span class="status-badge status-offline">Offline</span>';
+                if (ch.is_watching) {
+                    statusBadge = '<span class="status-badge status-watching">Watching</span>';
+                } else if (ch.is_online) {
+                    statusBadge = '<span class="status-badge status-live">Live</span>';
+                }
+
+                const priClass = ch.priority === 1 ? 'p1' : '';
+                const priLabel = ch.priority === 1 ? 'P1' : 'P2';
+                const rowClass = ch.priority === 1 ? 'priority-row' : '';
+
+                return `
+                    <tr class="${rowClass}">
+                        <td>
+                            <button class="priority-btn ${priClass}" onclick="togglePriority('${ch.login}', ${ch.priority})">
+                                ${priLabel}
+                            </button>
+                        </td>
+                        <td><strong>${escapeHtml(ch.display_name)}</strong></td>
+                        <td>${statusBadge}</td>
+                        <td class="game-name" title="${escapeHtml(ch.game_name || '')}">${escapeHtml(ch.game_name || '-')}</td>
+                        <td class="viewers">${ch.is_online ? ch.viewer_count.toLocaleString() : '-'}</td>
+                        <td class="points">${ch.balance.toLocaleString()}</td>
+                        <td class="earned">+${ch.earned.toLocaleString()}</td>
+                        <td>${ch.claims}</td>
+                        <td>
+                            <button class="btn btn-small btn-danger" onclick="removeChannel('${ch.login}')">Remove</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function fetchLogs() {
+            try {
+                const res = await fetch(API + '/api/logs');
+                const logs = await res.json();
+                renderLogs(logs);
+            } catch (e) {
+                console.error('Failed to fetch logs:', e);
+            }
+        }
+
+        function renderLogs(logs) {
+            const container = document.getElementById('logs-container');
+            if (!logs || logs.length === 0) {
+                container.innerHTML = '<div class="log-entry"><span class="log-msg">No events yet</span></div>';
+                return;
+            }
+            container.innerHTML = logs.map(log => `
+                <div class="log-entry">
+                    <span class="log-time">${log.time}</span>
+                    <span class="log-msg">${escapeHtml(log.message)}</span>
+                </div>
+            `).join('');
+        }
+
+        async function togglePriority(login, currentPriority) {
+            const newPriority = currentPriority === 1 ? 2 : 1;
+            try {
+                await fetch(API + `/api/channels/${login}/priority`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ priority: newPriority })
+                });
+                fetchChannels();
+            } catch (e) {
+                console.error('Failed to set priority:', e);
+            }
+        }
+
+        async function removeChannel(login) {
+            if (!confirm(`Remove channel "${login}"?`)) return;
+            try {
+                await fetch(API + `/api/channels/${login}`, { method: 'DELETE' });
+                fetchChannels();
+            } catch (e) {
+                console.error('Failed to remove channel:', e);
+            }
+        }
+
+        function showAddModal() {
+            document.getElementById('add-modal').classList.add('active');
+            document.getElementById('channel-input').focus();
+        }
+
+        function hideAddModal() {
+            document.getElementById('add-modal').classList.remove('active');
+            document.getElementById('channel-input').value = '';
+        }
+
+        async function addChannel() {
+            const input = document.getElementById('channel-input');
+            const login = input.value.trim().toLowerCase();
+            if (!login) return;
+
+            try {
+                const res = await fetch(API + '/api/channels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ login })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    hideAddModal();
+                    fetchChannels();
+                }
+            } catch (e) {
+                console.error('Failed to add channel:', e);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function refresh() {
+            // Flash the refresh indicator
+            const dot = document.getElementById('refresh-dot');
+            dot.classList.remove('active');
+            void dot.offsetWidth; // trigger reflow
+            dot.classList.add('active');
+
+            // Update timestamp
+            const now = new Date();
+            document.getElementById('last-update').textContent =
+                now.toTimeString().split(' ')[0];
+
+            fetchStats();
+            fetchChannels();
+            fetchLogs();
+        }
+
+        // Handle Enter key in add modal
+        document.getElementById('channel-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') addChannel();
+        });
+
+        // Click outside modal to close
+        document.getElementById('add-modal').addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal-overlay')) hideAddModal();
+        });
+
+        // Initial load
+        refresh();
+
+        // Auto-refresh every 5 seconds
+        refreshInterval = setInterval(refresh, 5000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,178 @@
+== 2026-02-09 22:38 == Feature: Docker Support ==
+
+- Added Dockerfile with multi-stage build (golang:1.22-alpine -> alpine:3.19)
+- Added docker-compose.yml for easy deployment
+- Added .dockerignore to minimize build context
+- Config mounted as volume at /app/config/config.json
+- Web UI exposed on port 8080
+- Minimal image size (~15MB) with stripped binary
+
+== 2026-02-08 20:01 == Feature: IRC Viewer Presence ==
+
+- Added Twitch IRC connection for viewer presence in channels
+- Connects to irc.chat.twitch.tv:6697 (TLS) with OAuth authentication
+- Auto-joins all configured channels to register as active viewer
+- Benefits:
+  - Counts as "active" viewer (not just passive Spade heartbeat)
+  - Some channels give bonus points for chat presence
+  - Better raid participation detection
+- Config: irc_enabled (bool, default: true)
+- Auto-reconnect with exponential backoff on disconnect
+- PING/PONG keepalive every 4 minutes
+- Dynamic JOIN/PART when adding/removing channels at runtime
+- Files added: internal/twitch/irc.go
+- Files modified: internal/config/config.go, internal/farmer/farmer.go
+
+== 2026-02-08 04:22 == Feature: Optional Web Interface for Remote Monitoring ==
+
+- Added optional lightweight web server for remote monitoring and control
+- Uses Go's built-in net/http (zero external dependencies)
+- HTML/JS embedded in binary via embed.FS for single-binary deployment
+- Config fields: web_enabled (bool), web_port (int, default 8080)
+- API endpoints:
+  - GET /api/stats: User, uptime, total points/claims, online/watching counts
+  - GET /api/channels: All channel snapshots (status, balance, earned, claims)
+  - GET /api/logs: Last 50 log entries (newest first)
+  - POST /api/channels: Add channel {"login": "xyz"}
+  - DELETE /api/channels/{login}: Remove channel
+  - PUT /api/channels/{login}/priority: Set priority {"priority": 1}
+- Web UI features:
+  - Dashboard header: User, Uptime, Points Earned, Claims
+  - Channel table: Priority, Status, Game, Viewers, Balance, Earned, Claims
+  - Add/Remove channel buttons
+  - Priority toggle (click P1/P2 button to switch)
+  - Auto-refresh every 5 seconds
+- If web_enabled: false (default), server doesn't start, zero overhead
+- Auto-migration: existing configs auto-update with new web_enabled/web_port fields on load
+- Files added: internal/web/server.go, internal/web/static/index.html
+- Files modified: internal/config/config.go, cmd/twitchpoint/main.go
+
+== 2026-02-05 14:49 == Cleanup: Remove verbose debug logging ==
+
+- Removed [Spade] heartbeat OK log (fired every 60s per channel, ~27% of total log volume)
+- Removed [Spade] heartbeat loop started/stopped logs (fired every rotation cycle)
+- Removed "Rotated watch to" log (fired every 5min rotation)
+- Kept: heartbeat failure/error logs, initial "Started watching" on go-live, Spade URL log on startup
+- Kept: all claim, raid, points-earned, stream up/down, PubSub connect/disconnect logs
+
+== 2026-02-04 04:03 == Feature: TV Device Code OAuth Login ==
+
+- Implemented Twitch TV Device Code OAuth flow (RFC 8628) in internal/twitch/auth.go
+  - DeviceCodeLogin() orchestrates full flow: request device code, print instructions, poll for token
+  - requestDeviceCode() POSTs to https://id.twitch.tv/oauth2/device with TV Client-ID
+  - pollForToken() polls token endpoint every N seconds until authorization, expiry, or denial
+  - Handles slow_down backoff, authorization_pending, and terminal errors
+- Replaced manual "paste your auth-token cookie" first-run prompt with automatic Device Code OAuth
+  - User now visits twitch.tv/activate, enters a code, and authorizes — token is obtained automatically
+  - Token is natively linked to TV Client-ID, eliminating browser-token + TV-Client-ID mismatch
+- Added --login flag to force re-login (replaces existing token via fresh OAuth flow)
+- Exported TVClientID constant in gql.go (was unexported clientID)
+- Scopes requested: channel:read:redemptions, user:read:email, chat:read, chat:edit, user:write:chat
+- Root cause fix: ClaimCommunityPoints and JoinRaid "failed integrity check" was caused by
+  browser-obtained auth token being used with TV Client-ID — Twitch requires integrity token for
+  this combination. Device Code OAuth produces a token natively tied to the TV Client-ID, bypassing
+  integrity checks entirely (same approach as MinerV2).
+- Kept --token flag as manual override for advanced users
+
+== 2026-02-03 03:36 == Fix: Missing Spade Payload Fields (live + channel) ==
+
+- Added missing "live": true and "channel": login fields to Spade minute-watched payload
+- MinerV2 reference always includes these fields; our payload only had channel_id, broadcast_id, player, user_id
+- This caused some channels (e.g. HeckerYo) to not receive point credits despite HTTP 204 heartbeats
+- Twitch's Spade endpoint appears to silently ignore payloads missing these fields for some channels
+
+== 2026-02-02 16:10 == Fix: Spade Heartbeat Continuity + Broadcast ID + JoinRaid ==
+
+- Fixed rotation killing Spade heartbeat loops every 5 min — now only stops/starts channels that actually change
+  - Previously: stop ALL channels → restart selected ones (breaks heartbeat continuity, Twitch ignores interrupted sessions)
+  - Now: compute diff, keep running loops for channels that stay in rotation, only modify the delta
+- Fixed empty broadcast_id in Spade heartbeats — channel goes LIVE via PubSub but GQL API hasn't updated yet
+  - Added retry logic (3 attempts, 5s delay) in EventStreamUp handler to fetch broadcast ID
+  - Rotation now fetches broadcast ID via GQL if it's empty before starting Spade
+  - tryStartWatching now rejects channels with empty broadcast_id (was silently sending empty payloads)
+- Added full Spade heartbeat diagnostic logging: broadcast_id and HTTP status for every heartbeat
+- Fixed JoinRaid integrity check failure: tries persisted query hash (c6a332...01a4ae) first, falls back to raw mutation
+- Fixed missing game category for channels that go LIVE at runtime: retry loop now also waits for game name, not just broadcast ID
+- Balance refresh now also fetches game/stream info for online channels with empty game name (fills in late API data)
+- Root cause analysis: saitrixgaming/cpt_blackshark earned points from browser, not bot — TT4nn3baum only from bot, which was broken
+
+== 2026-02-01 14:51 == Fix: PubSub Topic Subscription + Spade User-Agent ==
+
+- Fixed PubSub only subscribing to 3/39 topics (race condition: Connect ran before channels were initialized)
+- Moved PubSub Connect() to AFTER channel initialization so all topics are stored before connecting
+- Added batched LISTEN (10 topics per message) to avoid Twitch "message too big" (1009) rejection
+- Added WebSocket write mutex to prevent concurrent writes from Listen/Ping/Unlisten
+- Added browser User-Agent header to Spade heartbeat requests (was Go-http-client/1.1, Twitch silently ignored)
+- Fixed Spade URL discovery: 2-step fetch (HTML → settings JS bundle → spade_url) matching MinerV2 approach
+- Removed verbose debug logging (PONG, heartbeat OK, listen OK nonces) — errors still logged
+
+== 2026-02-01 12:20 == Fix: PubSub Reconnect Loop + Goroutine Leak ==
+
+- Fixed exponential backoff not working: backoff only resets after connection is stable for 30+ seconds
+- Previously backoff reset immediately on successful WebSocket dial, even if readLoop exited instantly
+- This caused infinite 1s reconnect spam when PubSub kept dropping immediately
+- Fixed ping goroutine leak: added done channel to cleanly stop ping goroutine when readLoop exits
+- Previously each reconnect cycle leaked a goroutine blocked on stopped ticker
+- readLoop now returns disconnect reason string for better debug logging
+- Disconnect messages now include actual error (e.g. "read: connection reset" vs generic "disconnected")
+
+== 2026-01-31 23:23 == Fix: Raw Mutations for TV Client-ID ==
+
+- Replaced persisted query hashes with raw GQL mutation queries for ClaimCommunityPoints and JoinRaid
+- Persisted query hashes were tied to the browser Client-ID and triggered "failed integrity check" with TV Client-ID
+- TV Client-ID accepts raw mutations directly (no persisted hashes or integrity tokens needed)
+- Removed GQLExtensions/PersistedQuery usage from both mutations
+
+== 2026-01-31 16:47 == TV Client-ID Bypass + JoinRaid Re-enabled ==
+
+- Switched GQL Client-ID from browser (kimne78kx3ncx6brgo4mv6wki5h1ko) to TV/Android (ue6666qo983tsx6so1t0vnawi233wa)
+- TV Client-ID bypasses Twitch's Client-Integrity token (Kasada/KPSDK) requirement entirely
+- Added X-Device-Id header (32 random alphanumeric chars, generated per session)
+- Added Client-Session-Id header (16 random hex bytes, generated per session)
+- Centralized header management in setHeaders() helper method
+- Re-enabled JoinRaid API call in farmer event handler (was disabled due to integrity check failures)
+- Claims and raids should now work without integrity token errors
+
+== 2026-01-30 23:04 == Priority Channels + Watch Rotation ==
+
+- Added priority system: P1 = always watched, P2 = rotates (Twitch only credits 2 channels at a time)
+- Config now uses channel_configs with per-channel priority (auto-migrates old channels array)
+- Rotation every 5 min: P1 channels always hold their Spade slots, remaining slots cycle through P2
+- Added 'p' key in TUI to set priority (format: "channelname 1" or "channelname 2")
+- Priority column shown in channel table (P1 highlighted yellow, P2 gray)
+- SetPriorityLive triggers immediate rotation when priority changes
+- Silenced Go default logger to prevent log bleed behind TUI alt screen
+- Removed debug log from PubSub community points handler
+- Fixed balance field name in CommunityPointsEvent (balance instead of current_points)
+- Reverted maxWatchedChannels to 2 (Twitch server-side limit)
+
+== 2026-01-30 22:36 == Fix Spade URL (no such host) ==
+
+- Fixed fallback Spade URL from non-existent video-edge-detector.twitch.tv to correct endpoint https://spade.twitch.tv/track
+- Improved fetchSpadeURL to try multiple regex patterns for spade URL extraction
+- Added proper User-Agent and Accept headers for Twitch page fetch
+
+== 2026-01-30 22:32 == Fix GQL PersistedQueryNotFound ==
+
+- Replaced all persisted query hashes with inline raw GQL queries in internal/twitch/gql.go
+- Persisted query hashes are tied to Twitch's frontend build and go stale on updates
+- Raw queries always work regardless of Twitch frontend version
+- Simplified GetChannelInfo from batch request to single query
+- Removed unused doBatch method dependency for channel info
+
+== 2026-01-30 22:25 == Initial Implementation - TwitchPoint Farmer ==
+
+- Created Go project structure with module github.com/miwi/twitchpoint
+- Implemented internal/twitch/types.go: All PubSub, GQL, Spade, and event type definitions
+- Implemented internal/config/config.go: JSON config loader with add/remove channel support
+- Implemented internal/twitch/gql.go: GQL API client (GetUserInfo, GetChannelInfo, ClaimCommunityPoints, JoinRaid, GetChannelPointsBalance)
+- Implemented internal/twitch/pubsub.go: PubSub WebSocket client with auto-reconnect, PING/PONG keepalive, topic subscription, event parsing for community points, video playback, and raids
+- Implemented internal/twitch/spade.go: Spade minute-watched heartbeat tracker with max 2 concurrent channel limit, spade URL extraction from Twitch page
+- Implemented internal/farmer/channel.go: Per-channel state tracking with thread-safe snapshots
+- Implemented internal/farmer/farmer.go: Main orchestrator tying GQL, PubSub, and Spade together with event loop, auto-claim, auto-raid-join, balance refresh, and priority-based Spade slot filling
+- Implemented internal/ui/styles.go: Lipgloss style definitions (Twitch purple theme)
+- Implemented internal/ui/components.go: TUI components (header, channel table, stats bar, event log, help bar)
+- Implemented internal/ui/app.go: Bubbletea TUI application with keyboard controls (q=quit, a=add channel, d=remove channel)
+- Implemented cmd/twitchpoint/main.go: CLI entry point with --config, --add-channel, --token flags and first-run setup wizard
+- Created Makefile with build, build-all (macOS/Linux/Windows cross-compilation), run, and clean targets
+- Verified successful builds for all three platforms (darwin/arm64, linux/amd64, windows/amd64)
