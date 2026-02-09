@@ -287,6 +287,53 @@
             text-align: center;
             color: var(--text-muted);
         }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .toast {
+            padding: 12px 20px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out, fadeOut 0.3s ease-in 3.7s forwards;
+            max-width: 350px;
+        }
+        .toast-success { background: var(--green); color: var(--bg-dark); }
+        .toast-error { background: var(--red); color: white; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+
+        /* Modal error */
+        .modal-error {
+            background: rgba(255, 77, 77, 0.15);
+            border: 1px solid var(--red);
+            color: var(--red);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            margin-bottom: 12px;
+            display: none;
+        }
+        .modal-error.visible { display: block; }
+
+        /* Loading button */
+        .btn.loading {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+        .btn.loading::after {
+            content: '...';
+            animation: dots 1s steps(3, end) infinite;
+        }
+        @keyframes dots { 0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; } }
     </style>
 </head>
 <body>
@@ -366,14 +413,18 @@
         </div>
     </div>
 
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
     <!-- Add Channel Modal -->
     <div class="modal-overlay" id="add-modal">
         <div class="modal">
             <h3>Add Channel</h3>
+            <div class="modal-error" id="modal-error"></div>
             <input type="text" id="channel-input" placeholder="Channel name (e.g., xqc)" autocomplete="off">
             <div class="modal-actions">
                 <button class="btn btn-secondary" onclick="hideAddModal()">Cancel</button>
-                <button class="btn" onclick="addChannel()">Add</button>
+                <button class="btn" id="add-btn" onclick="addChannel()">Add</button>
             </div>
         </div>
     </div>
@@ -482,28 +533,60 @@
         async function togglePriority(login, currentPriority) {
             const newPriority = currentPriority === 1 ? 2 : 1;
             try {
-                await fetch(API + `/api/channels/${login}/priority`, {
+                const res = await fetch(API + `/api/channels/${login}/priority`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ priority: newPriority })
                 });
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                } else {
+                    showToast(`${login} set to P${newPriority}`, 'success');
+                }
                 fetchChannels();
             } catch (e) {
-                console.error('Failed to set priority:', e);
+                showToast('Failed to set priority: ' + e.message, 'error');
             }
         }
 
         async function removeChannel(login) {
             if (!confirm(`Remove channel "${login}"?`)) return;
             try {
-                await fetch(API + `/api/channels/${login}`, { method: 'DELETE' });
+                const res = await fetch(API + `/api/channels/${login}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                } else {
+                    showToast(`Channel "${login}" removed`, 'success');
+                }
                 fetchChannels();
             } catch (e) {
-                console.error('Failed to remove channel:', e);
+                showToast('Failed to remove channel: ' + e.message, 'error');
             }
         }
 
+        function showToast(message, type) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 4000);
+        }
+
+        function showModalError(msg) {
+            const el = document.getElementById('modal-error');
+            el.textContent = msg;
+            el.classList.add('visible');
+        }
+
+        function hideModalError() {
+            document.getElementById('modal-error').classList.remove('visible');
+        }
+
         function showAddModal() {
+            hideModalError();
             document.getElementById('add-modal').classList.add('active');
             document.getElementById('channel-input').focus();
         }
@@ -511,12 +594,21 @@
         function hideAddModal() {
             document.getElementById('add-modal').classList.remove('active');
             document.getElementById('channel-input').value = '';
+            hideModalError();
+            const btn = document.getElementById('add-btn');
+            btn.classList.remove('loading');
+            btn.textContent = 'Add';
         }
 
         async function addChannel() {
             const input = document.getElementById('channel-input');
             const login = input.value.trim().toLowerCase();
             if (!login) return;
+
+            const btn = document.getElementById('add-btn');
+            btn.classList.add('loading');
+            btn.textContent = 'Adding';
+            hideModalError();
 
             try {
                 const res = await fetch(API + '/api/channels', {
@@ -526,13 +618,17 @@
                 });
                 const data = await res.json();
                 if (data.error) {
-                    alert(data.error);
+                    showModalError(data.error);
                 } else {
                     hideAddModal();
+                    showToast(`Channel "${login}" added`, 'success');
                     fetchChannels();
                 }
             } catch (e) {
-                console.error('Failed to add channel:', e);
+                showModalError('Request failed: ' + e.message);
+            } finally {
+                btn.classList.remove('loading');
+                btn.textContent = 'Add';
             }
         }
 

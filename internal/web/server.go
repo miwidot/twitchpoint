@@ -149,7 +149,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.farmer.AddChannelLive(req.Login); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusConflict)
 			return
 		}
 		jsonResponse(w, map[string]string{"status": "ok", "login": req.Login})
