@@ -43,6 +43,11 @@
             font-weight: 600;
             color: var(--twitch-purple);
         }
+        .version {
+            font-size: 12px;
+            font-weight: 400;
+            color: var(--text-muted);
+        }
         .header .user {
             color: var(--text-secondary);
             font-size: 14px;
@@ -339,7 +344,7 @@
 <body>
     <div class="container">
         <header class="header">
-            <h1>TwitchPoint Farmer</h1>
+            <h1>TwitchPoint Farmer <span class="version" id="app-version"></span></h1>
             <div class="header-right">
                 <div class="refresh-indicator">
                     <span class="refresh-dot" id="refresh-dot"></span>
@@ -437,6 +442,7 @@
             try {
                 const res = await fetch(API + '/api/stats');
                 const data = await res.json();
+                document.getElementById('app-version').textContent = 'v' + data.version;
                 document.getElementById('user-info').textContent = data.user;
                 document.getElementById('stat-uptime').textContent = data.uptime;
                 document.getElementById('stat-points').textContent = data.total_points.toLocaleString();

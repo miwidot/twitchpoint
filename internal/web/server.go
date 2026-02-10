@@ -15,6 +15,9 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+// Version is the application version displayed in the web UI.
+var Version = "dev"
+
 // Server is the HTTP server for the web UI.
 type Server struct {
 	farmer *farmer.Farmer
@@ -66,6 +69,7 @@ func jsonError(w http.ResponseWriter, message string, code int) {
 
 // StatsResponse is the /api/stats response.
 type StatsResponse struct {
+	Version          string `json:"version"`
 	User             string `json:"user"`
 	UserID           string `json:"user_id"`
 	Uptime           string `json:"uptime"`
@@ -86,6 +90,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	user := s.farmer.GetUser()
 
 	resp := StatsResponse{
+		Version:          Version,
 		User:             user.DisplayName,
 		UserID:           user.ID,
 		Uptime:           formatDuration(stats.Uptime),
