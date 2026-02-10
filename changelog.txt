@@ -1,3 +1,18 @@
+== 2026-02-10 18:57 == Fix: Game category not updating mid-stream ==
+
+- Game category, viewer count, and broadcast ID now refresh every 5 min for all online channels
+- Previously only refreshed if game name was empty — mid-stream category changes were never picked up
+- Affects both Terminal UI and Web Interface
+
+== 2026-02-10 18:57 == Fix: Web UI channel add not working ==
+
+- Add Channel via web interface failed silently (errors only logged to console)
+- Added loading state on Add button while Twitch API resolves the channel
+- Added inline error display in Add Channel modal (red banner with error message)
+- Added toast notification system (green = success, red = error, auto-dismiss 4s)
+- All actions (add, remove, priority toggle) now show visible feedback
+- Fixed silent catch blocks in remove channel and priority toggle
+
 == 2026-02-09 22:38 == Feature: Docker Support ==
 
 - Added Dockerfile with multi-stage build (golang:1.22-alpine -> alpine:3.19)
