@@ -552,9 +552,9 @@ func (f *Farmer) refreshBalances() {
 			ch.SetBalance(balance)
 		}
 
-		// Refresh game/stream info for online channels (fills in game name if it was empty)
+		// Refresh stream info for online channels (game category, viewers, broadcast ID)
 		snap := ch.Snapshot()
-		if snap.IsOnline && (snap.GameName == "" || snap.BroadcastID == "") {
+		if snap.IsOnline {
 			info, err := f.gql.GetChannelInfo(ch.Login)
 			if err == nil && info.IsLive {
 				ch.SetOnline(info.BroadcastID, info.GameName, info.ViewerCount)
