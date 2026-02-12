@@ -42,6 +42,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/channels", s.handleChannels)
 	s.mux.HandleFunc("/api/channels/", s.handleChannel)
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
+	s.mux.HandleFunc("/api/drops", s.handleDrops)
 
 	// Static files (embedded)
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -78,6 +79,7 @@ type StatsResponse struct {
 	ChannelsOnline   int    `json:"channels_online"`
 	ChannelsWatching int    `json:"channels_watching"`
 	ChannelsTotal    int    `json:"channels_total"`
+	ActiveDrops      int    `json:"active_drops"`
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +91,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	stats := s.farmer.GetStats()
 	user := s.farmer.GetUser()
 
+	drops := s.farmer.GetActiveDrops()
+
 	resp := StatsResponse{
 		Version:          Version,
 		User:             user.DisplayName,
@@ -99,6 +103,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		ChannelsOnline:   stats.ChannelsOnline,
 		ChannelsWatching: stats.ChannelsWatching,
 		ChannelsTotal:    stats.ChannelsTotal,
+		ActiveDrops:      len(drops),
 	}
 
 	jsonResponse(w, resp)
@@ -106,17 +111,21 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 // ChannelResponse is a channel in the /api/channels response.
 type ChannelResponse struct {
-	Login       string `json:"login"`
-	DisplayName string `json:"display_name"`
-	ChannelID   string `json:"channel_id"`
-	Priority    int    `json:"priority"`
-	IsOnline    bool   `json:"is_online"`
-	IsWatching  bool   `json:"is_watching"`
-	GameName    string `json:"game_name"`
-	ViewerCount int    `json:"viewer_count"`
-	Balance     int    `json:"balance"`
-	Earned      int    `json:"earned"`
-	Claims      int    `json:"claims"`
+	Login         string `json:"login"`
+	DisplayName   string `json:"display_name"`
+	ChannelID     string `json:"channel_id"`
+	Priority      int    `json:"priority"`
+	IsOnline      bool   `json:"is_online"`
+	IsWatching    bool   `json:"is_watching"`
+	GameName      string `json:"game_name"`
+	ViewerCount   int    `json:"viewer_count"`
+	Balance       int    `json:"balance"`
+	Earned        int    `json:"earned"`
+	Claims        int    `json:"claims"`
+	HasActiveDrop bool   `json:"has_active_drop"`
+	DropName      string `json:"drop_name,omitempty"`
+	DropProgress  int    `json:"drop_progress"`
+	DropRequired  int    `json:"drop_required"`
 }
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
@@ -126,17 +135,21 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		resp := make([]ChannelResponse, len(channels))
 		for i, ch := range channels {
 			resp[i] = ChannelResponse{
-				Login:       ch.Login,
-				DisplayName: ch.DisplayName,
-				ChannelID:   ch.ChannelID,
-				Priority:    ch.Priority,
-				IsOnline:    ch.IsOnline,
-				IsWatching:  ch.IsWatching,
-				GameName:    ch.GameName,
-				ViewerCount: ch.ViewerCount,
-				Balance:     ch.PointsBalance,
-				Earned:      ch.PointsEarnedSession,
-				Claims:      ch.ClaimsMade,
+				Login:         ch.Login,
+				DisplayName:   ch.DisplayName,
+				ChannelID:     ch.ChannelID,
+				Priority:      ch.Priority,
+				IsOnline:      ch.IsOnline,
+				IsWatching:    ch.IsWatching,
+				GameName:      ch.GameName,
+				ViewerCount:   ch.ViewerCount,
+				Balance:       ch.PointsBalance,
+				Earned:        ch.PointsEarnedSession,
+				Claims:        ch.ClaimsMade,
+				HasActiveDrop: ch.HasActiveDrop,
+				DropName:      ch.DropName,
+				DropProgress:  ch.DropProgress,
+				DropRequired:  ch.DropRequired,
 			}
 		}
 		jsonResponse(w, resp)
@@ -247,6 +260,19 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, resp)
+}
+
+func (s *Server) handleDrops(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	drops := s.farmer.GetActiveDrops()
+	if drops == nil {
+		drops = []farmer.ActiveDrop{}
+	}
+	jsonResponse(w, drops)
 }
 
 func formatDuration(d time.Duration) string {

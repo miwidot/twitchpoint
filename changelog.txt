@@ -1,3 +1,60 @@
+== 2026-02-13 02:53 == Feature: Twitch Drops Mining (v1.2.0-beta) ==
+
+What are Twitch Drops?
+  Twitch Drops are game-specific rewards (in-game items, skins, emotes, etc.) that
+  players earn by watching eligible streams for a required amount of time. Normally
+  you must manually find a drops-enabled stream, watch it long enough, and then
+  click "Claim" on twitch.tv. TwitchPoint now automates this entire process.
+
+How it works:
+  1. Every 10 minutes, TwitchPoint queries your Twitch inventory for active drop campaigns
+  2. For each campaign, it matches the allowed channels (or game category) against
+     your configured channel list — it will NOT add unknown channels
+  3. Matched channels are auto-promoted to P0 priority (highest), guaranteeing them
+     a Spade heartbeat slot so watch minutes accumulate
+  4. When a drop reaches 100% completion, it is automatically claimed via GQL mutation
+  5. Once claimed (or the campaign ends), P0 is removed and the channel reverts to
+     its normal priority (P1/P2)
+
+Prerequisites:
+  - drops_enabled: true in config (default)
+  - Your Twitch account must be linked to the game account on the publisher's website
+    (e.g., link Riot account for Valorant drops, link Steam for CS2 drops)
+  - The channels streaming the drop-enabled game must be in your configured channel list
+
+Priority system:
+  P0 (drop active, auto-assigned) → P1 (always watch) → P2 (rotate every 5 min)
+  P0 is temporary and fully automatic — no user action needed.
+
+Changes:
+- GQL: Inventory query to fetch active campaigns with progress per drop
+- GQL: DropsPage_ClaimDropRewards mutation to auto-claim completed drops
+- Farmer: dropCheckLoop() — 30s initial delay, then polls every 10 min
+- Farmer: processDrops() — matches campaigns to channels, updates P0, auto-claims
+- Farmer: rotateChannels() now has P0 tier (fills Spade slots before P1/P2)
+- Config: drops_enabled (bool, default: true) with auto-migration for existing configs
+- Terminal UI: P0 badge (green) in priority column, drop progress % in game column,
+  "Drops: N" counter in stats bar
+- Web UI: Active Drops stat card, P0 legend, green progress bar in channel table,
+  P0 priority button (non-clickable, auto-assigned)
+- API: GET /api/drops — returns all active drops with campaign, game, channel, progress
+- API: /api/channels — new fields: has_active_drop, drop_name, drop_progress, drop_required
+- API: /api/stats — new field: active_drops
+- Files added: internal/twitch/drops.go, internal/farmer/drops.go
+- Files modified: internal/farmer/channel.go, internal/farmer/farmer.go,
+  internal/config/config.go, internal/ui/components.go, internal/ui/styles.go,
+  internal/web/server.go, internal/web/static/index.html
+
+== 2026-02-13 02:53 == Fix: Quit button deadlock (q key unresponsive) ==
+
+- Fixed deadlock in IRC.Close() — mutex was held while calling send() which tried
+  to acquire the same mutex again (Go mutexes are not reentrant)
+- Root cause: Close() locked c.mu, then called c.send("QUIT") which also locks c.mu → deadlock
+- Fix: extract conn/writer references under lock, release lock, then send QUIT and close outside
+- This caused the TUI to freeze when pressing 'q' or Ctrl+C, requiring kill -9 to terminate
+- Pre-existing bug, not caused by drops changes
+- Files modified: internal/twitch/irc.go
+
 == 2026-02-10 19:03 == Feature: Version number in Web UI ==
 
 - Added version display in web UI header (e.g. "TwitchPoint Farmer v1.1.2")

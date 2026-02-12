@@ -259,12 +259,20 @@ func (c *IRCClient) Close() {
 	c.stopped = true
 	close(c.stopCh)
 
-	if c.conn != nil {
-		c.send("QUIT :Goodbye")
-		c.conn.Close()
-		c.conn = nil
-	}
+	conn := c.conn
+	writer := c.writer
+	c.conn = nil
+	c.writer = nil
 	c.mu.Unlock()
+
+	// Send QUIT and close outside the lock to avoid deadlock
+	if conn != nil {
+		if writer != nil {
+			writer.WriteString("QUIT :Goodbye\r\n")
+			writer.Flush()
+		}
+		conn.Close()
+	}
 
 	c.log("[IRC] Disconnected")
 }

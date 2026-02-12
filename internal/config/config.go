@@ -24,6 +24,7 @@ type Config struct {
 	WebEnabled     bool           `json:"web_enabled"`               // enable web UI
 	WebPort        int            `json:"web_port"`                  // web server port (default 8080)
 	IrcEnabled     bool           `json:"irc_enabled"`               // enable IRC for viewer presence (default true)
+	DropsEnabled   bool           `json:"drops_enabled"`             // enable drop mining (default true)
 
 	path string // file path, not serialized
 }
@@ -46,9 +47,10 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		path:       path,
-		WebPort:    8080, // default
-		IrcEnabled: true, // default
+		path:         path,
+		WebPort:      8080, // default
+		IrcEnabled:   true, // default
+		DropsEnabled: true, // default
 	}
 
 	data, err := os.ReadFile(path)
@@ -77,6 +79,9 @@ func Load(path string) (*Config, error) {
 	if _, hasIrc := raw["irc_enabled"]; !hasIrc {
 		cfg.IrcEnabled = true
 	}
+	if _, hasDrops := raw["drops_enabled"]; !hasDrops {
+		cfg.DropsEnabled = true
+	}
 
 	// Migrate legacy channels and detect if new fields need to be written
 	needsSave := cfg.migrate()
@@ -85,7 +90,8 @@ func Load(path string) (*Config, error) {
 	_, hasWebEnabled := raw["web_enabled"]
 	_, hasWebPort := raw["web_port"]
 	_, hasIrcEnabled := raw["irc_enabled"]
-	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled {
+	_, hasDropsEnabled := raw["drops_enabled"]
+	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled || !hasDropsEnabled {
 		needsSave = true
 	}
 

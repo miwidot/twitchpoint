@@ -190,9 +190,34 @@
             transition: all 0.15s;
         }
         .priority-btn:hover { border-color: var(--twitch-purple); color: var(--twitch-purple); }
+        .priority-btn.p0 { border-color: var(--green); color: var(--green); background: rgba(0, 245, 147, 0.1); cursor: default; }
         .priority-btn.p1 { border-color: var(--yellow); color: var(--yellow); background: rgba(255, 192, 0, 0.1); }
+        tr.drop-row td { background: rgba(0, 245, 147, 0.05); }
+        tr.drop-row:hover td { background: rgba(0, 245, 147, 0.1); }
         tr.priority-row td { background: rgba(255, 192, 0, 0.05); }
         tr.priority-row:hover td { background: rgba(255, 192, 0, 0.1); }
+
+        /* Drop progress bar */
+        .drop-progress {
+            margin-top: 4px;
+        }
+        .drop-progress-bar {
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .drop-progress-fill {
+            height: 100%;
+            background: var(--green);
+            border-radius: 2px;
+            transition: width 0.5s ease;
+        }
+        .drop-progress-text {
+            font-size: 10px;
+            color: var(--green);
+            margin-top: 2px;
+        }
 
         /* Priority Legend */
         .priority-legend {
@@ -213,6 +238,7 @@
             font-size: 10px;
             font-weight: 600;
         }
+        .priority-legend-badge.p0 { background: rgba(0, 245, 147, 0.2); color: var(--green); }
         .priority-legend-badge.p1 { background: rgba(255, 192, 0, 0.2); color: var(--yellow); }
         .priority-legend-badge.p2 { background: var(--border); color: var(--text-muted); }
 
@@ -371,6 +397,10 @@
                 <div class="label">Channels</div>
                 <div class="value" id="stat-channels">0/0/0</div>
             </div>
+            <div class="stat-card">
+                <div class="label">Active Drops</div>
+                <div class="value green" id="stat-drops">0</div>
+            </div>
         </div>
 
         <div class="section-header">
@@ -379,6 +409,10 @@
         </div>
 
         <div class="priority-legend">
+            <div class="priority-legend-item">
+                <span class="priority-legend-badge p0">P0</span>
+                <span>Drop active (auto)</span>
+            </div>
             <div class="priority-legend-item">
                 <span class="priority-legend-badge p1">P1</span>
                 <span>Always watch (max 2 slots)</span>
@@ -449,6 +483,7 @@
                 document.getElementById('stat-claims').textContent = data.total_claims;
                 document.getElementById('stat-channels').textContent =
                     `${data.channels_watching}/${data.channels_online}/${data.channels_total}`;
+                document.getElementById('stat-drops').textContent = data.active_drops || 0;
             } catch (e) {
                 console.error('Failed to fetch stats:', e);
             }
@@ -471,9 +506,15 @@
                 return;
             }
 
-            // Sort: priority first, then online, then by name
+            // Effective priority: P0 for active drops, else configured priority
+            function effectivePri(ch) {
+                return ch.has_active_drop ? 0 : ch.priority;
+            }
+
+            // Sort: effective priority first, then online, then by name
             channels.sort((a, b) => {
-                if (a.priority !== b.priority) return a.priority - b.priority;
+                const pa = effectivePri(a), pb = effectivePri(b);
+                if (pa !== pb) return pa - pb;
                 if (a.is_online !== b.is_online) return b.is_online - a.is_online;
                 return a.display_name.localeCompare(b.display_name);
             });
@@ -486,18 +527,43 @@
                     statusBadge = '<span class="status-badge status-live">Live</span>';
                 }
 
-                const priClass = ch.priority === 1 ? 'p1' : '';
-                const priLabel = ch.priority === 1 ? 'P1' : 'P2';
-                const rowClass = ch.priority === 1 ? 'priority-row' : '';
+                let priClass, priLabel, rowClass;
+                if (ch.has_active_drop) {
+                    priClass = 'p0';
+                    priLabel = 'P0';
+                    rowClass = 'drop-row';
+                } else if (ch.priority === 1) {
+                    priClass = 'p1';
+                    priLabel = 'P1';
+                    rowClass = 'priority-row';
+                } else {
+                    priClass = '';
+                    priLabel = 'P2';
+                    rowClass = '';
+                }
+
+                // Drop progress bar (shown below channel name)
+                let dropHtml = '';
+                if (ch.has_active_drop && ch.drop_required > 0) {
+                    const pct = Math.min(100, Math.round((ch.drop_progress / ch.drop_required) * 100));
+                    dropHtml = `
+                        <div class="drop-progress">
+                            <div class="drop-progress-bar"><div class="drop-progress-fill" style="width:${pct}%"></div></div>
+                            <div class="drop-progress-text">${escapeHtml(ch.drop_name || 'Drop')} — ${ch.drop_progress}/${ch.drop_required} min (${pct}%)</div>
+                        </div>`;
+                }
+
+                // P0 button is not clickable (auto-assigned), P1/P2 toggle normally
+                const priOnClick = ch.has_active_drop ? '' : `onclick="togglePriority('${ch.login}', ${ch.priority})"`;
 
                 return `
                     <tr class="${rowClass}">
                         <td>
-                            <button class="priority-btn ${priClass}" onclick="togglePriority('${ch.login}', ${ch.priority})">
+                            <button class="priority-btn ${priClass}" ${priOnClick}>
                                 ${priLabel}
                             </button>
                         </td>
-                        <td><strong>${escapeHtml(ch.display_name)}</strong></td>
+                        <td><strong>${escapeHtml(ch.display_name)}</strong>${dropHtml}</td>
                         <td>${statusBadge}</td>
                         <td class="game-name" title="${escapeHtml(ch.game_name || '')}">${escapeHtml(ch.game_name || '-')}</td>
                         <td class="viewers">${ch.is_online ? ch.viewer_count.toLocaleString() : '-'}</td>

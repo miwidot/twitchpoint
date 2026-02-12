@@ -51,6 +51,9 @@ type Farmer struct {
 
 	// Rotation
 	rotationIndex int // which pair of channels is currently being watched
+
+	// Drops
+	drops dropState
 }
 
 // New creates a new Farmer from config.
@@ -133,6 +136,12 @@ func (f *Farmer) Start() error {
 
 	// Start channel rotation (Twitch only credits points for 2 channels at a time)
 	go f.rotationLoop()
+
+	// Start drop mining if enabled
+	if f.cfg.DropsEnabled {
+		f.addLog("Drop mining enabled — checking inventory every 10 min")
+		go f.dropCheckLoop()
+	}
 
 	return nil
 }
@@ -585,6 +594,7 @@ func (f *Farmer) rotationLoop() {
 
 func (f *Farmer) rotateChannels() {
 	f.mu.RLock()
+	var priority0 []*ChannelState // P0: active drop (auto-promoted)
 	var priority1 []*ChannelState
 	var priority2 []*ChannelState
 	for _, ch := range f.channels {
@@ -592,7 +602,9 @@ func (f *Farmer) rotateChannels() {
 		if !snap.IsOnline {
 			continue
 		}
-		if snap.Priority == 1 {
+		if snap.HasActiveDrop {
+			priority0 = append(priority0, ch)
+		} else if snap.Priority == 1 {
 			priority1 = append(priority1, ch)
 		} else {
 			priority2 = append(priority2, ch)
@@ -600,7 +612,10 @@ func (f *Farmer) rotateChannels() {
 	}
 	f.mu.RUnlock()
 
-	// Sort both lists deterministically by channel ID
+	// Sort all lists deterministically by channel ID
+	sort.Slice(priority0, func(i, j int) bool {
+		return priority0[i].ChannelID < priority0[j].ChannelID
+	})
 	sort.Slice(priority1, func(i, j int) bool {
 		return priority1[i].ChannelID < priority1[j].ChannelID
 	})
@@ -609,10 +624,19 @@ func (f *Farmer) rotateChannels() {
 	})
 
 	// Build the desired set of channels to watch
+	// P0 (drop active) → P1 (always watch) → P2 (rotate)
 	const maxSlots = 2
 	desired := make(map[string]*ChannelState) // channelID -> state
 
 	slotsUsed := 0
+	for _, ch := range priority0 {
+		if slotsUsed >= maxSlots {
+			break
+		}
+		desired[ch.ChannelID] = ch
+		slotsUsed++
+	}
+
 	for _, ch := range priority1 {
 		if slotsUsed >= maxSlots {
 			break
@@ -636,7 +660,7 @@ func (f *Farmer) rotateChannels() {
 
 	// Compute diff: stop channels no longer desired, keep channels that stay
 	currentlyWatching := make(map[string]bool)
-	for _, list := range [][]*ChannelState{priority1, priority2} {
+	for _, list := range [][]*ChannelState{priority0, priority1, priority2} {
 		for _, ch := range list {
 			if ch.Snapshot().IsWatching {
 				currentlyWatching[ch.ChannelID] = true
@@ -759,6 +783,7 @@ type Stats struct {
 	ChannelsOnline    int
 	ChannelsWatching  int
 	ChannelsTotal     int
+	ActiveDrops       int
 }
 
 func (f *Farmer) GetStats() Stats {
@@ -781,6 +806,10 @@ func (f *Farmer) GetStats() Stats {
 			stats.ChannelsWatching++
 		}
 	}
+
+	f.drops.mu.RLock()
+	stats.ActiveDrops = len(f.drops.activeDrops)
+	f.drops.mu.RUnlock()
 
 	return stats
 }

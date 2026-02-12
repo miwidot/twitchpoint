@@ -49,6 +49,10 @@ var (
 	watchingStyle = lipgloss.NewStyle().
 			Foreground(colorCyan)
 
+	dropStyle = lipgloss.NewStyle().
+			Foreground(colorGreen).
+			Bold(true)
+
 	// Stats bar
 	statsBarStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
