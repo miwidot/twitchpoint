@@ -689,7 +689,16 @@ func (f *Farmer) handleDropFailover(channelID string) {
 		return
 	}
 
+	isOldChannelTemp := snap.IsTemporary
+
 	f.addLog("[Drops] Failover: %s went offline, looking for replacement for campaign %q", snap.DisplayName, campaign.Name)
+
+	// Helper: clean up old temp channel after successful replacement
+	cleanupOld := func() {
+		if isOldChannelTemp {
+			f.removeTemporaryChannel(channelID)
+		}
+	}
 
 	// 1. Try existing configured channels that match the campaign and are online
 	existing := f.matchCampaignChannels(campaign)
@@ -705,6 +714,7 @@ func (f *Farmer) handleDropFailover(channelID string) {
 			candidate.mu.Lock()
 			candidate.CampaignID = campaignID
 			candidate.mu.Unlock()
+			cleanupOld()
 			f.rotateChannels()
 			return
 		}
@@ -715,6 +725,7 @@ func (f *Farmer) handleDropFailover(channelID string) {
 		login := f.findLiveFromAllowedChannels(campaign)
 		if login != "" {
 			f.addLog("[Drops] Failover: auto-selected %s from allowed channels", login)
+			cleanupOld()
 			f.rotateChannels()
 			return
 		}
@@ -726,6 +737,7 @@ func (f *Farmer) handleDropFailover(channelID string) {
 		if login != "" {
 			if err := f.addTemporaryChannel(login, campaignID); err == nil {
 				f.addLog("[Drops] Failover: auto-selected %s from game directory", login)
+				cleanupOld()
 				f.rotateChannels()
 				return
 			}

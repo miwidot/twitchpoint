@@ -203,13 +203,24 @@ func (f *Farmer) processDrops() {
 	}
 }
 
-// cleanupTemporaryChannels removes temp channels that no longer serve an active campaign.
+// cleanupTemporaryChannels removes temp channels that are no longer useful:
+// - campaign ended or was disabled (not in activeCampaignIDs)
+// - channel went offline and has no active drop progress
 func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs map[string]bool) {
 	f.mu.RLock()
 	var staleChannels []string
 	for chID, ch := range f.channels {
 		snap := ch.Snapshot()
-		if snap.IsTemporary && snap.CampaignID != "" && !activeCampaignIDs[snap.CampaignID] {
+		if !snap.IsTemporary {
+			continue
+		}
+		// Campaign no longer active (ended/disabled/claimed)
+		if snap.CampaignID != "" && !activeCampaignIDs[snap.CampaignID] {
+			staleChannels = append(staleChannels, chID)
+			continue
+		}
+		// Offline and not actively tracking a drop — dead weight
+		if !snap.IsOnline && !snap.HasActiveDrop {
 			staleChannels = append(staleChannels, chID)
 		}
 	}
