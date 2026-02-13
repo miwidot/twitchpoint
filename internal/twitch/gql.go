@@ -27,6 +27,20 @@ const (
 		}
 	}`
 
+	queryGetGameStreams = `query DirectoryPage_Game($name: String!, $first: Int!) {
+		game(name: $name) {
+			streams(first: $first) {
+				edges {
+					node {
+						id
+						broadcaster { id login displayName }
+						viewersCount
+					}
+				}
+			}
+		}
+	}`
+
 	queryChannelPointsBalance = `query ChannelPointsContext($channelLogin: String!) {
 		community(name: $channelLogin) {
 			channel {
@@ -348,6 +362,84 @@ func (g *GQLClient) GetChannelPointsBalance(channelLogin string) (int, error) {
 	}
 
 	return 0, nil
+}
+
+// GetGameStreams queries the game directory for live streams.
+func (g *GQLClient) GetGameStreams(gameName string, limit int) ([]GameStream, error) {
+	req := &GQLRequest{
+		OperationName: "DirectoryPage_Game",
+		Query:         queryGetGameStreams,
+		Variables: map[string]interface{}{
+			"name":  gameName,
+			"first": limit,
+		},
+	}
+
+	resp, err := g.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get game streams: %w", err)
+	}
+
+	game, ok := resp.Data["game"]
+	if !ok || game == nil {
+		return nil, nil
+	}
+	gameMap, ok := game.(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	streams, ok := gameMap["streams"]
+	if !ok || streams == nil {
+		return nil, nil
+	}
+	streamsMap, ok := streams.(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	edges, ok := streamsMap["edges"]
+	if !ok || edges == nil {
+		return nil, nil
+	}
+	edgeList, ok := edges.([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	var result []GameStream
+	for _, e := range edgeList {
+		eMap, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		node, ok := eMap["node"]
+		if !ok || node == nil {
+			continue
+		}
+		nMap, ok := node.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		gs := GameStream{
+			ViewerCount: getInt(nMap, "viewersCount"),
+		}
+
+		if broadcaster, ok := nMap["broadcaster"]; ok && broadcaster != nil {
+			if bMap, ok := broadcaster.(map[string]interface{}); ok {
+				gs.BroadcasterID = getString(bMap, "id")
+				gs.BroadcasterLogin = getString(bMap, "login")
+				gs.DisplayName = getString(bMap, "displayName")
+			}
+		}
+
+		if gs.BroadcasterLogin != "" {
+			result = append(result, gs)
+		}
+	}
+
+	return result, nil
 }
 
 // setHeaders sets all required headers for TV Client-ID GQL requests.

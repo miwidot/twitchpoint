@@ -365,6 +365,76 @@
             animation: dots 1s steps(3, end) infinite;
         }
         @keyframes dots { 0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; } }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .badge-temp { background: rgba(145, 71, 255, 0.2); color: var(--twitch-purple); }
+        .badge-auto { background: rgba(0, 245, 147, 0.2); color: var(--green); }
+
+        /* Drops Campaign Table */
+        .drops-toggle {
+            appearance: none;
+            width: 36px;
+            height: 20px;
+            background: var(--border);
+            border-radius: 10px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s;
+            border: none;
+        }
+        .drops-toggle::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 16px;
+            height: 16px;
+            background: var(--text-muted);
+            border-radius: 50%;
+            transition: all 0.2s;
+        }
+        .drops-toggle:checked { background: var(--green); }
+        .drops-toggle:checked::after { left: 18px; background: var(--bg-dark); }
+        tr.disabled-row td { opacity: 0.4; }
+        tr.disabled-row:hover td { opacity: 0.6; }
+        .campaign-progress {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .campaign-progress-bar {
+            flex: 1;
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+            min-width: 60px;
+        }
+        .campaign-progress-fill {
+            height: 100%;
+            background: var(--green);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+        .campaign-progress-text {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .expires-text {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
     </style>
 </head>
 <body>
@@ -440,6 +510,27 @@
                 </thead>
                 <tbody id="channels-body">
                     <tr><td colspan="9" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section-header" id="drops-section" style="display:none">
+            <h2>Drop Campaigns</h2>
+        </div>
+        <div class="table-container" id="drops-table-container" style="display:none">
+            <table>
+                <thead>
+                    <tr>
+                        <th>On</th>
+                        <th>Campaign</th>
+                        <th>Game</th>
+                        <th>Drop</th>
+                        <th>Progress</th>
+                        <th>Channel</th>
+                        <th>Expires</th>
+                    </tr>
+                </thead>
+                <tbody id="drops-body">
                 </tbody>
             </table>
         </div>
@@ -556,6 +647,14 @@
                 // P0 button is not clickable (auto-assigned), P1/P2 toggle normally
                 const priOnClick = ch.has_active_drop ? '' : `onclick="togglePriority('${ch.login}', ${ch.priority})"`;
 
+                // TEMP badge for auto-added channels
+                const tempBadge = ch.is_temporary ? '<span class="badge badge-temp">TEMP</span>' : '';
+
+                // Action column: Auto label for temp channels, Remove for permanent
+                const actionCol = ch.is_temporary
+                    ? '<span class="badge badge-auto">Auto</span>'
+                    : `<button class="btn btn-small btn-danger" onclick="removeChannel('${ch.login}')">Remove</button>`;
+
                 return `
                     <tr class="${rowClass}">
                         <td>
@@ -563,19 +662,112 @@
                                 ${priLabel}
                             </button>
                         </td>
-                        <td><strong>${escapeHtml(ch.display_name)}</strong>${dropHtml}</td>
+                        <td><strong>${escapeHtml(ch.display_name)}</strong>${tempBadge}${dropHtml}</td>
                         <td>${statusBadge}</td>
                         <td class="game-name" title="${escapeHtml(ch.game_name || '')}">${escapeHtml(ch.game_name || '-')}</td>
                         <td class="viewers">${ch.is_online ? ch.viewer_count.toLocaleString() : '-'}</td>
                         <td class="points">${ch.balance.toLocaleString()}</td>
                         <td class="earned">+${ch.earned.toLocaleString()}</td>
                         <td>${ch.claims}</td>
-                        <td>
-                            <button class="btn btn-small btn-danger" onclick="removeChannel('${ch.login}')">Remove</button>
-                        </td>
+                        <td>${actionCol}</td>
                     </tr>
                 `;
             }).join('');
+        }
+
+        async function fetchDrops() {
+            try {
+                const res = await fetch(API + '/api/drops');
+                const drops = await res.json();
+                renderDrops(drops);
+            } catch (e) {
+                console.error('Failed to fetch drops:', e);
+            }
+        }
+
+        function renderDrops(drops) {
+            const section = document.getElementById('drops-section');
+            const container = document.getElementById('drops-table-container');
+            const tbody = document.getElementById('drops-body');
+
+            if (!drops || drops.length === 0) {
+                section.style.display = 'none';
+                container.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'flex';
+            container.style.display = 'block';
+
+            tbody.innerHTML = drops.map(drop => {
+                const rowClass = !drop.is_enabled ? 'disabled-row' : '';
+                const checked = drop.is_enabled ? 'checked' : '';
+
+                // Progress bar
+                const pct = drop.required > 0 ? Math.min(100, Math.round((drop.progress / drop.required) * 100)) : 0;
+                const progressHtml = `
+                    <div class="campaign-progress">
+                        <div class="campaign-progress-bar">
+                            <div class="campaign-progress-fill" style="width:${pct}%"></div>
+                        </div>
+                        <span class="campaign-progress-text">${drop.progress}/${drop.required}min (${pct}%)</span>
+                    </div>`;
+
+                // Channel with AUTO badge
+                let channelHtml = drop.channel_login
+                    ? escapeHtml(drop.channel_login)
+                    : '<span style="color:var(--text-muted)">none</span>';
+                if (drop.is_auto_selected && drop.channel_login) {
+                    channelHtml += ' <span class="badge badge-auto">AUTO</span>';
+                }
+
+                // Expires
+                let expiresHtml = '-';
+                if (drop.end_at && drop.end_at !== '0001-01-01T00:00:00Z') {
+                    const endDate = new Date(drop.end_at);
+                    const now = new Date();
+                    const hoursLeft = Math.max(0, Math.round((endDate - now) / 3600000));
+                    if (hoursLeft < 24) {
+                        expiresHtml = `<span class="expires-text" style="color:var(--red)">${hoursLeft}h left</span>`;
+                    } else {
+                        const daysLeft = Math.round(hoursLeft / 24);
+                        expiresHtml = `<span class="expires-text">${daysLeft}d left</span>`;
+                    }
+                }
+
+                return `
+                    <tr class="${rowClass}">
+                        <td>
+                            <input type="checkbox" class="drops-toggle" ${checked}
+                                onchange="toggleCampaign('${drop.campaign_id}', this.checked)">
+                        </td>
+                        <td>${escapeHtml(drop.campaign_name)}</td>
+                        <td class="game-name">${escapeHtml(drop.game_name)}</td>
+                        <td>${escapeHtml(drop.drop_name)}</td>
+                        <td>${progressHtml}</td>
+                        <td>${channelHtml}</td>
+                        <td>${expiresHtml}</td>
+                    </tr>`;
+            }).join('');
+        }
+
+        async function toggleCampaign(campaignId, enabled) {
+            try {
+                const res = await fetch(API + `/api/drops/${campaignId}/toggle`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                } else {
+                    showToast(`Campaign ${enabled ? 'enabled' : 'disabled'}`, 'success');
+                }
+                fetchDrops();
+            } catch (e) {
+                showToast('Failed to toggle campaign: ' + e.message, 'error');
+            }
         }
 
         async function fetchLogs() {
@@ -724,6 +916,7 @@
 
             fetchStats();
             fetchChannels();
+            fetchDrops();
             fetchLogs();
         }
 

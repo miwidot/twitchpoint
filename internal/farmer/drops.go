@@ -1,6 +1,7 @@
 package farmer
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -10,20 +11,27 @@ import (
 
 // ActiveDrop represents a drop being tracked, exposed for the Web UI.
 type ActiveDrop struct {
-	CampaignName string `json:"campaign_name"`
-	GameName     string `json:"game_name"`
-	DropName     string `json:"drop_name"`
-	ChannelLogin string `json:"channel_login"` // matched configured channel (if any)
-	Progress     int    `json:"progress"`       // current minutes watched
-	Required     int    `json:"required"`        // minutes required
-	Percent      int    `json:"percent"`         // 0-100
-	IsClaimed    bool   `json:"is_claimed"`
+	CampaignID     string    `json:"campaign_id"`
+	CampaignName   string    `json:"campaign_name"`
+	GameName       string    `json:"game_name"`
+	DropName       string    `json:"drop_name"`
+	ChannelLogin   string    `json:"channel_login"`    // matched channel (if any)
+	Progress       int       `json:"progress"`          // current minutes watched
+	Required       int       `json:"required"`           // minutes required
+	Percent        int       `json:"percent"`            // 0-100
+	IsClaimed      bool      `json:"is_claimed"`
+	EndAt          time.Time `json:"end_at"`             // campaign end time
+	IsAutoSelected bool      `json:"is_auto_selected"`   // channel was auto-discovered
+	IsEnabled      bool      `json:"is_enabled"`          // campaign not disabled
 }
 
 // dropState holds internal state for the drop tracker.
 type dropState struct {
-	mu          sync.RWMutex
-	activeDrops []ActiveDrop
+	mu            sync.RWMutex
+	activeDrops   []ActiveDrop
+	campaignCache map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
+
+	failoverCooldowns map[string]time.Time // campaignID -> last failover attempt
 }
 
 // dropCheckLoop polls the drops inventory every 10 minutes.
@@ -59,13 +67,41 @@ func (f *Farmer) processDrops() {
 		return
 	}
 
+	// Rebuild campaign cache for failover lookups
+	newCache := make(map[string]twitch.DropCampaign)
+
+	// Track which campaigns are still active (for temp channel cleanup)
+	activeCampaignIDs := make(map[string]bool)
+
 	// Build a set of channelIDs that have active drops this cycle
 	activeDropChannels := make(map[string]bool)
 	var allDrops []ActiveDrop
 
 	for _, campaign := range campaigns {
+		// Skip expired campaigns (Twitch may return stale data)
+		if !campaign.EndAt.IsZero() && campaign.EndAt.Before(time.Now()) {
+			continue
+		}
+
+		// Skip disabled campaigns
+		if f.cfg.IsCampaignDisabled(campaign.ID) {
+			continue
+		}
+
+		newCache[campaign.ID] = campaign
+		activeCampaignIDs[campaign.ID] = true
+
 		// Build a lookup of campaign channel IDs -> configured channel login
 		campaignChannelIDs := f.matchCampaignChannels(campaign)
+
+		// Auto-select: if no channels match, try to find a live one
+		if len(campaignChannelIDs) == 0 {
+			autoLogin := f.autoSelectDropChannel(campaign)
+			if autoLogin != "" {
+				// Re-match after adding the temp channel
+				campaignChannelIDs = f.matchCampaignChannels(campaign)
+			}
+		}
 
 		for _, drop := range campaign.Drops {
 			if drop.IsClaimed {
@@ -92,29 +128,43 @@ func (f *Farmer) processDrops() {
 
 			// Find which configured channel matches this campaign
 			matchedLogin := ""
+			isAutoSelected := false
 			for chID, login := range campaignChannelIDs {
 				activeDropChannels[chID] = true
 				if matchedLogin == "" {
 					matchedLogin = login
+					// Check if this is a temporary (auto-selected) channel
+					f.mu.RLock()
+					if ch, ok := f.channels[chID]; ok {
+						isAutoSelected = ch.Snapshot().IsTemporary
+					}
+					f.mu.RUnlock()
 				}
 
-				// Update channel state
+				// Update channel state with drop info and campaign ID
 				f.mu.RLock()
 				if ch, ok := f.channels[chID]; ok {
 					ch.SetDropInfo(dropName, drop.CurrentMinutesWatched, drop.RequiredMinutesWatched)
+					ch.mu.Lock()
+					ch.CampaignID = campaign.ID
+					ch.mu.Unlock()
 				}
 				f.mu.RUnlock()
 			}
 
 			allDrops = append(allDrops, ActiveDrop{
-				CampaignName: campaign.Name,
-				GameName:     campaign.GameName,
-				DropName:     dropName,
-				ChannelLogin: matchedLogin,
-				Progress:     drop.CurrentMinutesWatched,
-				Required:     drop.RequiredMinutesWatched,
-				Percent:      drop.ProgressPercent(),
-				IsClaimed:    false,
+				CampaignID:     campaign.ID,
+				CampaignName:   campaign.Name,
+				GameName:       campaign.GameName,
+				DropName:       dropName,
+				ChannelLogin:   matchedLogin,
+				Progress:       drop.CurrentMinutesWatched,
+				Required:       drop.RequiredMinutesWatched,
+				Percent:        drop.ProgressPercent(),
+				IsClaimed:      false,
+				EndAt:          campaign.EndAt,
+				IsAutoSelected: isAutoSelected,
+				IsEnabled:      true,
 			})
 		}
 	}
@@ -131,10 +181,17 @@ func (f *Farmer) processDrops() {
 	}
 	f.mu.RUnlock()
 
-	// Store active drops for Web UI
+	// Remove stale temporary channels no longer serving an active drop
+	f.cleanupTemporaryChannels(activeCampaignIDs)
+
+	// Store campaign cache and active drops
 	f.drops.mu.Lock()
 	f.drops.activeDrops = allDrops
+	f.drops.campaignCache = newCache
 	f.drops.mu.Unlock()
+
+	// Clean old failover cooldown entries
+	f.cleanupFailoverCooldowns()
 
 	// Trigger rotation to apply P0 priority for drop channels
 	if len(activeDropChannels) > 0 {
@@ -143,6 +200,38 @@ func (f *Farmer) processDrops() {
 
 	if len(allDrops) > 0 {
 		f.addLog("[Drops] Tracking %d active drop(s) across %d channel(s)", len(allDrops), len(activeDropChannels))
+	}
+}
+
+// cleanupTemporaryChannels removes temp channels that no longer serve an active campaign.
+func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs map[string]bool) {
+	f.mu.RLock()
+	var staleChannels []string
+	for chID, ch := range f.channels {
+		snap := ch.Snapshot()
+		if snap.IsTemporary && snap.CampaignID != "" && !activeCampaignIDs[snap.CampaignID] {
+			staleChannels = append(staleChannels, chID)
+		}
+	}
+	f.mu.RUnlock()
+
+	for _, chID := range staleChannels {
+		f.removeTemporaryChannel(chID)
+	}
+}
+
+// cleanupFailoverCooldowns removes cooldown entries older than 30 minutes.
+func (f *Farmer) cleanupFailoverCooldowns() {
+	f.drops.mu.Lock()
+	defer f.drops.mu.Unlock()
+
+	if f.drops.failoverCooldowns == nil {
+		return
+	}
+	for id, t := range f.drops.failoverCooldowns {
+		if time.Since(t) > 30*time.Minute {
+			delete(f.drops.failoverCooldowns, id)
+		}
 	}
 }
 
@@ -178,6 +267,107 @@ func (f *Farmer) matchCampaignChannels(campaign twitch.DropCampaign) map[string]
 	}
 
 	return result
+}
+
+// autoSelectDropChannel tries to find and add a live channel for a campaign with no matches.
+// Returns the login of the added channel, or empty string if none found.
+func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
+	// Try allowed channels first
+	if len(campaign.Channels) > 0 {
+		login := f.findLiveFromAllowedChannels(campaign)
+		if login != "" {
+			return login
+		}
+	}
+
+	// Fall back to game directory
+	if campaign.GameName != "" {
+		login := f.findLiveFromGameDirectory(campaign.GameName)
+		if login != "" {
+			if err := f.addTemporaryChannel(login, campaign.ID); err == nil {
+				return login
+			}
+		}
+	}
+
+	return ""
+}
+
+// findLiveFromAllowedChannels iterates campaign's allowed channel list,
+// checking each via GetChannelInfo to find one that's live.
+// Adds as temporary channel if found. Returns the login or empty string.
+func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) string {
+	for _, dropCh := range campaign.Channels {
+		login := strings.ToLower(dropCh.Name)
+		if login == "" {
+			continue
+		}
+
+		// Skip if already tracked
+		f.mu.RLock()
+		_, tracked := f.loginMap[login]
+		f.mu.RUnlock()
+		if tracked {
+			continue
+		}
+
+		info, err := f.gql.GetChannelInfo(login)
+		if err != nil {
+			continue
+		}
+		if info.IsLive {
+			if err := f.addTemporaryChannel(login, campaign.ID); err == nil {
+				return login
+			}
+		}
+
+		// Rate limiting: 200ms between GQL calls
+		time.Sleep(200 * time.Millisecond)
+	}
+	return ""
+}
+
+// findLiveFromGameDirectory queries the game directory for live streams.
+// Returns the login of the first suitable stream, or empty string.
+func (f *Farmer) findLiveFromGameDirectory(gameName string) string {
+	streams, err := f.gql.GetGameStreams(gameName, 10)
+	if err != nil {
+		f.addLog("[Drops] Failed to query game directory for %q: %v", gameName, err)
+		return ""
+	}
+
+	for _, stream := range streams {
+		login := strings.ToLower(stream.BroadcasterLogin)
+
+		// Skip if already tracked
+		f.mu.RLock()
+		_, tracked := f.loginMap[login]
+		f.mu.RUnlock()
+		if tracked {
+			continue
+		}
+
+		return login
+	}
+	return ""
+}
+
+// SetCampaignEnabled enables or disables a drop campaign.
+func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
+	f.cfg.SetCampaignEnabled(campaignID, enabled)
+	if err := f.cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	if enabled {
+		f.addLog("[Drops] Enabled campaign %s", campaignID)
+	} else {
+		f.addLog("[Drops] Disabled campaign %s", campaignID)
+	}
+
+	// Trigger immediate re-evaluation
+	go f.processDrops()
+	return nil
 }
 
 // GetActiveDrops returns the current active drops for the Web UI.

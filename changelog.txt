@@ -1,3 +1,66 @@
+== 2026-02-13 20:48 == Feature: Enhanced Drop Miner (v1.2.0) ==
+
+Major upgrade to the drop mining system with auto-discovery, failover, and campaign management.
+
+Expired Campaign Cleanup:
+- Campaigns past their EndAt timestamp are now skipped during processDrops()
+- Prevents wasting Spade slots on stale data returned by Twitch's inventory API
+
+Temporary Channel Infrastructure:
+- New IsTemporary and CampaignID fields on ChannelState/ChannelSnapshot
+- addTemporaryChannel(): adds a channel for drop tracking without saving to config
+- removeTemporaryChannel(): cleans up PubSub/IRC/Spade without touching config
+- RemoveChannelLive() delegates to temp removal for temporary channels
+- AddChannelLive() promotes a temporary channel to permanent if user adds it manually
+- Stale temporary channels (campaign ended/disabled) are auto-removed each cycle
+
+Drop Channel Failover:
+- handleDropFailover() triggers when a drop channel goes offline or raids to untracked channel
+- 5-minute cooldown per campaign to prevent rapid channel cycling
+- Failover strategy: try existing online channels → allowed channels → game directory
+- EventStreamDown handler triggers failover if channel had active drop
+- EventRaid handler triggers failover if source had active drop and target untracked
+- Cooldown map cleaned periodically (entries > 30 min removed)
+
+Auto-Select Streamers:
+- New GQL query: GetGameStreams() — queries Twitch game directory for live streams
+- When matchCampaignChannels() returns empty, auto-select kicks in:
+  1. Try campaign's allowed channel list (check each via GetChannelInfo)
+  2. Fall back to game directory (query top 10 streams)
+- Found channels added as temporary with 200ms rate limiting between GQL calls
+- findLiveFromAllowedChannels() and findLiveFromGameDirectory() helpers
+
+Campaign Preferences (Enable/Disable):
+- Config: DisabledCampaigns []string (omitempty, no migration needed)
+- IsCampaignDisabled() and SetCampaignEnabled() on Config
+- SetCampaignEnabled() on Farmer wraps config save + triggers re-evaluation
+- Disabled campaigns skipped in processDrops() before any processing
+- API: PUT /api/drops/{campaignID}/toggle with {"enabled": true/false}
+
+Web UI — Drop Campaigns Table:
+- New "Drop Campaigns" section between channels table and event log
+- Columns: Enabled (toggle switch), Campaign, Game, Drop, Progress (bar), Channel, Expires
+- Toggle switch calls PUT /api/drops/{id}/toggle to enable/disable campaigns
+- Auto-selected channels show "AUTO" badge
+- Disabled campaigns shown grayed out (opacity 0.4)
+- Campaign expires shown as "Xd left" or "Xh left" (red if < 24h)
+- Section hidden when no active drops
+
+Web UI — Temporary Channel Badges:
+- "TEMP" badge (purple) shown next to auto-added channel names
+- "Auto" badge replaces "Remove" button for temporary channels
+- Temporary channels cannot be removed via UI (auto-managed by drop system)
+
+Terminal UI:
+- "[TEMP]" suffix shown next to channel name for temporary channels
+
+ActiveDrop struct enhanced with: CampaignID, EndAt, IsAutoSelected, IsEnabled
+
+Files modified: internal/farmer/drops.go, internal/farmer/farmer.go,
+  internal/farmer/channel.go, internal/twitch/gql.go, internal/twitch/types.go,
+  internal/config/config.go, internal/web/server.go, internal/web/static/index.html,
+  internal/ui/components.go
+
 == 2026-02-13 02:53 == Feature: Twitch Drops Mining (v1.2.0-beta) ==
 
 What are Twitch Drops?

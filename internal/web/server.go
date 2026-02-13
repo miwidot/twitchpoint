@@ -43,6 +43,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/channels/", s.handleChannel)
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
 	s.mux.HandleFunc("/api/drops", s.handleDrops)
+	s.mux.HandleFunc("/api/drops/", s.handleDropAction)
 
 	// Static files (embedded)
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -126,6 +127,7 @@ type ChannelResponse struct {
 	DropName      string `json:"drop_name,omitempty"`
 	DropProgress  int    `json:"drop_progress"`
 	DropRequired  int    `json:"drop_required"`
+	IsTemporary   bool   `json:"is_temporary"`
 }
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +152,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 				DropName:      ch.DropName,
 				DropProgress:  ch.DropProgress,
 				DropRequired:  ch.DropRequired,
+				IsTemporary:   ch.IsTemporary,
 			}
 		}
 		jsonResponse(w, resp)
@@ -273,6 +276,37 @@ func (s *Server) handleDrops(w http.ResponseWriter, r *http.Request) {
 		drops = []farmer.ActiveDrop{}
 	}
 	jsonResponse(w, drops)
+}
+
+func (s *Server) handleDropAction(w http.ResponseWriter, r *http.Request) {
+	// Extract campaignID and action from path: /api/drops/{campaignID}/toggle
+	path := strings.TrimPrefix(r.URL.Path, "/api/drops/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] != "toggle" {
+		jsonError(w, "invalid path, expected /api/drops/{campaignID}/toggle", http.StatusBadRequest)
+		return
+	}
+	campaignID := parts[0]
+
+	if r.Method != http.MethodPut {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.farmer.SetCampaignEnabled(campaignID, req.Enabled); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]interface{}{"status": "ok", "campaign_id": campaignID, "enabled": req.Enabled})
 }
 
 func formatDuration(d time.Duration) string {

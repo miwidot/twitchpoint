@@ -228,14 +228,118 @@ func (f *Farmer) addChannel(login string) error {
 	return nil
 }
 
+// addTemporaryChannel adds a channel for drop tracking without saving to config.
+func (f *Farmer) addTemporaryChannel(login, campaignID string) error {
+	login = strings.ToLower(login)
+
+	// Check if already tracked
+	f.mu.RLock()
+	if chID, ok := f.loginMap[login]; ok {
+		ch := f.channels[chID]
+		f.mu.RUnlock()
+		// If it's already a permanent channel, just set the campaign ID
+		snap := ch.Snapshot()
+		if !snap.IsTemporary {
+			ch.mu.Lock()
+			ch.CampaignID = campaignID
+			ch.mu.Unlock()
+			return nil
+		}
+		return fmt.Errorf("channel %s already tracked", login)
+	}
+	f.mu.RUnlock()
+
+	info, err := f.gql.GetChannelInfo(login)
+	if err != nil {
+		return fmt.Errorf("get channel info: %w", err)
+	}
+
+	if !info.IsLive {
+		return fmt.Errorf("channel %s is not live", login)
+	}
+
+	state := NewChannelState(info.Login, info.DisplayName, info.ID)
+	state.Priority = 2 // temp channels use P2 (drops will promote to P0)
+	state.IsTemporary = true
+	state.CampaignID = campaignID
+
+	f.mu.Lock()
+	f.channels[info.ID] = state
+	f.loginMap[info.Login] = info.ID
+	f.mu.Unlock()
+
+	// Subscribe to PubSub topics
+	topics := []string{
+		fmt.Sprintf("video-playback-by-id.%s", info.ID),
+		fmt.Sprintf("raid.%s", info.ID),
+	}
+	if err := f.pubsub.Listen(topics); err != nil {
+		f.addLog("[Drops] PubSub subscribe error for temp channel %s: %v", login, err)
+	}
+
+	// Join IRC
+	if f.irc != nil {
+		f.irc.Join(info.Login)
+	}
+
+	state.SetOnline(info.BroadcastID, info.GameName, info.ViewerCount)
+	f.addLog("[Drops] Auto-added temporary channel: %s (campaign: %s)", info.DisplayName, campaignID)
+	f.tryStartWatching(state)
+
+	return nil
+}
+
+// removeTemporaryChannel cleans up a temporary channel without touching config.
+func (f *Farmer) removeTemporaryChannel(channelID string) {
+	f.mu.Lock()
+	ch, ok := f.channels[channelID]
+	if !ok {
+		f.mu.Unlock()
+		return
+	}
+
+	login := ch.Login
+	displayName := ch.DisplayName
+	delete(f.channels, channelID)
+	delete(f.loginMap, login)
+	f.mu.Unlock()
+
+	f.spade.StopWatching(channelID)
+
+	f.pubsub.Unlisten([]string{
+		fmt.Sprintf("video-playback-by-id.%s", channelID),
+		fmt.Sprintf("raid.%s", channelID),
+	})
+
+	if f.irc != nil {
+		f.irc.Part(login)
+	}
+
+	f.addLog("[Drops] Removed temporary channel: %s", displayName)
+}
+
 // AddChannelLive adds a channel at runtime.
 func (f *Farmer) AddChannelLive(login string) error {
+	login = strings.ToLower(login)
+
 	f.mu.RLock()
-	for _, id := range f.loginMap {
-		if ch, ok := f.channels[id]; ok && ch.Login == login {
-			f.mu.RUnlock()
-			return fmt.Errorf("channel %s already added", login)
+	if chID, ok := f.loginMap[login]; ok {
+		ch := f.channels[chID]
+		f.mu.RUnlock()
+
+		// If channel exists as temporary, promote to permanent
+		if ch.Snapshot().IsTemporary {
+			ch.mu.Lock()
+			ch.IsTemporary = false
+			ch.mu.Unlock()
+			f.cfg.AddChannel(login)
+			if err := f.cfg.Save(); err != nil {
+				f.addLog("Warning: could not save config: %v", err)
+			}
+			f.addLog("Promoted temporary channel %s to permanent", ch.DisplayName)
+			return nil
 		}
+		return fmt.Errorf("channel %s already added", login)
 	}
 	f.mu.RUnlock()
 
@@ -254,14 +358,25 @@ func (f *Farmer) AddChannelLive(login string) error {
 
 // RemoveChannelLive removes a channel at runtime.
 func (f *Farmer) RemoveChannelLive(login string) error {
-	f.mu.Lock()
+	login = strings.ToLower(login)
+
+	f.mu.RLock()
 	channelID, ok := f.loginMap[login]
 	if !ok {
-		f.mu.Unlock()
+		f.mu.RUnlock()
 		return fmt.Errorf("channel %s not found", login)
 	}
-
 	ch := f.channels[channelID]
+	isTemp := ch.Snapshot().IsTemporary
+	f.mu.RUnlock()
+
+	// Temporary channels use separate cleanup (no config changes)
+	if isTemp {
+		f.removeTemporaryChannel(channelID)
+		return nil
+	}
+
+	f.mu.Lock()
 	delete(f.channels, channelID)
 	delete(f.loginMap, login)
 	f.mu.Unlock()
@@ -455,9 +570,19 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 	case twitch.EventStreamDown:
 		if ok {
+			snap := ch.Snapshot()
+			hasDropBefore := snap.HasActiveDrop
+			campaignID := snap.CampaignID
+
 			ch.SetOffline()
 			f.spade.StopWatching(ch.ChannelID)
 			f.addLog("%s went OFFLINE", ch.DisplayName)
+
+			// If channel had active drop, trigger failover
+			if hasDropBefore && campaignID != "" {
+				go f.handleDropFailover(ch.ChannelID)
+			}
+
 			// Try to fill freed Spade slot
 			f.fillSpadeSlots()
 		}
@@ -487,6 +612,20 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 		f.addLog("Raid detected: %s -> %s", sourceName, data.TargetDisplayName)
 
+		// If source has active drop and target is not tracked, trigger failover
+		if ok {
+			snap := ch.Snapshot()
+			if snap.HasActiveDrop && snap.CampaignID != "" {
+				targetLogin := strings.ToLower(data.TargetLogin)
+				f.mu.RLock()
+				_, targetTracked := f.loginMap[targetLogin]
+				f.mu.RUnlock()
+				if !targetTracked {
+					go f.handleDropFailover(ch.ChannelID)
+				}
+			}
+		}
+
 		go func() {
 			if err := f.gql.JoinRaid(data.RaidID); err != nil {
 				f.addLog("Failed to join raid to %s: %v", data.TargetDisplayName, err)
@@ -506,6 +645,94 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 			f.addLog("[PubSub] %v", err)
 		}
 	}
+}
+
+// handleDropFailover finds a replacement channel when a drop channel goes offline or raids away.
+func (f *Farmer) handleDropFailover(channelID string) {
+	f.mu.RLock()
+	ch, ok := f.channels[channelID]
+	if !ok {
+		f.mu.RUnlock()
+		return
+	}
+	snap := ch.Snapshot()
+	f.mu.RUnlock()
+
+	if !snap.HasActiveDrop || snap.CampaignID == "" {
+		return
+	}
+
+	campaignID := snap.CampaignID
+
+	// Check cooldown: 5 min per campaign to prevent rapid cycling
+	f.drops.mu.Lock()
+	if f.drops.failoverCooldowns == nil {
+		f.drops.failoverCooldowns = make(map[string]time.Time)
+	}
+	if lastAttempt, ok := f.drops.failoverCooldowns[campaignID]; ok {
+		if time.Since(lastAttempt) < 5*time.Minute {
+			f.drops.mu.Unlock()
+			f.addLog("[Drops] Failover cooldown active for campaign %s, retry on next cycle", campaignID)
+			return
+		}
+	}
+	f.drops.failoverCooldowns[campaignID] = time.Now()
+	f.drops.mu.Unlock()
+
+	// Look up the campaign from cache
+	f.drops.mu.RLock()
+	campaign, hasCampaign := f.drops.campaignCache[campaignID]
+	f.drops.mu.RUnlock()
+
+	if !hasCampaign {
+		f.addLog("[Drops] Failover: campaign %s not in cache, will retry on next drop check", campaignID)
+		return
+	}
+
+	f.addLog("[Drops] Failover: %s went offline, looking for replacement for campaign %q", snap.DisplayName, campaign.Name)
+
+	// 1. Try existing configured channels that match the campaign and are online
+	existing := f.matchCampaignChannels(campaign)
+	for chID := range existing {
+		if chID == channelID {
+			continue // skip the offline one
+		}
+		f.mu.RLock()
+		candidate, ok := f.channels[chID]
+		f.mu.RUnlock()
+		if ok && candidate.Snapshot().IsOnline {
+			f.addLog("[Drops] Failover: found existing online channel %s for campaign %q", candidate.DisplayName, campaign.Name)
+			candidate.mu.Lock()
+			candidate.CampaignID = campaignID
+			candidate.mu.Unlock()
+			f.rotateChannels()
+			return
+		}
+	}
+
+	// 2. Try allowed channels from the campaign
+	if len(campaign.Channels) > 0 {
+		login := f.findLiveFromAllowedChannels(campaign)
+		if login != "" {
+			f.addLog("[Drops] Failover: auto-selected %s from allowed channels", login)
+			f.rotateChannels()
+			return
+		}
+	}
+
+	// 3. Try game directory
+	if campaign.GameName != "" {
+		login := f.findLiveFromGameDirectory(campaign.GameName)
+		if login != "" {
+			if err := f.addTemporaryChannel(login, campaignID); err == nil {
+				f.addLog("[Drops] Failover: auto-selected %s from game directory", login)
+				f.rotateChannels()
+				return
+			}
+		}
+	}
+
+	f.addLog("[Drops] Failover: no replacement found for campaign %q, will retry on next drop check", campaign.Name)
 }
 
 // fillSpadeSlots tries to fill open Spade slots with online channels.

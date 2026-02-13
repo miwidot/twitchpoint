@@ -82,6 +82,9 @@ func renderChannelTable(channels []farmer.ChannelSnapshot, width int) string {
 		}
 
 		name := ch.DisplayName
+		if ch.IsTemporary {
+			name = ch.DisplayName + " [TEMP]"
+		}
 		if len(name) > nameW {
 			name = name[:nameW-2] + ".."
 		}

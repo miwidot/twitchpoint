@@ -39,6 +39,10 @@ type ChannelState struct {
 	DropName      string
 	DropProgress  int // current minutes watched
 	DropRequired  int // required minutes to complete
+
+	// Temporary channel (auto-added for drops, not saved to config)
+	IsTemporary bool
+	CampaignID  string // which campaign this channel serves
 }
 
 // NewChannelState creates a new channel state.
@@ -137,6 +141,7 @@ func (c *ChannelState) ClearDropInfo() {
 	c.DropName = ""
 	c.DropProgress = 0
 	c.DropRequired = 0
+	c.CampaignID = ""
 }
 
 // Snapshot returns a read-only copy of the channel state.
@@ -162,6 +167,10 @@ type ChannelSnapshot struct {
 	DropName      string
 	DropProgress  int
 	DropRequired  int
+
+	// Temporary channel
+	IsTemporary bool
+	CampaignID  string
 }
 
 // Snapshot returns a thread-safe copy of the current state.
@@ -188,5 +197,7 @@ func (c *ChannelState) Snapshot() ChannelSnapshot {
 		DropName:            c.DropName,
 		DropProgress:        c.DropProgress,
 		DropRequired:        c.DropRequired,
+		IsTemporary:         c.IsTemporary,
+		CampaignID:          c.CampaignID,
 	}
 }

@@ -210,3 +210,11 @@ type RaidData struct {
 type ViewCountData struct {
 	Viewers int
 }
+
+// GameStream represents a live stream from a game directory query.
+type GameStream struct {
+	BroadcasterID   string
+	BroadcasterLogin string
+	DisplayName     string
+	ViewerCount     int
+}

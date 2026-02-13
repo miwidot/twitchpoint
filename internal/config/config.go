@@ -24,7 +24,8 @@ type Config struct {
 	WebEnabled     bool           `json:"web_enabled"`               // enable web UI
 	WebPort        int            `json:"web_port"`                  // web server port (default 8080)
 	IrcEnabled     bool           `json:"irc_enabled"`               // enable IRC for viewer presence (default true)
-	DropsEnabled   bool           `json:"drops_enabled"`             // enable drop mining (default true)
+	DropsEnabled       bool           `json:"drops_enabled"`                        // enable drop mining (default true)
+	DisabledCampaigns  []string       `json:"disabled_campaigns,omitempty"`         // campaign IDs to skip
 
 	path string // file path, not serialized
 }
@@ -203,6 +204,35 @@ func (c *Config) RemoveChannel(login string) bool {
 		}
 	}
 	return false
+}
+
+// IsCampaignDisabled returns true if the campaign ID is in the disabled list.
+func (c *Config) IsCampaignDisabled(campaignID string) bool {
+	for _, id := range c.DisabledCampaigns {
+		if id == campaignID {
+			return true
+		}
+	}
+	return false
+}
+
+// SetCampaignEnabled adds or removes a campaign ID from the disabled list.
+// enabled=true removes from disabled, enabled=false adds to disabled.
+func (c *Config) SetCampaignEnabled(campaignID string, enabled bool) {
+	if enabled {
+		// Remove from disabled list
+		for i, id := range c.DisabledCampaigns {
+			if id == campaignID {
+				c.DisabledCampaigns = append(c.DisabledCampaigns[:i], c.DisabledCampaigns[i+1:]...)
+				return
+			}
+		}
+	} else {
+		// Add to disabled list if not already present
+		if !c.IsCampaignDisabled(campaignID) {
+			c.DisabledCampaigns = append(c.DisabledCampaigns, campaignID)
+		}
+	}
 }
 
 // HasChannel checks if a channel is in the config.
