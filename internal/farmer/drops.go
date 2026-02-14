@@ -94,8 +94,22 @@ func (f *Farmer) processDrops() {
 		// Build a lookup of campaign channel IDs -> configured channel login
 		campaignChannelIDs := f.matchCampaignChannels(campaign)
 
-		// Auto-select: if no channels match, try to find a live one
-		if len(campaignChannelIDs) == 0 {
+		// Auto-select: if no channels match OR none are online, try to find a live one
+		needsAutoSelect := len(campaignChannelIDs) == 0
+		if !needsAutoSelect {
+			// Check if any matched channel is actually online
+			hasOnline := false
+			f.mu.RLock()
+			for chID := range campaignChannelIDs {
+				if ch, ok := f.channels[chID]; ok && ch.Snapshot().IsOnline {
+					hasOnline = true
+					break
+				}
+			}
+			f.mu.RUnlock()
+			needsAutoSelect = !hasOnline
+		}
+		if needsAutoSelect {
 			autoLogin := f.autoSelectDropChannel(campaign)
 			if autoLogin != "" {
 				// Direct lookup — don't re-match because game directory channels
