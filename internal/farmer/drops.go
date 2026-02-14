@@ -98,8 +98,13 @@ func (f *Farmer) processDrops() {
 		if len(campaignChannelIDs) == 0 {
 			autoLogin := f.autoSelectDropChannel(campaign)
 			if autoLogin != "" {
-				// Re-match after adding the temp channel
-				campaignChannelIDs = f.matchCampaignChannels(campaign)
+				// Direct lookup — don't re-match because game directory channels
+				// won't appear in campaign.Channels and matchCampaignChannels would miss them
+				f.mu.RLock()
+				if chID, ok := f.loginMap[autoLogin]; ok {
+					campaignChannelIDs[chID] = autoLogin
+				}
+				f.mu.RUnlock()
 			}
 		}
 
@@ -221,6 +226,11 @@ func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs map[string]bool) {
 		}
 		// Offline and not actively tracking a drop — dead weight
 		if !snap.IsOnline && !snap.HasActiveDrop {
+			staleChannels = append(staleChannels, chID)
+			continue
+		}
+		// Zombie: temp channel lost its campaign link and has no active drop
+		if snap.CampaignID == "" && !snap.HasActiveDrop {
 			staleChannels = append(staleChannels, chID)
 		}
 	}

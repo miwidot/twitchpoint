@@ -1,3 +1,13 @@
+== 2026-02-14 16:34 == Bugfix: Drop auto-select channels not tracked (v1.2.0-beta.4) ==
+
+Fixed critical bug where game-directory auto-selected channels were never recognized as drop channels.
+Root cause: matchCampaignChannels only checks campaign.Channels (allowed list), so channels found via
+game directory fallback were invisible to re-match, causing "Tracking N drop(s) across 0 channel(s)".
+
+- Replace re-match with direct loginMap lookup after auto-select (internal/farmer/drops.go)
+- Add zombie temp channel cleanup: remove temp channels with no campaign link and no active drop
+- Prevents accumulation of orphaned temp channels across cycles
+
 == 2026-02-13 20:48 == Feature: Enhanced Drop Miner (v1.2.0) ==
 
 Major upgrade to the drop mining system with auto-discovery, failover, and campaign management.
