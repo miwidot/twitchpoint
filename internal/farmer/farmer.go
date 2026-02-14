@@ -20,12 +20,13 @@ type LogEntry struct {
 
 // Farmer is the main orchestrator that ties GQL, PubSub, Spade, and IRC together.
 type Farmer struct {
-	cfg    *config.Config
-	gql    *twitch.GQLClient
-	pubsub *twitch.PubSubClient
-	spade  *twitch.SpadeTracker
-	irc    *twitch.IRCClient
-	events chan twitch.FarmerEvent
+	cfg     *config.Config
+	version string
+	gql     *twitch.GQLClient
+	pubsub  *twitch.PubSubClient
+	spade   *twitch.SpadeTracker
+	irc     *twitch.IRCClient
+	events  chan twitch.FarmerEvent
 
 	user *twitch.UserInfo
 
@@ -54,12 +55,16 @@ type Farmer struct {
 
 	// Drops
 	drops dropState
+
+	// Update checker
+	update updateState
 }
 
 // New creates a new Farmer from config.
-func New(cfg *config.Config) *Farmer {
+func New(cfg *config.Config, version string) *Farmer {
 	return &Farmer{
 		cfg:        cfg,
+		version:    version,
 		events:     make(chan twitch.FarmerEvent, 100),
 		channels:   make(map[string]*ChannelState),
 		loginMap:   make(map[string]string),
@@ -142,6 +147,9 @@ func (f *Farmer) Start() error {
 		f.addLog("Drop mining enabled — checking inventory every 10 min")
 		go f.dropCheckLoop()
 	}
+
+	// Start background update checker
+	go f.updateCheckLoop()
 
 	return nil
 }

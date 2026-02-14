@@ -405,6 +405,26 @@
         }
         .drops-toggle:checked { background: var(--green); }
         .drops-toggle:checked::after { left: 18px; background: var(--bg-dark); }
+        /* Update Banner */
+        .update-banner {
+            display: none;
+            background: rgba(255, 192, 0, 0.1);
+            border: 1px solid var(--yellow);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 24px;
+            color: var(--yellow);
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .update-banner.visible { display: block; }
+        .update-banner a {
+            color: var(--yellow);
+            text-decoration: underline;
+            font-weight: 600;
+        }
+        .update-banner a:hover { color: var(--text-primary); }
+
         tr.disabled-row td { opacity: 0.4; }
         tr.disabled-row:hover td { opacity: 0.6; }
         .campaign-progress {
@@ -449,6 +469,8 @@
                 <span class="user" id="user-info">Loading...</span>
             </div>
         </header>
+
+        <div class="update-banner" id="update-banner"></div>
 
         <div class="stats">
             <div class="stat-card">
@@ -575,9 +597,29 @@
                 document.getElementById('stat-channels').textContent =
                     `${data.channels_watching}/${data.channels_online}/${data.channels_total}`;
                 document.getElementById('stat-drops').textContent = data.active_drops || 0;
+                renderUpdateBanner(data);
             } catch (e) {
                 console.error('Failed to fetch stats:', e);
             }
+        }
+
+        function renderUpdateBanner(data) {
+            const banner = document.getElementById('update-banner');
+            if (!data.has_stable_update && !data.has_beta_update) {
+                banner.classList.remove('visible');
+                return;
+            }
+
+            const parts = [];
+            if (data.has_stable_update) {
+                parts.push(`<a href="${escapeHtml(data.stable_url)}" target="_blank" rel="noopener">v${escapeHtml(data.latest_stable)}</a> (stable)`);
+            }
+            if (data.has_beta_update) {
+                parts.push(`<a href="${escapeHtml(data.beta_url)}" target="_blank" rel="noopener">v${escapeHtml(data.latest_beta)}</a> (beta)`);
+            }
+
+            banner.innerHTML = 'New version available: ' + parts.join(' and ');
+            banner.classList.add('visible');
         }
 
         async function fetchChannels() {

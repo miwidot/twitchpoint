@@ -1,3 +1,21 @@
+== 2026-02-14 19:49 == Feature: Update notification system ==
+
+Background version checker that queries GitHub releases and compares semver.
+Shows a yellow update banner in both Web UI and TUI when a new version is available.
+- Beta users see both newer stable and newer beta releases
+- Stable users only see newer stable releases
+- Logs "[Update] New version available: ..." on first discovery
+- Checks after 10s on startup, then every 6 hours
+- Silent on error (retry next cycle)
+- New file: internal/farmer/update.go (parseVersion, compareVersions, updateCheckLoop, GetUpdateInfo)
+- Modified: internal/farmer/farmer.go (version field, New() signature, launch updateCheckLoop)
+- Modified: cmd/twitchpoint/main.go (pass appVersion to farmer.New)
+- Modified: internal/web/server.go (update fields in StatsResponse)
+- Modified: internal/web/static/index.html (yellow update banner below header)
+- Modified: internal/ui/styles.go (updateBannerStyle)
+- Modified: internal/ui/components.go (renderUpdateBanner)
+- Modified: internal/ui/app.go (wire banner between header and channel table)
+
 == 2026-02-14 19:37 == Bugfix: IRC not joining channels after connect (v1.2.0-beta.6) ==
 
 IRC JOINs were sent before the server confirmed authentication (end of MOTD).

@@ -16,7 +16,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/web"
 )
 
-const appVersion = "1.2.0-beta.6"
+const appVersion = "1.2.0-beta.8"
 
 func main() {
 	web.Version = appVersion
@@ -107,7 +107,7 @@ func main() {
 	}
 
 	// Start farmer
-	f := farmer.New(cfg)
+	f := farmer.New(cfg, appVersion)
 	if err := f.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start farmer: %v\n", err)
 		os.Exit(1)

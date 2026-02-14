@@ -81,6 +81,15 @@ type StatsResponse struct {
 	ChannelsWatching int    `json:"channels_watching"`
 	ChannelsTotal    int    `json:"channels_total"`
 	ActiveDrops      int    `json:"active_drops"`
+
+	// Update notification
+	HasStableUpdate bool   `json:"has_stable_update"`
+	HasBetaUpdate   bool   `json:"has_beta_update"`
+	LatestStable    string `json:"latest_stable,omitempty"`
+	LatestBeta      string `json:"latest_beta,omitempty"`
+	StableURL       string `json:"stable_url,omitempty"`
+	BetaURL         string `json:"beta_url,omitempty"`
+	IsBeta          bool   `json:"is_beta"`
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +100,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := s.farmer.GetStats()
 	user := s.farmer.GetUser()
+	update := s.farmer.GetUpdateInfo()
 
 	drops := s.farmer.GetActiveDrops()
 
@@ -105,6 +115,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		ChannelsWatching: stats.ChannelsWatching,
 		ChannelsTotal:    stats.ChannelsTotal,
 		ActiveDrops:      len(drops),
+
+		HasStableUpdate: update.HasStableUpdate,
+		HasBetaUpdate:   update.HasBetaUpdate,
+		LatestStable:    update.LatestStable,
+		LatestBeta:      update.LatestBeta,
+		StableURL:       update.StableURL,
+		BetaURL:         update.BetaURL,
+		IsBeta:          update.IsBeta,
 	}
 
 	jsonResponse(w, resp)

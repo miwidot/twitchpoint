@@ -189,6 +189,15 @@ func (m Model) View() string {
 	sections = append(sections, renderHeader(username, uptime))
 	sections = append(sections, "") // spacer
 
+	// Update banner (if available)
+	updateInfo := m.farmer.GetUpdateInfo()
+	updateBanner := renderUpdateBanner(updateInfo)
+	hasUpdateBanner := updateBanner != ""
+	if hasUpdateBanner {
+		sections = append(sections, updateBanner)
+		sections = append(sections, "") // spacer
+	}
+
 	// Channel table
 	channels := m.farmer.GetChannels()
 	sections = append(sections, renderChannelTable(channels, m.width))
@@ -203,6 +212,9 @@ func (m Model) View() string {
 		len(channels) + 2 + // table header + rows
 		3 + // stats bar
 		3 // help bar + input
+	if hasUpdateBanner {
+		usedHeight += 2 // banner + spacer
+	}
 	logHeight := m.height - usedHeight
 	if logHeight < 5 {
 		logHeight = 5

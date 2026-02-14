@@ -232,3 +232,21 @@ func formatTimeAgo(t time.Time) string {
 	}
 	return fmt.Sprintf("%dh ago", int(d.Hours()))
 }
+
+// renderUpdateBanner renders a yellow update notification line.
+func renderUpdateBanner(info farmer.UpdateInfo) string {
+	if !info.HasStableUpdate && !info.HasBetaUpdate {
+		return ""
+	}
+
+	var parts []string
+	if info.HasStableUpdate {
+		parts = append(parts, fmt.Sprintf("v%s (stable)", info.LatestStable))
+	}
+	if info.HasBetaUpdate {
+		parts = append(parts, fmt.Sprintf("v%s (beta)", info.LatestBeta))
+	}
+
+	text := fmt.Sprintf("  New version available: %s", strings.Join(parts, " and "))
+	return updateBannerStyle.Render(text)
+}

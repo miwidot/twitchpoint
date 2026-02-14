@@ -84,4 +84,9 @@ var (
 	helpKeyStyle = lipgloss.NewStyle().
 			Foreground(colorPurple).
 			Bold(true)
+
+	// Update banner
+	updateBannerStyle = lipgloss.NewStyle().
+				Foreground(colorYellow).
+				Bold(true)
 )
