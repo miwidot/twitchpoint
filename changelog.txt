@@ -1,3 +1,9 @@
+== 2026-02-15 01:02 == Bugfix: Drop assigned to multiple channels instead of one (v1.2.0-beta.10) ==
+
+All matching channels got P0 + drop info for the same drop, wasting Spade slots.
+Now picks only the single best channel per drop (watching > online > offline, permanent preferred).
+- internal/farmer/drops.go (processDrops channel selection logic)
+
 == 2026-02-15 00:05 == Tweak: Reduce drop check interval to 5 min (v1.2.0-beta.9) ==
 
 Drop inventory check reduced from 10 min to 5 min for faster claim detection.

@@ -131,28 +131,48 @@ func (f *Farmer) processDrops() {
 				continue
 			}
 
-			// Find which configured channel matches this campaign
-			matchedLogin := ""
+			// Pick the single best channel for this drop:
+			// watching > online > offline, prefer non-temporary
+			bestChID := ""
+			bestLogin := ""
+			bestScore := -1
 			isAutoSelected := false
-			for chID, login := range campaignChannelIDs {
-				activeDropChannels[chID] = true
-				if matchedLogin == "" {
-					matchedLogin = login
-					// Check if this is a temporary (auto-selected) channel
-					f.mu.RLock()
-					if ch, ok := f.channels[chID]; ok {
-						isAutoSelected = ch.Snapshot().IsTemporary
-					}
-					f.mu.RUnlock()
-				}
 
-				// Update channel state with drop info and campaign ID
+			f.mu.RLock()
+			for chID, login := range campaignChannelIDs {
+				ch, ok := f.channels[chID]
+				if !ok {
+					continue
+				}
+				snap := ch.Snapshot()
+				score := 0
+				if snap.IsOnline {
+					score = 1
+				}
+				if snap.IsWatching {
+					score = 2
+				}
+				// Prefer non-temporary channels at equal score
+				if !snap.IsTemporary && score == bestScore {
+					score++
+				}
+				if score > bestScore {
+					bestScore = score
+					bestChID = chID
+					bestLogin = login
+				}
+			}
+			f.mu.RUnlock()
+
+			if bestChID != "" {
+				activeDropChannels[bestChID] = true
 				f.mu.RLock()
-				if ch, ok := f.channels[chID]; ok {
+				if ch, ok := f.channels[bestChID]; ok {
 					ch.SetDropInfo(dropName, drop.CurrentMinutesWatched, drop.RequiredMinutesWatched)
 					ch.mu.Lock()
 					ch.CampaignID = campaign.ID
 					ch.mu.Unlock()
+					isAutoSelected = ch.Snapshot().IsTemporary
 				}
 				f.mu.RUnlock()
 			}
@@ -162,7 +182,7 @@ func (f *Farmer) processDrops() {
 				CampaignName:   campaign.Name,
 				GameName:       campaign.GameName,
 				DropName:       dropName,
-				ChannelLogin:   matchedLogin,
+				ChannelLogin:   bestLogin,
 				Progress:       drop.CurrentMinutesWatched,
 				Required:       drop.RequiredMinutesWatched,
 				Percent:        drop.ProgressPercent(),
