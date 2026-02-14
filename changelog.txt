@@ -6,6 +6,13 @@ Twitch TMI silently drops JOINs received before auth is complete.
 - Add "[IRC] Joined N channel(s)" log message for visibility
 - internal/twitch/irc.go
 
+== 2026-02-14 16:47 == Chore: Reverted binary names (v1.2.0-beta.5) ==
+
+Reverted release binary names back to original naming convention:
+- twitchpoint-darwin-arm64 → twitchpoint-macos
+- twitchpoint-linux-amd64 → twitchpoint-linux
+- twitchpoint-windows-amd64.exe → twitchpoint-windows.exe
+
 == 2026-02-14 16:43 == Bugfix: Spade heartbeat retry on timeout (v1.2.0-beta.4) ==
 
 Added retry logic to Spade heartbeats. Previously, a network timeout meant a lost minute-watched event
