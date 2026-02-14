@@ -46,7 +46,7 @@ func (f *Farmer) dropCheckLoop() {
 		return
 	}
 
-	ticker := time.NewTicker(10 * time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	for {

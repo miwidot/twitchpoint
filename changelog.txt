@@ -1,3 +1,9 @@
+== 2026-02-15 00:05 == Tweak: Reduce drop check interval to 5 min (v1.2.0-beta.9) ==
+
+Drop inventory check reduced from 10 min to 5 min for faster claim detection.
+- internal/farmer/drops.go
+- internal/farmer/farmer.go (log message)
+
 == 2026-02-14 19:49 == Feature: Update notification system ==
 
 Background version checker that queries GitHub releases and compares semver.
