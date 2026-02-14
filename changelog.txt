@@ -1,3 +1,9 @@
+== 2026-02-14 16:43 == Bugfix: Spade heartbeat retry on timeout (v1.2.0-beta.4) ==
+
+Added retry logic to Spade heartbeats. Previously, a network timeout meant a lost minute-watched event
+with no recovery. Now retries up to 2 times with incremental backoff (3s, 6s) before giving up.
+- internal/twitch/spade.go: retry loop in sendHeartbeat with backoff
+
 == 2026-02-14 16:34 == Bugfix: Drop auto-select channels not tracked (v1.2.0-beta.4) ==
 
 Fixed critical bug where game-directory auto-selected channels were never recognized as drop channels.

@@ -167,6 +167,8 @@ func (s *SpadeTracker) heartbeatLoop(ch *spadeChannel) {
 	}
 }
 
+const heartbeatMaxRetries = 2
+
 func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 	payload := []map[string]interface{}{
 		{
@@ -190,23 +192,35 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 	encoded := base64.StdEncoding.EncodeToString(jsonData)
 	body := url.Values{"data": {encoded}}.Encode()
 
-	req, err := http.NewRequest("POST", s.spadeURL, strings.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", browserUserAgent)
+	for attempt := range heartbeatMaxRetries + 1 {
+		req, err := http.NewRequest("POST", s.spadeURL, strings.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("User-Agent", browserUserAgent)
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		s.log("[Spade] heartbeat failed for %s: %v", ch.channelLogin, err)
-		return
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			if attempt < heartbeatMaxRetries {
+				time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
+				continue
+			}
+			s.log("[Spade] heartbeat failed for %s after %d attempts: %v", ch.channelLogin, attempt+1, err)
+			return
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		s.log("[Spade] heartbeat for %s returned HTTP %d", ch.channelLogin, resp.StatusCode)
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+			return
+		}
+		if attempt < heartbeatMaxRetries {
+			time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
+			continue
+		}
+		s.log("[Spade] heartbeat for %s returned HTTP %d after %d attempts", ch.channelLogin, resp.StatusCode, attempt+1)
+		return
 	}
 }
 
