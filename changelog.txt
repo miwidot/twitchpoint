@@ -1,3 +1,11 @@
+== 2026-02-14 19:37 == Bugfix: IRC not joining channels after connect (v1.2.0-beta.6) ==
+
+IRC JOINs were sent before the server confirmed authentication (end of MOTD).
+Twitch TMI silently drops JOINs received before auth is complete.
+- Move channel joining to handleLine: trigger rejoinAll() on 376 (end of MOTD)
+- Add "[IRC] Joined N channel(s)" log message for visibility
+- internal/twitch/irc.go
+
 == 2026-02-14 16:43 == Bugfix: Spade heartbeat retry on timeout (v1.2.0-beta.4) ==
 
 Added retry logic to Spade heartbeats. Previously, a network timeout meant a lost minute-watched event

@@ -125,18 +125,7 @@ func (c *IRCClient) connect() error {
 
 	c.log("[IRC] Connected as %s", c.username)
 
-	// Rejoin all channels
-	c.mu.Lock()
-	channels := make([]string, 0, len(c.channels))
-	for ch := range c.channels {
-		channels = append(channels, ch)
-	}
-	c.mu.Unlock()
-
-	for _, ch := range channels {
-		c.joinChannel(ch)
-	}
-
+	// Channels are joined after server confirms auth (376 = end of MOTD) in handleLine
 	return nil
 }
 
@@ -189,13 +178,29 @@ func (c *IRCClient) handleLine(line string) {
 	// Log auth failures
 	if strings.Contains(line, "Login authentication failed") {
 		c.log("[IRC] Authentication failed - check token")
+		return
 	}
 
-	// Log successful joins (optional, for debugging)
-	// Format: :username!username@username.tmi.twitch.tv JOIN #channel
-	if strings.Contains(line, " JOIN #") {
-		// Successfully joined
+	// Server confirmed auth (end of MOTD) — now join all tracked channels
+	if strings.Contains(line, " 376 ") {
+		c.rejoinAll()
+		return
 	}
+}
+
+// rejoinAll sends JOIN for every channel in the tracked map.
+func (c *IRCClient) rejoinAll() {
+	c.mu.Lock()
+	channels := make([]string, 0, len(c.channels))
+	for ch := range c.channels {
+		channels = append(channels, ch)
+	}
+	c.mu.Unlock()
+
+	for _, ch := range channels {
+		c.joinChannel(ch)
+	}
+	c.log("[IRC] Joined %d channel(s)", len(channels))
 }
 
 func (c *IRCClient) send(msg string) error {
