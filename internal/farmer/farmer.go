@@ -50,6 +50,9 @@ type Farmer struct {
 	seenClaims map[string]time.Time // claimID -> when we attempted
 	seenRaids  map[string]time.Time // raidID -> when we attempted
 
+	// Name cache for untracked channels (PubSub fires for all channels user watches)
+	nameCache map[string]string // channelID -> displayName
+
 	// Rotation
 	rotationIndex int // which pair of channels is currently being watched
 
@@ -69,6 +72,7 @@ func New(cfg *config.Config, version string) *Farmer {
 		channels:   make(map[string]*ChannelState),
 		loginMap:   make(map[string]string),
 		seenClaims: make(map[string]time.Time),
+		nameCache:  make(map[string]string),
 		seenRaids:  make(map[string]time.Time),
 		stopCh:     make(chan struct{}),
 	}
@@ -502,16 +506,13 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 		// Resolve channel name
 		channelName := evt.ChannelID
-		f.mu.RLock()
-		var claimCh *ChannelState
-		for _, c := range f.channels {
-			if c.ChannelID == evt.ChannelID {
-				claimCh = c
-				channelName = c.DisplayName
-				break
-			}
+		claimCh := ch // from top-level lookup
+		if ok {
+			channelName = ch.DisplayName
+		} else {
+			// Untracked channel — check name cache or resolve via GQL
+			channelName = f.resolveChannelName(evt.ChannelID)
 		}
-		f.mu.RUnlock()
 
 		// Attempt claim with retry
 		go func() {
@@ -987,6 +988,29 @@ func (f *Farmer) writeLogFile(msg string) {
 	}
 	line := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
 	f.logFile.WriteString(line)
+}
+
+// resolveChannelName looks up a channel name by ID for untracked channels.
+// Uses a simple cache to avoid repeated GQL calls.
+func (f *Farmer) resolveChannelName(channelID string) string {
+	f.mu.RLock()
+	if name, ok := f.nameCache[channelID]; ok {
+		f.mu.RUnlock()
+		return name
+	}
+	f.mu.RUnlock()
+
+	// GQL lookup by channel ID
+	name, err := f.gql.GetChannelNameByID(channelID)
+	if err != nil || name == "" {
+		return channelID // fallback to raw ID
+	}
+
+	f.mu.Lock()
+	f.nameCache[channelID] = name
+	f.mu.Unlock()
+
+	return name
 }
 
 // GetUser returns the authenticated user info.

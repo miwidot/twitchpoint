@@ -41,6 +41,10 @@ const (
 		}
 	}`
 
+	queryGetChannelNameByID = `query GetChannelNameByID($id: ID!) {
+		user(id: $id) { displayName }
+	}`
+
 	queryChannelPointsBalance = `query ChannelPointsContext($channelLogin: String!) {
 		community(name: $channelLogin) {
 			channel {
@@ -237,6 +241,33 @@ func (g *GQLClient) GetChannelInfo(login string) (*ChannelInfo, error) {
 	}
 
 	return info, nil
+}
+
+// GetChannelNameByID resolves a channel's display name from its ID.
+func (g *GQLClient) GetChannelNameByID(channelID string) (string, error) {
+	req := &GQLRequest{
+		Query: queryGetChannelNameByID,
+		Variables: map[string]interface{}{
+			"id": channelID,
+		},
+	}
+
+	resp, err := g.do(req)
+	if err != nil {
+		return "", fmt.Errorf("get channel name: %w", err)
+	}
+
+	user, ok := resp.Data["user"]
+	if !ok || user == nil {
+		return "", fmt.Errorf("channel %s not found", channelID)
+	}
+
+	userMap, ok := user.(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("unexpected data format")
+	}
+
+	return getString(userMap, "displayName"), nil
 }
 
 // ClaimCommunityPoints claims a bonus chest.
