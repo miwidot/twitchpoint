@@ -1,3 +1,11 @@
+== 2026-02-16 12:13 == Improvement: Better first-run experience (v1.2.0-beta.13) ==
+
+Removed terminal channel prompt on first run — app starts directly into TUI/Web UI.
+Users add channels via UI instead (TUI: 'a' key, Web: "+ Add Channel" button).
+Web server now enabled by default for new and existing configs missing the field.
+- cmd/twitchpoint/main.go (removed channel prompt, removed bufio import)
+- internal/config/config.go (WebEnabled defaults to true)
+
 == 2026-02-15 23:38 == Bugfix: Claim log showing channel ID instead of name (v1.2.0-beta.12) ==
 
 Claims from untracked channels (via user-level PubSub) showed raw channel ID

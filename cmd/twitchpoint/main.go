@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"io"
@@ -16,7 +15,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/web"
 )
 
-const appVersion = "1.2.0-beta.12"
+const appVersion = "1.2.0-beta.13"
 
 func main() {
 	web.Version = appVersion
@@ -83,26 +82,6 @@ func main() {
 			log.Fatalf("Failed to save config: %v", err)
 		}
 		fmt.Printf("Token saved to %s\n", cfg.Path())
-		fmt.Println()
-	}
-
-	// Prompt for channels if none configured
-	if len(cfg.GetChannelLogins()) == 0 {
-		fmt.Println("No channels configured. Enter channel names (one per line, empty line to finish):")
-		scanner := bufio.NewScanner(os.Stdin)
-		for scanner.Scan() {
-			line := strings.TrimSpace(strings.ToLower(scanner.Text()))
-			if line == "" {
-				break
-			}
-			cfg.AddChannel(line)
-			fmt.Printf("  Added: %s\n", line)
-		}
-		if len(cfg.GetChannelLogins()) > 0 {
-			if err := cfg.Save(); err != nil {
-				log.Fatalf("Failed to save config: %v", err)
-			}
-		}
 		fmt.Println()
 	}
 

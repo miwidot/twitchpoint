@@ -49,6 +49,7 @@ func Load(path string) (*Config, error) {
 
 	cfg := &Config{
 		path:         path,
+		WebEnabled:   true, // default
 		WebPort:      8080, // default
 		IrcEnabled:   true, // default
 		DropsEnabled: true, // default
@@ -74,6 +75,9 @@ func Load(path string) (*Config, error) {
 	cfg.path = path
 
 	// Set defaults if not in file
+	if _, hasWebEnabled := raw["web_enabled"]; !hasWebEnabled {
+		cfg.WebEnabled = true
+	}
 	if _, hasPort := raw["web_port"]; !hasPort {
 		cfg.WebPort = 8080
 	}
