@@ -538,13 +538,17 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 	case twitch.EventPointsEarned:
 		data := evt.Data.(twitch.PointsData)
+		f.mu.Lock()
+		f.totalPointsEarned += data.PointsGained
+		f.mu.Unlock()
 		if ok {
 			ch.AddPointsEarned(data.PointsGained, data.TotalPoints)
-			f.mu.Lock()
-			f.totalPointsEarned += data.PointsGained
-			f.mu.Unlock()
 			f.addLog("+%d points on %s (%s) - Balance: %d",
 				data.PointsGained, ch.DisplayName, data.ReasonCode, data.TotalPoints)
+		} else {
+			channelName := f.resolveChannelName(evt.ChannelID)
+			f.addLog("+%d points on %s (%s) - Balance: %d",
+				data.PointsGained, channelName, data.ReasonCode, data.TotalPoints)
 		}
 
 	case twitch.EventStreamUp:

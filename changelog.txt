@@ -1,3 +1,9 @@
+== 2026-02-18 01:01 == Bugfix: Points from untracked channels not counted in stats (v1.2.0-beta.14) ==
+
+Points earned on channels not in the config (via user-level PubSub) were silently
+ignored. Now counted in totalPointsEarned and logged with resolved channel name.
+- internal/farmer/farmer.go (EventPointsEarned handler)
+
 == 2026-02-16 12:13 == Improvement: Better first-run experience (v1.2.0-beta.13) ==
 
 Removed terminal channel prompt on first run — app starts directly into TUI/Web UI.
