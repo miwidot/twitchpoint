@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/energye/systray"
 	"github.com/miwi/twitchpoint/internal/config"
 	"github.com/miwi/twitchpoint/internal/farmer"
@@ -43,14 +44,16 @@ func runUI(f *farmer.Farmer, cfg *config.Config) {
 	// Silence Go's default logger before TUI starts
 	log.SetOutput(io.Discard)
 
-	// Run bubbletea TUI (blocking, same as mac/linux)
-	if err := ui.Run(f); err != nil {
+	// Run bubbletea TUI — 'q' hides console instead of quitting.
+	// TUI stays running (hidden), tray keeps the app alive.
+	// Only "Quit" from tray actually exits (via os.Exit).
+	m := ui.NewModel(f)
+	m.OnQuit = hideConsole
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "UI error: %v\n", err)
 		os.Exit(1)
 	}
-
-	// TUI exited (user pressed 'q'), clean up tray
-	systray.Quit()
 }
 
 func startTray(f *farmer.Farmer, cfg *config.Config, webPort int) {

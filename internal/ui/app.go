@@ -27,6 +27,10 @@ type Model struct {
 	errMsg    string
 	errExpiry time.Time
 
+	// OnQuit is called when the user presses 'q'. If set, the TUI stays
+	// running instead of exiting (used on Windows to hide the console).
+	OnQuit func()
+
 	quitting bool
 }
 
@@ -106,6 +110,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Normal mode
 	switch msg.String() {
 	case "q", "ctrl+c":
+		if m.OnQuit != nil {
+			m.OnQuit()
+			return m, nil
+		}
 		m.quitting = true
 		m.farmer.Stop()
 		return m, tea.Quit
