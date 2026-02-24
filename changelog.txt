@@ -1,3 +1,11 @@
+== 2026-02-24 22:12 == Bugfix: Console X button kills process on Windows (v1.2.4) ==
+
+Clicking the X button on the console window terminated the entire process including
+the tray icon. Now intercepts CTRL_CLOSE_EVENT via SetConsoleCtrlHandler and hides
+the console instead — same behavior as pressing 'q' or clicking "Hide Console".
+- cmd/twitchpoint/console_windows.go (added setupConsoleCloseHandler)
+- cmd/twitchpoint/ui_windows.go (call setupConsoleCloseHandler on startup)
+
 == 2026-02-24 22:10 == Bugfix: Pressing 'q' in TUI kills tray and farmer on Windows (v1.2.3) ==
 
 On Windows, pressing 'q' in the TUI called f.Stop() and exited the program, taking

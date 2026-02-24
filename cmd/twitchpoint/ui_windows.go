@@ -22,6 +22,9 @@ import (
 var trayIcon []byte
 
 func runUI(f *farmer.Farmer, cfg *config.Config) {
+	// Intercept console X button — hide instead of terminate
+	setupConsoleCloseHandler()
+
 	webPort := cfg.WebPort
 	if webPort <= 0 {
 		webPort = 8080
