@@ -48,6 +48,8 @@ func toggleAutoStart() (enabled bool, err error) {
 	}
 	defer key.Close()
 
-	err = key.SetStringValue(autoStartValue, exePath)
+	// Quote the path — Windows parses Run values as command lines,
+	// so spaces in the path (e.g. "C:\Users\John Doe\...") break without quotes.
+	err = key.SetStringValue(autoStartValue, `"`+exePath+`"`)
 	return err == nil, err
 }
