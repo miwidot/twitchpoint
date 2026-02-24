@@ -1,3 +1,238 @@
+== 2026-02-24 19:49 == Release: v1.2.1 — Drops mining, Windows system tray, and more ==
+
+Major feature release combining the entire drops branch work.
+
+NEW FEATURES:
+- Twitch Drops mining: automatic inventory tracking, claiming, channel matching
+  by allowed list or game directory, auto-select live channels, failover on
+  offline/raid with 5min cooldown, campaign enable/disable from Web UI
+- Windows system tray: TUI + tray icon side-by-side, Hide/Show Console toggle,
+  Open Web UI, live stats in tray menu, Start with Windows auto-start (registry)
+- Update notification system: checks for new stable/beta releases
+- Web UI: Drop Campaigns table with toggle switch, TEMP/AUTO badges
+
+IMPROVEMENTS:
+- First-run experience: no more terminal channel prompt, starts straight into TUI
+- Web server enabled by default for new and existing configs
+- IRC retry logic for Spade heartbeats on network timeout
+- Points from untracked channels now counted in stats
+
+BUGFIXES:
+- Fix claim log showing channel ID instead of display name
+- Fix auto-select not triggering when matched channels are offline
+- Fix drop assigned to multiple channels instead of one
+- Fix offline temp channels not being cleaned up
+- Fix IRC not joining channels after connect
+
+== 2026-02-18 01:01 == Bugfix: Points from untracked channels not counted in stats (v1.2.0-beta.14) ==
+
+Points earned on channels not in the config (via user-level PubSub) were silently
+ignored. Now counted in totalPointsEarned and logged with resolved channel name.
+- internal/farmer/farmer.go (EventPointsEarned handler)
+
+== 2026-02-16 12:13 == Improvement: Better first-run experience (v1.2.0-beta.13) ==
+
+Removed terminal channel prompt on first run — app starts directly into TUI/Web UI.
+Users add channels via UI instead (TUI: 'a' key, Web: "+ Add Channel" button).
+Web server now enabled by default for new and existing configs missing the field.
+- cmd/twitchpoint/main.go (removed channel prompt, removed bufio import)
+- internal/config/config.go (WebEnabled defaults to true)
+
+== 2026-02-15 23:38 == Bugfix: Claim log showing channel ID instead of name (v1.2.0-beta.12) ==
+
+Claims from untracked channels (via user-level PubSub) showed raw channel ID
+instead of display name. Now resolves name via GQL and caches it.
+- internal/farmer/farmer.go (nameCache, resolveChannelName, claim handler)
+- internal/twitch/gql.go (GetChannelNameByID query)
+
+== 2026-02-15 03:37 == Bugfix: Auto-select not triggering when matched channels are offline (v1.2.0-beta.11) ==
+
+Auto-select for drop channels only triggered when zero channels matched a campaign.
+Now also triggers when matched channels exist but are ALL offline, so a live temp
+channel gets created from the allowed list or game directory.
+- internal/farmer/drops.go (processDrops auto-select condition)
+
+== 2026-02-15 01:02 == Bugfix: Drop assigned to multiple channels instead of one (v1.2.0-beta.10) ==
+
+All matching channels got P0 + drop info for the same drop, wasting Spade slots.
+Now picks only the single best channel per drop (watching > online > offline, permanent preferred).
+- internal/farmer/drops.go (processDrops channel selection logic)
+
+== 2026-02-15 00:05 == Tweak: Reduce drop check interval to 5 min (v1.2.0-beta.9) ==
+
+Drop inventory check reduced from 10 min to 5 min for faster claim detection.
+- internal/farmer/drops.go
+- internal/farmer/farmer.go (log message)
+
+== 2026-02-14 19:49 == Feature: Update notification system ==
+
+Background version checker that queries GitHub releases and compares semver.
+Shows a yellow update banner in both Web UI and TUI when a new version is available.
+- Beta users see both newer stable and newer beta releases
+- Stable users only see newer stable releases
+- Logs "[Update] New version available: ..." on first discovery
+- Checks after 10s on startup, then every 6 hours
+- Silent on error (retry next cycle)
+- New file: internal/farmer/update.go (parseVersion, compareVersions, updateCheckLoop, GetUpdateInfo)
+- Modified: internal/farmer/farmer.go (version field, New() signature, launch updateCheckLoop)
+- Modified: cmd/twitchpoint/main.go (pass appVersion to farmer.New)
+- Modified: internal/web/server.go (update fields in StatsResponse)
+- Modified: internal/web/static/index.html (yellow update banner below header)
+- Modified: internal/ui/styles.go (updateBannerStyle)
+- Modified: internal/ui/components.go (renderUpdateBanner)
+- Modified: internal/ui/app.go (wire banner between header and channel table)
+
+== 2026-02-14 19:37 == Bugfix: IRC not joining channels after connect (v1.2.0-beta.6) ==
+
+IRC JOINs were sent before the server confirmed authentication (end of MOTD).
+Twitch TMI silently drops JOINs received before auth is complete.
+- Move channel joining to handleLine: trigger rejoinAll() on 376 (end of MOTD)
+- Add "[IRC] Joined N channel(s)" log message for visibility
+- internal/twitch/irc.go
+
+== 2026-02-14 16:47 == Chore: Reverted binary names (v1.2.0-beta.5) ==
+
+Reverted release binary names back to original naming convention:
+- twitchpoint-darwin-arm64 → twitchpoint-macos
+- twitchpoint-linux-amd64 → twitchpoint-linux
+- twitchpoint-windows-amd64.exe → twitchpoint-windows.exe
+
+== 2026-02-14 16:43 == Bugfix: Spade heartbeat retry on timeout (v1.2.0-beta.4) ==
+
+Added retry logic to Spade heartbeats. Previously, a network timeout meant a lost minute-watched event
+with no recovery. Now retries up to 2 times with incremental backoff (3s, 6s) before giving up.
+- internal/twitch/spade.go: retry loop in sendHeartbeat with backoff
+
+== 2026-02-14 16:34 == Bugfix: Drop auto-select channels not tracked (v1.2.0-beta.4) ==
+
+Fixed critical bug where game-directory auto-selected channels were never recognized as drop channels.
+Root cause: matchCampaignChannels only checks campaign.Channels (allowed list), so channels found via
+game directory fallback were invisible to re-match, causing "Tracking N drop(s) across 0 channel(s)".
+
+- Replace re-match with direct loginMap lookup after auto-select (internal/farmer/drops.go)
+- Add zombie temp channel cleanup: remove temp channels with no campaign link and no active drop
+- Prevents accumulation of orphaned temp channels across cycles
+
+== 2026-02-13 20:48 == Feature: Enhanced Drop Miner (v1.2.0) ==
+
+Major upgrade to the drop mining system with auto-discovery, failover, and campaign management.
+
+Expired Campaign Cleanup:
+- Campaigns past their EndAt timestamp are now skipped during processDrops()
+- Prevents wasting Spade slots on stale data returned by Twitch's inventory API
+
+Temporary Channel Infrastructure:
+- New IsTemporary and CampaignID fields on ChannelState/ChannelSnapshot
+- addTemporaryChannel(): adds a channel for drop tracking without saving to config
+- removeTemporaryChannel(): cleans up PubSub/IRC/Spade without touching config
+- RemoveChannelLive() delegates to temp removal for temporary channels
+- AddChannelLive() promotes a temporary channel to permanent if user adds it manually
+- Stale temporary channels (campaign ended/disabled) are auto-removed each cycle
+
+Drop Channel Failover:
+- handleDropFailover() triggers when a drop channel goes offline or raids to untracked channel
+- 5-minute cooldown per campaign to prevent rapid channel cycling
+- Failover strategy: try existing online channels → allowed channels → game directory
+- EventStreamDown handler triggers failover if channel had active drop
+- EventRaid handler triggers failover if source had active drop and target untracked
+- Cooldown map cleaned periodically (entries > 30 min removed)
+
+Auto-Select Streamers:
+- New GQL query: GetGameStreams() — queries Twitch game directory for live streams
+- When matchCampaignChannels() returns empty, auto-select kicks in:
+  1. Try campaign's allowed channel list (check each via GetChannelInfo)
+  2. Fall back to game directory (query top 10 streams)
+- Found channels added as temporary with 200ms rate limiting between GQL calls
+- findLiveFromAllowedChannels() and findLiveFromGameDirectory() helpers
+
+Campaign Preferences (Enable/Disable):
+- Config: DisabledCampaigns []string (omitempty, no migration needed)
+- IsCampaignDisabled() and SetCampaignEnabled() on Config
+- SetCampaignEnabled() on Farmer wraps config save + triggers re-evaluation
+- Disabled campaigns skipped in processDrops() before any processing
+- API: PUT /api/drops/{campaignID}/toggle with {"enabled": true/false}
+
+Web UI — Drop Campaigns Table:
+- New "Drop Campaigns" section between channels table and event log
+- Columns: Enabled (toggle switch), Campaign, Game, Drop, Progress (bar), Channel, Expires
+- Toggle switch calls PUT /api/drops/{id}/toggle to enable/disable campaigns
+- Auto-selected channels show "AUTO" badge
+- Disabled campaigns shown grayed out (opacity 0.4)
+- Campaign expires shown as "Xd left" or "Xh left" (red if < 24h)
+- Section hidden when no active drops
+
+Web UI — Temporary Channel Badges:
+- "TEMP" badge (purple) shown next to auto-added channel names
+- "Auto" badge replaces "Remove" button for temporary channels
+- Temporary channels cannot be removed via UI (auto-managed by drop system)
+
+Terminal UI:
+- "[TEMP]" suffix shown next to channel name for temporary channels
+
+ActiveDrop struct enhanced with: CampaignID, EndAt, IsAutoSelected, IsEnabled
+
+Files modified: internal/farmer/drops.go, internal/farmer/farmer.go,
+  internal/farmer/channel.go, internal/twitch/gql.go, internal/twitch/types.go,
+  internal/config/config.go, internal/web/server.go, internal/web/static/index.html,
+  internal/ui/components.go
+
+== 2026-02-13 02:53 == Feature: Twitch Drops Mining (v1.2.0-beta) ==
+
+What are Twitch Drops?
+  Twitch Drops are game-specific rewards (in-game items, skins, emotes, etc.) that
+  players earn by watching eligible streams for a required amount of time. Normally
+  you must manually find a drops-enabled stream, watch it long enough, and then
+  click "Claim" on twitch.tv. TwitchPoint now automates this entire process.
+
+How it works:
+  1. Every 10 minutes, TwitchPoint queries your Twitch inventory for active drop campaigns
+  2. For each campaign, it matches the allowed channels (or game category) against
+     your configured channel list — it will NOT add unknown channels
+  3. Matched channels are auto-promoted to P0 priority (highest), guaranteeing them
+     a Spade heartbeat slot so watch minutes accumulate
+  4. When a drop reaches 100% completion, it is automatically claimed via GQL mutation
+  5. Once claimed (or the campaign ends), P0 is removed and the channel reverts to
+     its normal priority (P1/P2)
+
+Prerequisites:
+  - drops_enabled: true in config (default)
+  - Your Twitch account must be linked to the game account on the publisher's website
+    (e.g., link Riot account for Valorant drops, link Steam for CS2 drops)
+  - The channels streaming the drop-enabled game must be in your configured channel list
+
+Priority system:
+  P0 (drop active, auto-assigned) → P1 (always watch) → P2 (rotate every 5 min)
+  P0 is temporary and fully automatic — no user action needed.
+
+Changes:
+- GQL: Inventory query to fetch active campaigns with progress per drop
+- GQL: DropsPage_ClaimDropRewards mutation to auto-claim completed drops
+- Farmer: dropCheckLoop() — 30s initial delay, then polls every 10 min
+- Farmer: processDrops() — matches campaigns to channels, updates P0, auto-claims
+- Farmer: rotateChannels() now has P0 tier (fills Spade slots before P1/P2)
+- Config: drops_enabled (bool, default: true) with auto-migration for existing configs
+- Terminal UI: P0 badge (green) in priority column, drop progress % in game column,
+  "Drops: N" counter in stats bar
+- Web UI: Active Drops stat card, P0 legend, green progress bar in channel table,
+  P0 priority button (non-clickable, auto-assigned)
+- API: GET /api/drops — returns all active drops with campaign, game, channel, progress
+- API: /api/channels — new fields: has_active_drop, drop_name, drop_progress, drop_required
+- API: /api/stats — new field: active_drops
+- Files added: internal/twitch/drops.go, internal/farmer/drops.go
+- Files modified: internal/farmer/channel.go, internal/farmer/farmer.go,
+  internal/config/config.go, internal/ui/components.go, internal/ui/styles.go,
+  internal/web/server.go, internal/web/static/index.html
+
+== 2026-02-13 02:53 == Fix: Quit button deadlock (q key unresponsive) ==
+
+- Fixed deadlock in IRC.Close() — mutex was held while calling send() which tried
+  to acquire the same mutex again (Go mutexes are not reentrant)
+- Root cause: Close() locked c.mu, then called c.send("QUIT") which also locks c.mu → deadlock
+- Fix: extract conn/writer references under lock, release lock, then send QUIT and close outside
+- This caused the TUI to freeze when pressing 'q' or Ctrl+C, requiring kill -9 to terminate
+- Pre-existing bug, not caused by drops changes
+- Files modified: internal/twitch/irc.go
+
 == 2026-02-10 19:03 == Feature: Version number in Web UI ==
 
 - Added version display in web UI header (e.g. "TwitchPoint Farmer v1.1.2")

@@ -42,6 +42,8 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/channels", s.handleChannels)
 	s.mux.HandleFunc("/api/channels/", s.handleChannel)
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
+	s.mux.HandleFunc("/api/drops", s.handleDrops)
+	s.mux.HandleFunc("/api/drops/", s.handleDropAction)
 
 	// Static files (embedded)
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -78,6 +80,16 @@ type StatsResponse struct {
 	ChannelsOnline   int    `json:"channels_online"`
 	ChannelsWatching int    `json:"channels_watching"`
 	ChannelsTotal    int    `json:"channels_total"`
+	ActiveDrops      int    `json:"active_drops"`
+
+	// Update notification
+	HasStableUpdate bool   `json:"has_stable_update"`
+	HasBetaUpdate   bool   `json:"has_beta_update"`
+	LatestStable    string `json:"latest_stable,omitempty"`
+	LatestBeta      string `json:"latest_beta,omitempty"`
+	StableURL       string `json:"stable_url,omitempty"`
+	BetaURL         string `json:"beta_url,omitempty"`
+	IsBeta          bool   `json:"is_beta"`
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +100,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := s.farmer.GetStats()
 	user := s.farmer.GetUser()
+	update := s.farmer.GetUpdateInfo()
+
+	drops := s.farmer.GetActiveDrops()
 
 	resp := StatsResponse{
 		Version:          Version,
@@ -99,6 +114,15 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		ChannelsOnline:   stats.ChannelsOnline,
 		ChannelsWatching: stats.ChannelsWatching,
 		ChannelsTotal:    stats.ChannelsTotal,
+		ActiveDrops:      len(drops),
+
+		HasStableUpdate: update.HasStableUpdate,
+		HasBetaUpdate:   update.HasBetaUpdate,
+		LatestStable:    update.LatestStable,
+		LatestBeta:      update.LatestBeta,
+		StableURL:       update.StableURL,
+		BetaURL:         update.BetaURL,
+		IsBeta:          update.IsBeta,
 	}
 
 	jsonResponse(w, resp)
@@ -106,17 +130,22 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 // ChannelResponse is a channel in the /api/channels response.
 type ChannelResponse struct {
-	Login       string `json:"login"`
-	DisplayName string `json:"display_name"`
-	ChannelID   string `json:"channel_id"`
-	Priority    int    `json:"priority"`
-	IsOnline    bool   `json:"is_online"`
-	IsWatching  bool   `json:"is_watching"`
-	GameName    string `json:"game_name"`
-	ViewerCount int    `json:"viewer_count"`
-	Balance     int    `json:"balance"`
-	Earned      int    `json:"earned"`
-	Claims      int    `json:"claims"`
+	Login         string `json:"login"`
+	DisplayName   string `json:"display_name"`
+	ChannelID     string `json:"channel_id"`
+	Priority      int    `json:"priority"`
+	IsOnline      bool   `json:"is_online"`
+	IsWatching    bool   `json:"is_watching"`
+	GameName      string `json:"game_name"`
+	ViewerCount   int    `json:"viewer_count"`
+	Balance       int    `json:"balance"`
+	Earned        int    `json:"earned"`
+	Claims        int    `json:"claims"`
+	HasActiveDrop bool   `json:"has_active_drop"`
+	DropName      string `json:"drop_name,omitempty"`
+	DropProgress  int    `json:"drop_progress"`
+	DropRequired  int    `json:"drop_required"`
+	IsTemporary   bool   `json:"is_temporary"`
 }
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
@@ -126,17 +155,22 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		resp := make([]ChannelResponse, len(channels))
 		for i, ch := range channels {
 			resp[i] = ChannelResponse{
-				Login:       ch.Login,
-				DisplayName: ch.DisplayName,
-				ChannelID:   ch.ChannelID,
-				Priority:    ch.Priority,
-				IsOnline:    ch.IsOnline,
-				IsWatching:  ch.IsWatching,
-				GameName:    ch.GameName,
-				ViewerCount: ch.ViewerCount,
-				Balance:     ch.PointsBalance,
-				Earned:      ch.PointsEarnedSession,
-				Claims:      ch.ClaimsMade,
+				Login:         ch.Login,
+				DisplayName:   ch.DisplayName,
+				ChannelID:     ch.ChannelID,
+				Priority:      ch.Priority,
+				IsOnline:      ch.IsOnline,
+				IsWatching:    ch.IsWatching,
+				GameName:      ch.GameName,
+				ViewerCount:   ch.ViewerCount,
+				Balance:       ch.PointsBalance,
+				Earned:        ch.PointsEarnedSession,
+				Claims:        ch.ClaimsMade,
+				HasActiveDrop: ch.HasActiveDrop,
+				DropName:      ch.DropName,
+				DropProgress:  ch.DropProgress,
+				DropRequired:  ch.DropRequired,
+				IsTemporary:   ch.IsTemporary,
 			}
 		}
 		jsonResponse(w, resp)
@@ -247,6 +281,50 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, resp)
+}
+
+func (s *Server) handleDrops(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	drops := s.farmer.GetActiveDrops()
+	if drops == nil {
+		drops = []farmer.ActiveDrop{}
+	}
+	jsonResponse(w, drops)
+}
+
+func (s *Server) handleDropAction(w http.ResponseWriter, r *http.Request) {
+	// Extract campaignID and action from path: /api/drops/{campaignID}/toggle
+	path := strings.TrimPrefix(r.URL.Path, "/api/drops/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] != "toggle" {
+		jsonError(w, "invalid path, expected /api/drops/{campaignID}/toggle", http.StatusBadRequest)
+		return
+	}
+	campaignID := parts[0]
+
+	if r.Method != http.MethodPut {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.farmer.SetCampaignEnabled(campaignID, req.Enabled); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]interface{}{"status": "ok", "campaign_id": campaignID, "enabled": req.Enabled})
 }
 
 func formatDuration(d time.Duration) string {

@@ -1,5 +1,6 @@
 bin/
-twitchpoint
+/twitchpoint
+/twitchpoint.exe
 config.json
 config/config.json
 *.log

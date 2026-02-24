@@ -49,6 +49,10 @@ var (
 	watchingStyle = lipgloss.NewStyle().
 			Foreground(colorCyan)
 
+	dropStyle = lipgloss.NewStyle().
+			Foreground(colorGreen).
+			Bold(true)
+
 	// Stats bar
 	statsBarStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -80,4 +84,9 @@ var (
 	helpKeyStyle = lipgloss.NewStyle().
 			Foreground(colorPurple).
 			Bold(true)
+
+	// Update banner
+	updateBannerStyle = lipgloss.NewStyle().
+				Foreground(colorYellow).
+				Bold(true)
 )

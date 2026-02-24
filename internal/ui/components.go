@@ -53,7 +53,9 @@ func renderChannelTable(channels []farmer.ChannelSnapshot, width int) string {
 	var rows []string
 	for _, ch := range channels {
 		pri := subtitleStyle.Render("P2")
-		if ch.Priority == 1 {
+		if ch.HasActiveDrop {
+			pri = dropStyle.Render("P0")
+		} else if ch.Priority == 1 {
 			pri = statValueStyle.Render("P1")
 		}
 
@@ -68,6 +70,10 @@ func renderChannelTable(channels []farmer.ChannelSnapshot, width int) string {
 		}
 
 		game := ch.GameName
+		if ch.HasActiveDrop && ch.DropRequired > 0 {
+			pct := (ch.DropProgress * 100) / ch.DropRequired
+			game = fmt.Sprintf("%s %d%%", ch.GameName, pct)
+		}
 		if len(game) > gameW {
 			game = game[:gameW-2] + ".."
 		}
@@ -76,6 +82,9 @@ func renderChannelTable(channels []farmer.ChannelSnapshot, width int) string {
 		}
 
 		name := ch.DisplayName
+		if ch.IsTemporary {
+			name = ch.DisplayName + " [TEMP]"
+		}
 		if len(name) > nameW {
 			name = name[:nameW-2] + ".."
 		}
@@ -124,6 +133,7 @@ func renderStatsBar(stats farmer.Stats, width int) string {
 		statLabelStyle.Render("Claims: ") + statValueStyle.Render(fmt.Sprintf("%d", stats.TotalClaimsMade)),
 		statLabelStyle.Render("Online: ") + statValueStyle.Render(fmt.Sprintf("%d/%d", stats.ChannelsOnline, stats.ChannelsTotal)),
 		statLabelStyle.Render("Watching: ") + statValueStyle.Render(fmt.Sprintf("%d/2", stats.ChannelsWatching)),
+		statLabelStyle.Render("Drops: ") + dropStyle.Render(fmt.Sprintf("%d", stats.ActiveDrops)),
 	}
 
 	content := strings.Join(items, "    ")
@@ -221,4 +231,22 @@ func formatTimeAgo(t time.Time) string {
 		return fmt.Sprintf("%dm ago", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh ago", int(d.Hours()))
+}
+
+// renderUpdateBanner renders a yellow update notification line.
+func renderUpdateBanner(info farmer.UpdateInfo) string {
+	if !info.HasStableUpdate && !info.HasBetaUpdate {
+		return ""
+	}
+
+	var parts []string
+	if info.HasStableUpdate {
+		parts = append(parts, fmt.Sprintf("v%s (stable)", info.LatestStable))
+	}
+	if info.HasBetaUpdate {
+		parts = append(parts, fmt.Sprintf("v%s (beta)", info.LatestBeta))
+	}
+
+	text := fmt.Sprintf("  New version available: %s", strings.Join(parts, " and "))
+	return updateBannerStyle.Render(text)
 }

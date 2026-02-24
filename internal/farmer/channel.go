@@ -33,6 +33,16 @@ type ChannelState struct {
 	// Timing
 	OnlineSince  time.Time
 	WatchingSince time.Time
+
+	// Drops
+	HasActiveDrop bool
+	DropName      string
+	DropProgress  int // current minutes watched
+	DropRequired  int // required minutes to complete
+
+	// Temporary channel (auto-added for drops, not saved to config)
+	IsTemporary bool
+	CampaignID  string // which campaign this channel serves
 }
 
 // NewChannelState creates a new channel state.
@@ -113,6 +123,27 @@ func (c *ChannelState) SetViewerCount(count int) {
 	c.ViewerCount = count
 }
 
+// SetDropInfo sets drop tracking fields for this channel.
+func (c *ChannelState) SetDropInfo(name string, progress, required int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.HasActiveDrop = true
+	c.DropName = name
+	c.DropProgress = progress
+	c.DropRequired = required
+}
+
+// ClearDropInfo removes drop tracking from this channel.
+func (c *ChannelState) ClearDropInfo() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.HasActiveDrop = false
+	c.DropName = ""
+	c.DropProgress = 0
+	c.DropRequired = 0
+	c.CampaignID = ""
+}
+
 // Snapshot returns a read-only copy of the channel state.
 type ChannelSnapshot struct {
 	Login              string
@@ -130,6 +161,16 @@ type ChannelSnapshot struct {
 	LastClaimTime      time.Time
 	OnlineSince        time.Time
 	WatchingSince      time.Time
+
+	// Drops
+	HasActiveDrop bool
+	DropName      string
+	DropProgress  int
+	DropRequired  int
+
+	// Temporary channel
+	IsTemporary bool
+	CampaignID  string
 }
 
 // Snapshot returns a thread-safe copy of the current state.
@@ -152,5 +193,11 @@ func (c *ChannelState) Snapshot() ChannelSnapshot {
 		LastClaimTime:       c.LastClaimTime,
 		OnlineSince:         c.OnlineSince,
 		WatchingSince:       c.WatchingSince,
+		HasActiveDrop:       c.HasActiveDrop,
+		DropName:            c.DropName,
+		DropProgress:        c.DropProgress,
+		DropRequired:        c.DropRequired,
+		IsTemporary:         c.IsTemporary,
+		CampaignID:          c.CampaignID,
 	}
 }
