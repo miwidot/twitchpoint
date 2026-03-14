@@ -11,18 +11,19 @@ import (
 
 // ActiveDrop represents a drop being tracked, exposed for the Web UI.
 type ActiveDrop struct {
-	CampaignID     string    `json:"campaign_id"`
-	CampaignName   string    `json:"campaign_name"`
-	GameName       string    `json:"game_name"`
-	DropName       string    `json:"drop_name"`
-	ChannelLogin   string    `json:"channel_login"`    // matched channel (if any)
-	Progress       int       `json:"progress"`          // current minutes watched
-	Required       int       `json:"required"`           // minutes required
-	Percent        int       `json:"percent"`            // 0-100
-	IsClaimed      bool      `json:"is_claimed"`
-	EndAt          time.Time `json:"end_at"`             // campaign end time
-	IsAutoSelected bool      `json:"is_auto_selected"`   // channel was auto-discovered
-	IsEnabled      bool      `json:"is_enabled"`          // campaign not disabled
+	CampaignID         string    `json:"campaign_id"`
+	CampaignName       string    `json:"campaign_name"`
+	GameName           string    `json:"game_name"`
+	DropName           string    `json:"drop_name"`
+	ChannelLogin       string    `json:"channel_login"`        // matched channel (if any)
+	Progress           int       `json:"progress"`              // current minutes watched
+	Required           int       `json:"required"`               // minutes required
+	Percent            int       `json:"percent"`                // 0-100
+	IsClaimed          bool      `json:"is_claimed"`
+	EndAt              time.Time `json:"end_at"`                 // campaign end time
+	IsAutoSelected     bool      `json:"is_auto_selected"`       // channel was auto-discovered
+	IsEnabled          bool      `json:"is_enabled"`              // campaign not disabled
+	IsAccountConnected bool      `json:"is_account_connected"`   // account linked for this game
 }
 
 // dropState holds internal state for the drop tracker.
@@ -85,6 +86,18 @@ func (f *Farmer) processDrops() {
 
 		// Skip disabled campaigns
 		if f.cfg.IsCampaignDisabled(campaign.ID) {
+			continue
+		}
+
+		// Skip campaigns where account is not linked (drops won't be credited)
+		if !campaign.IsAccountConnected {
+			allDrops = append(allDrops, ActiveDrop{
+				CampaignID:         campaign.ID,
+				CampaignName:       campaign.Name,
+				GameName:           campaign.GameName,
+				IsEnabled:          true,
+				IsAccountConnected: false,
+			})
 			continue
 		}
 
@@ -192,18 +205,19 @@ func (f *Farmer) processDrops() {
 			}
 
 			allDrops = append(allDrops, ActiveDrop{
-				CampaignID:     campaign.ID,
-				CampaignName:   campaign.Name,
-				GameName:       campaign.GameName,
-				DropName:       dropName,
-				ChannelLogin:   bestLogin,
-				Progress:       drop.CurrentMinutesWatched,
-				Required:       drop.RequiredMinutesWatched,
-				Percent:        drop.ProgressPercent(),
-				IsClaimed:      false,
-				EndAt:          campaign.EndAt,
-				IsAutoSelected: isAutoSelected,
-				IsEnabled:      true,
+				CampaignID:         campaign.ID,
+				CampaignName:       campaign.Name,
+				GameName:           campaign.GameName,
+				DropName:           dropName,
+				ChannelLogin:       bestLogin,
+				Progress:           drop.CurrentMinutesWatched,
+				Required:           drop.RequiredMinutesWatched,
+				Percent:            drop.ProgressPercent(),
+				IsClaimed:          false,
+				EndAt:              campaign.EndAt,
+				IsAutoSelected:     isAutoSelected,
+				IsEnabled:          true,
+				IsAccountConnected: true,
 			})
 		}
 	}

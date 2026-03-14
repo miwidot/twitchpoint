@@ -126,6 +126,84 @@ func renderChannelTable(channels []farmer.ChannelSnapshot, width int) string {
 	return headerLine + "\n" + strings.Join(rows, "\n")
 }
 
+// renderDropsTable renders the active drop campaigns table.
+func renderDropsTable(drops []farmer.ActiveDrop, width int) string {
+	if len(drops) == 0 {
+		return ""
+	}
+
+	// Column widths
+	campaignW := 24
+	gameW := 18
+	progressW := 16
+	channelW := 16
+	statusW := 10
+
+	// Header
+	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s",
+		campaignW, "Campaign",
+		gameW, "Game",
+		progressW, "Progress",
+		channelW, "Channel",
+		statusW, "Status",
+	)
+	headerLine := tableHeaderStyle.Render(header)
+
+	// Rows
+	var rows []string
+	for _, drop := range drops {
+		campaign := drop.CampaignName
+		if len(campaign) > campaignW {
+			campaign = campaign[:campaignW-2] + ".."
+		}
+
+		game := drop.GameName
+		if len(game) > gameW {
+			game = game[:gameW-2] + ".."
+		}
+
+		progress := "-"
+		if drop.Required > 0 {
+			progress = fmt.Sprintf("%d/%dmin (%d%%)", drop.Progress, drop.Required, drop.Percent)
+		}
+		if len(progress) > progressW {
+			progress = progress[:progressW-2] + ".."
+		}
+
+		channel := drop.ChannelLogin
+		if channel == "" {
+			channel = "-"
+		}
+		if drop.IsAutoSelected && channel != "-" {
+			channel += " [AUTO]"
+		}
+		if len(channel) > channelW {
+			channel = channel[:channelW-2] + ".."
+		}
+
+		var status string
+		if !drop.IsAccountConnected {
+			status = lipgloss.NewStyle().Foreground(colorRed).Render("UNLINKED")
+		} else if !drop.IsEnabled {
+			status = subtitleStyle.Render("DISABLED")
+		} else {
+			status = dropStyle.Render("ACTIVE")
+		}
+
+		row := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s",
+			campaignW, campaign,
+			gameW, game,
+			progressW, progress,
+			channelW, channel,
+			statusW+9, status, // +9 for ANSI escape codes
+		)
+		rows = append(rows, tableCellStyle.Render(row))
+	}
+
+	title := titleStyle.Render(" Drop Campaigns ")
+	return title + "\n" + headerLine + "\n" + strings.Join(rows, "\n")
+}
+
 // renderStatsBar renders the aggregate stats bar.
 func renderStatsBar(stats farmer.Stats, width int) string {
 	items := []string{

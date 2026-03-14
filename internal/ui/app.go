@@ -215,6 +215,15 @@ func (m Model) View() string {
 	sections = append(sections, renderStatsBar(stats, m.width))
 	sections = append(sections, "") // spacer
 
+	// Drops table (if any active campaigns)
+	drops := m.farmer.GetActiveDrops()
+	dropsTable := renderDropsTable(drops, m.width)
+	hasDropsTable := dropsTable != ""
+	if hasDropsTable {
+		sections = append(sections, dropsTable)
+		sections = append(sections, "") // spacer
+	}
+
 	// Event log (fill remaining space)
 	usedHeight := 4 + // header + spacers
 		len(channels) + 2 + // table header + rows
@@ -222,6 +231,9 @@ func (m Model) View() string {
 		3 // help bar + input
 	if hasUpdateBanner {
 		usedHeight += 2 // banner + spacer
+	}
+	if hasDropsTable {
+		usedHeight += len(drops) + 3 // title + header + rows + spacer
 	}
 	logHeight := m.height - usedHeight
 	if logHeight < 5 {

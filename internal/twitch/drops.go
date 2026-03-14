@@ -18,6 +18,9 @@ const queryDropsInventory = `query Inventory {
 				}
 				startAt
 				endAt
+				self {
+					isAccountConnected
+				}
 				timeBasedDrops {
 					id
 					name
@@ -56,14 +59,15 @@ const mutationClaimDropRewards = `mutation DropsPage_ClaimDropRewards($input: Cl
 
 // DropCampaign represents an active drop campaign from the inventory.
 type DropCampaign struct {
-	ID       string
-	Name     string
-	GameName string
-	GameID   string
-	StartAt  time.Time
-	EndAt    time.Time
-	Drops    []TimeBasedDrop
-	Channels []DropChannel // allowed channels (empty = any channel with the game)
+	ID                 string
+	Name               string
+	GameName           string
+	GameID             string
+	StartAt            time.Time
+	EndAt              time.Time
+	IsAccountConnected bool // whether the user's account is linked for this game
+	Drops              []TimeBasedDrop
+	Channels           []DropChannel // allowed channels (empty = any channel with the game)
 }
 
 // TimeBasedDrop represents a single drop within a campaign.
@@ -157,6 +161,17 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 			if gMap, ok := game.(map[string]interface{}); ok {
 				campaign.GameID = getString(gMap, "id")
 				campaign.GameName = getString(gMap, "displayName")
+			}
+		}
+
+		// Parse account connection status
+		if self, ok := cMap["self"]; ok && self != nil {
+			if selfMap, ok := self.(map[string]interface{}); ok {
+				if connected, ok := selfMap["isAccountConnected"]; ok && connected != nil {
+					if b, ok := connected.(bool); ok {
+						campaign.IsAccountConnected = b
+					}
+				}
 			}
 		}
 

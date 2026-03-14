@@ -742,7 +742,8 @@
             container.style.display = 'block';
 
             tbody.innerHTML = drops.map(drop => {
-                const rowClass = !drop.is_enabled ? 'disabled-row' : '';
+                const unlinked = !drop.is_account_connected;
+                const rowClass = !drop.is_enabled ? 'disabled-row' : unlinked ? 'disabled-row' : '';
                 const checked = drop.is_enabled ? 'checked' : '';
 
                 // Progress bar
@@ -784,7 +785,7 @@
                                 onchange="toggleCampaign('${drop.campaign_id}', this.checked)">
                         </td>
                         <td>${escapeHtml(drop.campaign_name)}</td>
-                        <td class="game-name">${escapeHtml(drop.game_name)}</td>
+                        <td class="game-name">${escapeHtml(drop.game_name)}${unlinked ? ' <span class="badge" style="background:var(--red);color:#fff;font-size:0.65rem;padding:1px 5px;border-radius:3px">UNLINKED</span>' : ''}</td>
                         <td>${escapeHtml(drop.drop_name)}</td>
                         <td>${progressHtml}</td>
                         <td>${channelHtml}</td>
