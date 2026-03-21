@@ -152,8 +152,9 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 		}
 
 		campaign := DropCampaign{
-			ID:   getString(cMap, "id"),
-			Name: getString(cMap, "name"),
+			ID:                 getString(cMap, "id"),
+			Name:               getString(cMap, "name"),
+			IsAccountConnected: true, // default true — only false when API explicitly says so
 		}
 
 		// Parse game
@@ -164,7 +165,7 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 			}
 		}
 
-		// Parse account connection status
+		// Parse account connection status (only override if explicitly false)
 		if self, ok := cMap["self"]; ok && self != nil {
 			if selfMap, ok := self.(map[string]interface{}); ok {
 				if connected, ok := selfMap["isAccountConnected"]; ok && connected != nil {
