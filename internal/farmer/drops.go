@@ -341,15 +341,28 @@ func (f *Farmer) matchCampaignChannels(campaign twitch.DropCampaign) map[string]
 // autoSelectDropChannel tries to find and add a live channel for a campaign with no matches.
 // Returns the login of the added channel, or empty string if none found.
 func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
-	// Try allowed channels first
 	if len(campaign.Channels) > 0 {
+		// Campaign has an allowed channels list — must select from those
+
+		// Strategy 1: Query game directory (1 API call) and cross-reference with allowed list
+		if campaign.GameName != "" {
+			login := f.findAllowedChannelViaDirectory(campaign)
+			if login != "" {
+				return login
+			}
+		}
+
+		// Strategy 2: Check individual allowed channels (limited to 25 to avoid rate-limiting)
 		login := f.findLiveFromAllowedChannels(campaign)
 		if login != "" {
 			return login
 		}
+
+		f.addLog("[Drops] No live allowed channel found for %q (%d allowed channels)", campaign.Name, len(campaign.Channels))
+		return ""
 	}
 
-	// Fall back to game directory
+	// No channel restrictions — any streamer with the game works
 	if campaign.GameName != "" {
 		login := f.findLiveFromGameDirectory(campaign.GameName)
 		if login != "" {
@@ -357,17 +370,73 @@ func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
 				return login
 			}
 		}
+		f.addLog("[Drops] No live stream found for game %q (%s)", campaign.GameName, campaign.Name)
 	}
 
 	return ""
 }
 
-// findLiveFromAllowedChannels iterates campaign's allowed channel list,
-// checking each via GetChannelInfo to find one that's live.
-// Adds as temporary channel if found. Returns the login or empty string.
+// findAllowedChannelViaDirectory queries the game directory and cross-references
+// results with the campaign's allowed channels. Much faster than checking each individually.
+func (f *Farmer) findAllowedChannelViaDirectory(campaign twitch.DropCampaign) string {
+	streams, err := f.gql.GetGameStreams(campaign.GameName, 30)
+	if err != nil {
+		return ""
+	}
+
+	// Build allowed lookup (by login and by ID)
+	allowedByLogin := make(map[string]bool, len(campaign.Channels))
+	allowedByID := make(map[string]bool, len(campaign.Channels))
+	for _, ch := range campaign.Channels {
+		if ch.Name != "" {
+			allowedByLogin[strings.ToLower(ch.Name)] = true
+		}
+		if ch.DisplayName != "" {
+			allowedByLogin[strings.ToLower(ch.DisplayName)] = true
+		}
+		if ch.ID != "" {
+			allowedByID[ch.ID] = true
+		}
+	}
+
+	for _, stream := range streams {
+		login := strings.ToLower(stream.BroadcasterLogin)
+
+		// Check if this stream is in the allowed list
+		if !allowedByLogin[login] && !allowedByID[stream.BroadcasterID] {
+			continue
+		}
+
+		// Skip if already tracked
+		f.mu.RLock()
+		_, tracked := f.loginMap[login]
+		f.mu.RUnlock()
+		if tracked {
+			continue
+		}
+
+		if err := f.addTemporaryChannel(login, campaign.ID); err == nil {
+			return login
+		}
+	}
+
+	return ""
+}
+
+// findLiveFromAllowedChannels checks individual allowed channels to find a live one.
+// Limited to 25 channels to avoid rate-limiting.
 func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) string {
+	checked := 0
 	for _, dropCh := range campaign.Channels {
+		if checked >= 25 {
+			break
+		}
+
 		login := strings.ToLower(dropCh.Name)
+		if login == "" {
+			// Fall back to displayName if login is empty
+			login = strings.ToLower(dropCh.DisplayName)
+		}
 		if login == "" {
 			continue
 		}
@@ -382,8 +451,11 @@ func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) strin
 
 		info, err := f.gql.GetChannelInfo(login)
 		if err != nil {
+			checked++
 			continue
 		}
+		checked++
+
 		if info.IsLive {
 			if err := f.addTemporaryChannel(login, campaign.ID); err == nil {
 				return login
