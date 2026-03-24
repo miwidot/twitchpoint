@@ -104,11 +104,12 @@ When `drops_enabled` is `true`, TwitchPoint automatically:
 
 1. Checks your drop inventory every 5 minutes
 2. Matches campaigns to your channels (by allowed list or game category)
-3. Auto-selects a live channel if none of your channels qualify
-4. Claims completed drops
-5. Fails over to another channel if the current one goes offline or raids
+3. Auto-selects a live channel if none of your channels qualify (cross-references game directory with allowed channels)
+4. Skips campaigns where your account is not linked to the game (shown as **UNLINKED**)
+5. Claims completed drops
+6. Fails over to another channel if the current one goes offline or raids
 
-Disable individual campaigns from the Web UI drop table.
+Drop campaigns are visible in both the TUI and Web UI with status indicators (ACTIVE / UNLINKED / DISABLED). Disable individual campaigns from the Web UI drop table.
 
 ## Windows System Tray
 
@@ -122,6 +123,8 @@ On Windows, a system tray icon runs alongside the TUI:
 - **Quit** — Clean shutdown
 
 ## Docker
+
+Runs in **headless mode** — no TUI, only the farmer + Web UI. First-run login works via `docker logs`.
 
 ```yaml
 # docker-compose.yml
@@ -139,12 +142,21 @@ services:
 ```
 
 ```bash
-# Create config first
-cp config/config.example.json config/config.json
-# Edit with your auth token and channels
-
 docker-compose up -d
+
+# First run: check logs for the login code
 docker-compose logs -f
+# Open the URL shown, enter the code, authorize — token is saved to config volume
+
+# After login, manage everything via Web UI at http://localhost:8080
+```
+
+You can also set a token manually before starting:
+
+```bash
+cp config/config.example.json config/config.json
+# Edit config/config.json with your auth token and channels
+docker-compose up -d
 ```
 
 ## CLI Flags
@@ -156,6 +168,7 @@ docker-compose logs -f
   --add-channel string Add a channel and exit
   --token string       Set auth token manually and exit
   --login              Force re-login via Device Code OAuth
+  --headless           Run without TUI (for Docker/servers)
 ```
 
 ## How It Works
