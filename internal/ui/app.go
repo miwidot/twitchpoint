@@ -229,25 +229,32 @@ func (m Model) View() string {
 	dropsTable := renderDropsTable(drops, m.width)
 	hasDropsTable := dropsTable != ""
 
-	// Calculate fixed heights (everything except channel table and event log)
-	fixedHeight := 2 + // header + spacer
-		1 + // channel table header
-		1 + // spacer after channel table
-		3 + // stats bar + spacer
-		1 // help bar
+	// Fixed overhead: everything except channel rows and event log content
+	// header(1) + spacer(1) + ch_header(1) + spacer(1) + stats_border(3) + spacer(1)
+	// + log_title(1) + log_border(2) + help(1) = 12, plus 2 buffer for join newlines
+	overhead := 14
 	if hasUpdateBanner {
-		fixedHeight += 2 // banner + spacer
+		overhead += 2 // banner + spacer
 	}
 	if hasDropsTable {
-		fixedHeight += len(drops) + 3 // title + header + rows + spacer
+		overhead += len(drops) + 3 // title + header + rows + spacer
 	}
 
-	// Split remaining space: channel table gets up to half, event log gets at least 5
-	remaining := m.height - fixedHeight
-	minLogHeight := 7 // log border + title + a few lines
-	maxChannelRows := remaining - minLogHeight
-	if maxChannelRows < 5 {
-		maxChannelRows = 5
+	// Available lines for channel rows + event log content
+	available := m.height - overhead
+	if available < 10 {
+		available = 10
+	}
+
+	// Channel table gets at most half the screen, event log gets the rest
+	maxChannelRows := m.height / 2
+	minLogContent := 4
+
+	if available-maxChannelRows < minLogContent {
+		maxChannelRows = available - minLogContent
+	}
+	if maxChannelRows < 3 {
+		maxChannelRows = 3
 	}
 
 	channelRows := len(channels)
@@ -279,19 +286,20 @@ func (m Model) View() string {
 		sections = append(sections, "") // spacer
 	}
 
-	// Event log (fill remaining space)
-	usedHeight := fixedHeight + channelRows
-	// Add scroll indicator lines
+	// Event log gets remaining space
+	logContent := available - channelRows
+	// Account for scroll indicator lines
 	if scroll > 0 {
-		usedHeight++
+		logContent--
 	}
 	if scroll < maxScroll {
-		usedHeight++
+		logContent--
 	}
-	logHeight := m.height - usedHeight
-	if logHeight < minLogHeight {
-		logHeight = minLogHeight
+	if logContent < minLogContent {
+		logContent = minLogContent
 	}
+	// logHeight = content lines + 2 (for border accounting in renderEventLog)
+	logHeight := logContent + 2
 
 	logs := m.farmer.GetLogs()
 	sections = append(sections, renderEventLog(logs, logHeight, m.width))
