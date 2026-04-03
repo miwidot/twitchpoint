@@ -19,6 +19,9 @@ type Model struct {
 	width  int
 	height int
 
+	// Channel table scroll
+	channelScroll int
+
 	// Input mode
 	inputMode  inputState
 	inputValue string
@@ -129,6 +132,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputMode = inputSetPriority
 		m.inputValue = ""
 		return m, nil
+	case "up", "k":
+		if m.channelScroll > 0 {
+			m.channelScroll--
+		}
+		return m, nil
+	case "down", "j":
+		m.channelScroll++
+		return m, nil
+	case "home":
+		m.channelScroll = 0
+		return m, nil
+	case "end":
+		m.channelScroll = 9999 // clamped in View
+		return m, nil
 	}
 
 	return m, nil
@@ -206,9 +223,50 @@ func (m Model) View() string {
 		sections = append(sections, "") // spacer
 	}
 
-	// Channel table
+	// Gather data
 	channels := m.farmer.GetChannels()
-	sections = append(sections, renderChannelTable(channels, m.width))
+	drops := m.farmer.GetActiveDrops()
+	dropsTable := renderDropsTable(drops, m.width)
+	hasDropsTable := dropsTable != ""
+
+	// Calculate fixed heights (everything except channel table and event log)
+	fixedHeight := 2 + // header + spacer
+		1 + // channel table header
+		1 + // spacer after channel table
+		3 + // stats bar + spacer
+		1 // help bar
+	if hasUpdateBanner {
+		fixedHeight += 2 // banner + spacer
+	}
+	if hasDropsTable {
+		fixedHeight += len(drops) + 3 // title + header + rows + spacer
+	}
+
+	// Split remaining space: channel table gets up to half, event log gets at least 5
+	remaining := m.height - fixedHeight
+	minLogHeight := 7 // log border + title + a few lines
+	maxChannelRows := remaining - minLogHeight
+	if maxChannelRows < 5 {
+		maxChannelRows = 5
+	}
+
+	channelRows := len(channels)
+	if channelRows > maxChannelRows {
+		channelRows = maxChannelRows
+	}
+
+	// Clamp scroll offset
+	maxScroll := len(channels) - channelRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	scroll := m.channelScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+
+	// Channel table (with scroll)
+	sections = append(sections, renderChannelTableScrollable(channels, m.width, channelRows, scroll))
 	sections = append(sections, "") // spacer
 
 	// Stats bar
@@ -216,28 +274,23 @@ func (m Model) View() string {
 	sections = append(sections, "") // spacer
 
 	// Drops table (if any active campaigns)
-	drops := m.farmer.GetActiveDrops()
-	dropsTable := renderDropsTable(drops, m.width)
-	hasDropsTable := dropsTable != ""
 	if hasDropsTable {
 		sections = append(sections, dropsTable)
 		sections = append(sections, "") // spacer
 	}
 
 	// Event log (fill remaining space)
-	usedHeight := 4 + // header + spacers
-		len(channels) + 2 + // table header + rows
-		3 + // stats bar
-		3 // help bar + input
-	if hasUpdateBanner {
-		usedHeight += 2 // banner + spacer
+	usedHeight := fixedHeight + channelRows
+	// Add scroll indicator lines
+	if scroll > 0 {
+		usedHeight++
 	}
-	if hasDropsTable {
-		usedHeight += len(drops) + 3 // title + header + rows + spacer
+	if scroll < maxScroll {
+		usedHeight++
 	}
 	logHeight := m.height - usedHeight
-	if logHeight < 5 {
-		logHeight = 5
+	if logHeight < minLogHeight {
+		logHeight = minLogHeight
 	}
 
 	logs := m.farmer.GetLogs()

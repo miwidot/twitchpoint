@@ -18,112 +18,137 @@ func renderHeader(username string, uptime time.Duration) string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", user, "  ", uptimeStr)
 }
 
-// renderChannelTable renders the channel status table.
-func renderChannelTable(channels []farmer.ChannelSnapshot, width int) string {
+// channelTableHeader returns the column header line for the channel table.
+func channelTableHeader() string {
+	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %*s %*s %*s %-*s",
+		4, "Pri",
+		16, "Channel",
+		10, "Status",
+		10, "Watching",
+		18, "Game",
+		12, "Balance",
+		10, "Earned",
+		7, "Claims",
+		12, "Last Claim",
+	)
+	return tableHeaderStyle.Render(header)
+}
+
+// renderChannelRow renders a single channel row.
+func renderChannelRow(ch farmer.ChannelSnapshot) string {
+	const (
+		priW       = 4
+		nameW      = 16
+		statusW    = 10
+		watchW     = 10
+		gameW      = 18
+		balanceW   = 12
+		earnedW    = 10
+		claimsW    = 7
+		lastClaimW = 12
+	)
+
+	pri := subtitleStyle.Render("P2")
+	if ch.HasActiveDrop {
+		pri = dropStyle.Render("P0")
+	} else if ch.Priority == 1 {
+		pri = statValueStyle.Render("P1")
+	}
+
+	status := offlineStyle.Render("OFFLINE")
+	if ch.IsOnline {
+		status = onlineStyle.Render("LIVE")
+	}
+
+	watching := subtitleStyle.Render("-")
+	if ch.IsWatching {
+		watching = watchingStyle.Render("ACTIVE")
+	}
+
+	game := ch.GameName
+	if ch.HasActiveDrop && ch.DropRequired > 0 {
+		pct := (ch.DropProgress * 100) / ch.DropRequired
+		game = fmt.Sprintf("%s %d%%", ch.GameName, pct)
+	}
+	if len(game) > gameW {
+		game = game[:gameW-2] + ".."
+	}
+	if game == "" {
+		game = "-"
+	}
+
+	name := ch.DisplayName
+	if ch.IsTemporary {
+		name = ch.DisplayName + " [TEMP]"
+	}
+	if len(name) > nameW {
+		name = name[:nameW-2] + ".."
+	}
+
+	balance := "-"
+	if ch.PointsBalance > 0 {
+		balance = formatNumber(ch.PointsBalance)
+	}
+
+	earned := "-"
+	if ch.PointsEarnedSession > 0 {
+		earned = fmt.Sprintf("+%s", formatNumber(ch.PointsEarnedSession))
+	}
+
+	claims := "-"
+	if ch.ClaimsMade > 0 {
+		claims = fmt.Sprintf("%d", ch.ClaimsMade)
+	}
+
+	lastClaim := "-"
+	if !ch.LastClaimTime.IsZero() {
+		lastClaim = formatTimeAgo(ch.LastClaimTime)
+	}
+
+	row := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %*s %*s %*s %-*s",
+		priW+9, pri,
+		nameW, name,
+		statusW+9, status,
+		watchW+9, watching,
+		gameW, game,
+		balanceW, balance,
+		earnedW, earned,
+		claimsW, claims,
+		lastClaimW, lastClaim,
+	)
+	return tableCellStyle.Render(row)
+}
+
+// renderChannelTableScrollable renders the channel table with scroll support.
+func renderChannelTableScrollable(channels []farmer.ChannelSnapshot, width, maxRows, scroll int) string {
 	if len(channels) == 0 {
 		return subtitleStyle.Render("  No channels configured. Press 'a' to add a channel.")
 	}
 
-	// Column widths
-	priW := 4
-	nameW := 16
-	statusW := 10
-	watchW := 10
-	gameW := 18
-	balanceW := 12
-	earnedW := 10
-	claimsW := 7
-	lastClaimW := 12
+	var parts []string
+	parts = append(parts, channelTableHeader())
 
-	// Header
-	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %*s %*s %*s %-*s",
-		priW, "Pri",
-		nameW, "Channel",
-		statusW, "Status",
-		watchW, "Watching",
-		gameW, "Game",
-		balanceW, "Balance",
-		earnedW, "Earned",
-		claimsW, "Claims",
-		lastClaimW, "Last Claim",
-	)
-	headerLine := tableHeaderStyle.Render(header)
-
-	// Rows
-	var rows []string
-	for _, ch := range channels {
-		pri := subtitleStyle.Render("P2")
-		if ch.HasActiveDrop {
-			pri = dropStyle.Render("P0")
-		} else if ch.Priority == 1 {
-			pri = statValueStyle.Render("P1")
-		}
-
-		status := offlineStyle.Render("OFFLINE")
-		if ch.IsOnline {
-			status = onlineStyle.Render("LIVE")
-		}
-
-		watching := subtitleStyle.Render("-")
-		if ch.IsWatching {
-			watching = watchingStyle.Render("ACTIVE")
-		}
-
-		game := ch.GameName
-		if ch.HasActiveDrop && ch.DropRequired > 0 {
-			pct := (ch.DropProgress * 100) / ch.DropRequired
-			game = fmt.Sprintf("%s %d%%", ch.GameName, pct)
-		}
-		if len(game) > gameW {
-			game = game[:gameW-2] + ".."
-		}
-		if game == "" {
-			game = "-"
-		}
-
-		name := ch.DisplayName
-		if ch.IsTemporary {
-			name = ch.DisplayName + " [TEMP]"
-		}
-		if len(name) > nameW {
-			name = name[:nameW-2] + ".."
-		}
-
-		balance := "-"
-		if ch.PointsBalance > 0 {
-			balance = formatNumber(ch.PointsBalance)
-		}
-
-		earned := "-"
-		if ch.PointsEarnedSession > 0 {
-			earned = fmt.Sprintf("+%s", formatNumber(ch.PointsEarnedSession))
-		}
-
-		claims := "-"
-		if ch.ClaimsMade > 0 {
-			claims = fmt.Sprintf("%d", ch.ClaimsMade)
-		}
-
-		lastClaim := "-"
-		if !ch.LastClaimTime.IsZero() {
-			lastClaim = formatTimeAgo(ch.LastClaimTime)
-		}
-
-		row := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %*s %*s %*s %-*s",
-			priW+9, pri, // +9 for ANSI escape codes
-			nameW, name,
-			statusW+9, status,
-			watchW+9, watching,
-			gameW, game,
-			balanceW, balance,
-			earnedW, earned,
-			claimsW, claims,
-			lastClaimW, lastClaim,
-		)
-		rows = append(rows, tableCellStyle.Render(row))
+	// Scroll indicator top
+	if scroll > 0 {
+		parts = append(parts, subtitleStyle.Render(fmt.Sprintf("  ▲ %d more", scroll)))
 	}
 
-	return headerLine + "\n" + strings.Join(rows, "\n")
+	// Visible rows
+	end := scroll + maxRows
+	if end > len(channels) {
+		end = len(channels)
+	}
+	for _, ch := range channels[scroll:end] {
+		parts = append(parts, renderChannelRow(ch))
+	}
+
+	// Scroll indicator bottom
+	remaining := len(channels) - end
+	if remaining > 0 {
+		parts = append(parts, subtitleStyle.Render(fmt.Sprintf("  ▼ %d more", remaining)))
+	}
+
+	return strings.Join(parts, "\n")
 }
 
 // renderDropsTable renders the active drop campaigns table.
@@ -265,6 +290,7 @@ func renderHelpBar() string {
 		{"a", "add channel"},
 		{"d", "remove channel"},
 		{"p", "set priority"},
+		{"↑↓", "scroll"},
 	}
 
 	var parts []string
