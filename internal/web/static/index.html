@@ -242,6 +242,8 @@
         .priority-legend-badge.p1 { background: rgba(255, 192, 0, 0.2); color: var(--yellow); }
         .priority-legend-badge.p2 { background: var(--border); color: var(--text-muted); }
 
+        td a[target="_blank"]:hover strong { color: var(--purple); }
+
         .game-name {
             color: var(--text-secondary);
             font-size: 13px;
@@ -704,7 +706,7 @@
                                 ${priLabel}
                             </button>
                         </td>
-                        <td><strong>${escapeHtml(ch.display_name)}</strong>${tempBadge}${dropHtml}</td>
+                        <td><a href="https://twitch.tv/${encodeURIComponent(ch.login)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none"><strong>${escapeHtml(ch.display_name)}</strong></a>${tempBadge}${dropHtml}</td>
                         <td>${statusBadge}</td>
                         <td class="game-name" title="${escapeHtml(ch.game_name || '')}">${escapeHtml(ch.game_name || '-')}</td>
                         <td class="viewers">${ch.is_online ? ch.viewer_count.toLocaleString() : '-'}</td>
