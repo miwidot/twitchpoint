@@ -2,6 +2,7 @@ package farmer
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,19 @@ func (f *Farmer) processDrops() {
 		f.addLog("[Drops] Failed to fetch inventory: %v", err)
 		return
 	}
+
+	// Sort campaigns by end time — soonest expiring first so they get channel priority
+	sort.Slice(campaigns, func(i, j int) bool {
+		ei, ej := campaigns[i].EndAt, campaigns[j].EndAt
+		// Zero end time (unknown) goes last
+		if ei.IsZero() {
+			return false
+		}
+		if ej.IsZero() {
+			return true
+		}
+		return ei.Before(ej)
+	})
 
 	// Rebuild campaign cache for failover lookups
 	newCache := make(map[string]twitch.DropCampaign)
