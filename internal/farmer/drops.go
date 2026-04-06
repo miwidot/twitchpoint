@@ -92,19 +92,27 @@ func (f *Farmer) processDrops() {
 	activeDropChannels := make(map[string]bool)
 	var allDrops []ActiveDrop
 
+	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
+
 	for _, campaign := range campaigns {
+		f.writeLogFile(fmt.Sprintf("[Drops] Processing campaign %q (game=%q, drops=%d, endsAt=%s, connected=%v)",
+			campaign.Name, campaign.GameName, len(campaign.Drops), campaign.EndAt.Format("2006-01-02 15:04"), campaign.IsAccountConnected))
+
 		// Skip expired campaigns (Twitch may return stale data)
 		if !campaign.EndAt.IsZero() && campaign.EndAt.Before(time.Now()) {
+			f.writeLogFile(fmt.Sprintf("[Drops] Skipping expired campaign %q", campaign.Name))
 			continue
 		}
 
 		// Skip disabled campaigns
 		if f.cfg.IsCampaignDisabled(campaign.ID) {
+			f.writeLogFile(fmt.Sprintf("[Drops] Skipping disabled campaign %q", campaign.Name))
 			continue
 		}
 
 		// Skip campaigns where account is not linked (drops won't be credited)
 		if !campaign.IsAccountConnected {
+			f.writeLogFile(fmt.Sprintf("[Drops] Skipping unlinked campaign %q (game=%q)", campaign.Name, campaign.GameName))
 			allDrops = append(allDrops, ActiveDrop{
 				CampaignID:         campaign.ID,
 				CampaignName:       campaign.Name,
