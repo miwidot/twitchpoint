@@ -15,7 +15,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/web"
 )
 
-const appVersion = "1.3.8"
+const appVersion = "1.3.9"
 
 func main() {
 	web.Version = appVersion
@@ -89,8 +89,33 @@ func main() {
 	// Start farmer
 	f := farmer.New(cfg, appVersion)
 	if err := f.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start farmer: %v\n", err)
-		os.Exit(1)
+		// Auth failure likely means token was created with old Client-ID — auto re-login
+		if strings.Contains(err.Error(), "auth validation failed") {
+			fmt.Println("Auth token expired or invalid (Client-ID changed). Re-authenticating...")
+			fmt.Println()
+			token, err := twitch.DeviceCodeLogin(twitch.TVClientID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Re-login failed: %v\n", err)
+				os.Exit(1)
+			}
+			cfg.AuthToken = token
+			if err := cfg.Save(); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to save config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("New token saved to %s\n", cfg.Path())
+			fmt.Println()
+
+			// Retry start with new token
+			f = farmer.New(cfg, appVersion)
+			if err := f.Start(); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to start farmer: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Failed to start farmer: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	defer f.Stop()
 

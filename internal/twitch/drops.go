@@ -153,16 +153,44 @@ func (d *TimeBasedDrop) ProgressPercent() int {
 	return pct
 }
 
-// GetDropsInventory fetches ALL available drop campaigns.
-// Primary: ViewerDropsDashboard (all campaigns the user is eligible for).
-// Fallback: Inventory query (only campaigns with existing progress).
+// GetDropsInventory fetches ALL available drop campaigns with progress data.
+// Step 1: ViewerDropsDashboard → all campaigns the user is eligible for (no progress).
+// Step 2: Inventory → campaigns with existing progress (currentMinutesWatched, isClaimed).
+// Step 3: Merge progress from Inventory into Dashboard campaigns.
+// Falls back to Inventory-only if Dashboard fails.
 func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
-	campaigns, err := g.getDropsDashboard()
-	if err == nil && campaigns != nil {
-		return campaigns, nil
+	dashboardCampaigns, err := g.getDropsDashboard()
+	if err != nil || dashboardCampaigns == nil {
+		// Fallback: inventory only (still has progress data)
+		return g.getDropsFromInventory()
 	}
-	// Fallback to inventory query
-	return g.getDropsFromInventory()
+
+	// Fetch inventory for progress data
+	inventoryCampaigns, _ := g.getDropsFromInventory()
+	if len(inventoryCampaigns) == 0 {
+		return dashboardCampaigns, nil
+	}
+
+	// Build lookup: dropID -> drop progress from inventory
+	progressByDropID := make(map[string]TimeBasedDrop)
+	for _, ic := range inventoryCampaigns {
+		for _, drop := range ic.Drops {
+			progressByDropID[drop.ID] = drop
+		}
+	}
+
+	// Merge progress into dashboard campaigns
+	for i := range dashboardCampaigns {
+		for j := range dashboardCampaigns[i].Drops {
+			if inv, ok := progressByDropID[dashboardCampaigns[i].Drops[j].ID]; ok {
+				dashboardCampaigns[i].Drops[j].CurrentMinutesWatched = inv.CurrentMinutesWatched
+				dashboardCampaigns[i].Drops[j].DropInstanceID = inv.DropInstanceID
+				dashboardCampaigns[i].Drops[j].IsClaimed = inv.IsClaimed
+			}
+		}
+	}
+
+	return dashboardCampaigns, nil
 }
 
 // getDropsDashboard fetches all campaigns via ViewerDropsDashboard.

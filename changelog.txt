@@ -1,3 +1,21 @@
+== 2026-04-07 00:18 == Bugfix: Merge drop progress from Inventory into Dashboard (v1.3.9) ==
+
+ViewerDropsDashboard returns all campaigns but WITHOUT progress data (self is null).
+Inventory query returns progress (currentMinutesWatched, isClaimed, dropInstanceID).
+Now fetches both and merges progress by drop ID into the full campaign list.
+
+Also: auto re-login when existing token fails due to Client-ID change (v1.3.8 breaking
+change). App detects auth failure on startup and triggers Device Code OAuth automatically.
+
+Changes:
+- GetDropsInventory now fetches Dashboard + Inventory and merges progress by drop ID
+- Auto re-login on auth failure at startup (no more cryptic error messages)
+- Unlinked campaigns removed from debug log noise (only logged, not processed)
+
+Files modified:
+- internal/twitch/drops.go (two-step fetch + merge)
+- cmd/twitchpoint/main.go (auto re-login on auth failure, version 1.3.9)
+
 == 2026-04-07 00:01 == Feature: Discover ALL available drop campaigns (v1.3.8) ==
 
 Switched from SmartBox/TV Client-ID to Android App Client-ID which unlocks the
