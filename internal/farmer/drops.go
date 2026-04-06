@@ -95,8 +95,14 @@ func (f *Farmer) processDrops() {
 	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
 
 	for _, campaign := range campaigns {
-		f.writeLogFile(fmt.Sprintf("[Drops] Processing campaign %q (game=%q, drops=%d, endsAt=%s, connected=%v)",
-			campaign.Name, campaign.GameName, len(campaign.Drops), campaign.EndAt.Format("2006-01-02 15:04"), campaign.IsAccountConnected))
+		f.writeLogFile(fmt.Sprintf("[Drops] Processing campaign %q (game=%q, status=%q, drops=%d, endsAt=%s, connected=%v)",
+			campaign.Name, campaign.GameName, campaign.Status, len(campaign.Drops), campaign.EndAt.Format("2006-01-02 15:04"), campaign.IsAccountConnected))
+
+		// Skip non-ACTIVE campaigns (dashboard query returns all statuses)
+		if campaign.Status != "" && campaign.Status != "ACTIVE" {
+			f.writeLogFile(fmt.Sprintf("[Drops] Skipping non-active campaign %q (status=%s)", campaign.Name, campaign.Status))
+			continue
+		}
 
 		// Skip expired campaigns (Twitch may return stale data)
 		if !campaign.EndAt.IsZero() && campaign.EndAt.Before(time.Now()) {

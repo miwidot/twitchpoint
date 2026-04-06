@@ -5,7 +5,55 @@ import (
 	"time"
 )
 
-// GQL query for fetching the user's drops inventory (active campaigns + progress).
+// GQL query for fetching ALL available drop campaigns (not just ones with progress).
+// Uses currentUser.dropCampaigns which is the Viewer Drops Dashboard — returns every
+// campaign the user is eligible for, including ones they haven't started watching yet.
+const queryDropsDashboard = `query ViewerDropsDashboard {
+	currentUser {
+		dropCampaigns {
+			id
+			name
+			status
+			game {
+				id
+				displayName
+			}
+			startAt
+			endAt
+			self {
+				isAccountConnected
+			}
+			timeBasedDrops {
+				id
+				name
+				startAt
+				endAt
+				requiredMinutesWatched
+				benefitEdges {
+					benefit {
+						id
+						name
+						imageAssetURL
+					}
+				}
+				self {
+					currentMinutesWatched
+					dropInstanceID
+					isClaimed
+				}
+			}
+			allow {
+				channels {
+					id
+					name
+					displayName
+				}
+			}
+		}
+	}
+}`
+
+// GQL query for fetching progress on campaigns already started (fallback).
 const queryDropsInventory = `query Inventory {
 	currentUser {
 		inventory {
@@ -61,6 +109,7 @@ const mutationClaimDropRewards = `mutation DropsPage_ClaimDropRewards($input: Cl
 type DropCampaign struct {
 	ID                 string
 	Name               string
+	Status             string // ACTIVE, EXPIRED, etc.
 	GameName           string
 	GameID             string
 	StartAt            time.Time
@@ -105,8 +154,53 @@ func (d *TimeBasedDrop) ProgressPercent() int {
 	return pct
 }
 
-// GetDropsInventory fetches the user's active drop campaigns with progress.
+// GetDropsInventory fetches ALL available drop campaigns using the ViewerDropsDashboard query.
+// This returns every campaign the user is eligible for, not just ones with existing progress.
+// Falls back to the old Inventory query if the dashboard query fails.
 func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
+	campaigns, err := g.getDropsDashboard()
+	if err != nil || campaigns == nil {
+		// Fallback to old inventory query
+		return g.getDropsFromInventory()
+	}
+	return campaigns, nil
+}
+
+// getDropsDashboard fetches all campaigns via ViewerDropsDashboard.
+func (g *GQLClient) getDropsDashboard() ([]DropCampaign, error) {
+	req := &GQLRequest{
+		OperationName: "ViewerDropsDashboard",
+		Query:         queryDropsDashboard,
+	}
+
+	resp, err := g.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get drops dashboard: %w", err)
+	}
+
+	currentUser, ok := resp.Data["currentUser"]
+	if !ok || currentUser == nil {
+		return nil, nil
+	}
+	userMap, ok := currentUser.(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	campaignsRaw, ok := userMap["dropCampaigns"]
+	if !ok || campaignsRaw == nil {
+		return nil, nil
+	}
+	campaignList, ok := campaignsRaw.([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	return parseCampaignList(campaignList), nil
+}
+
+// getDropsFromInventory fetches campaigns via the old Inventory query (fallback).
+func (g *GQLClient) getDropsFromInventory() ([]DropCampaign, error) {
 	req := &GQLRequest{
 		OperationName: "Inventory",
 		Query:         queryDropsInventory,
@@ -144,6 +238,11 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 		return nil, nil
 	}
 
+	return parseCampaignList(campaignList), nil
+}
+
+// parseCampaignList parses a list of campaign objects from GQL response.
+func parseCampaignList(campaignList []interface{}) []DropCampaign {
 	var campaigns []DropCampaign
 	for _, cRaw := range campaignList {
 		cMap, ok := cRaw.(map[string]interface{})
@@ -154,6 +253,7 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 		campaign := DropCampaign{
 			ID:                 getString(cMap, "id"),
 			Name:               getString(cMap, "name"),
+			Status:             getString(cMap, "status"),
 			IsAccountConnected: true, // default true — only false when API explicitly says so
 		}
 
@@ -198,8 +298,8 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 					}
 
 					drop := TimeBasedDrop{
-						ID:                     getString(dMap, "id"),
-						Name:                   getString(dMap, "name"),
+						ID:                    getString(dMap, "id"),
+						Name:                  getString(dMap, "name"),
 						RequiredMinutesWatched: getInt(dMap, "requiredMinutesWatched"),
 					}
 
@@ -256,7 +356,7 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 		campaigns = append(campaigns, campaign)
 	}
 
-	return campaigns, nil
+	return campaigns
 }
 
 // ClaimDrop claims a completed drop by its instance ID.
