@@ -94,6 +94,18 @@ func (f *Farmer) processDrops() {
 
 	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
 
+	// Debug: log claimed status for connected campaigns to verify gameEventDrops merge
+	for _, campaign := range campaigns {
+		if campaign.IsAccountConnected {
+			for _, drop := range campaign.Drops {
+				if drop.RequiredMinutesWatched > 0 {
+					f.writeLogFile(fmt.Sprintf("[Drops/Debug] %q drop %q: benefitID=%q claimed=%v progress=%d/%d",
+						campaign.Name, drop.Name, drop.BenefitID, drop.IsClaimed, drop.CurrentMinutesWatched, drop.RequiredMinutesWatched))
+				}
+			}
+		}
+	}
+
 	for _, campaign := range campaigns {
 		f.writeLogFile(fmt.Sprintf("[Drops] Processing campaign %q (game=%q, status=%q, drops=%d, endsAt=%s, connected=%v)",
 			campaign.Name, campaign.GameName, campaign.Status, len(campaign.Drops), campaign.EndAt.Format("2006-01-02 15:04"), campaign.IsAccountConnected))
@@ -118,6 +130,12 @@ func (f *Farmer) processDrops() {
 
 		// Skip campaigns where account is not linked (drops won't be credited)
 		if !campaign.IsAccountConnected {
+			continue
+		}
+
+		// Skip campaigns we've already fully claimed (tracked in config)
+		if f.cfg.IsCampaignCompleted(campaign.ID) {
+			f.writeLogFile(fmt.Sprintf("[Drops] Skipping completed campaign %q", campaign.Name))
 			continue
 		}
 
@@ -161,8 +179,37 @@ func (f *Farmer) processDrops() {
 			}
 		}
 
+		// Check if all watchable drops are claimed → mark campaign as completed
+		allClaimed := true
+		hasWatchableDrops := false
+		for _, drop := range campaign.Drops {
+			if drop.RequiredMinutesWatched <= 0 {
+				continue // sub-only, ignore
+			}
+			hasWatchableDrops = true
+			if !drop.IsClaimed {
+				allClaimed = false
+				break
+			}
+		}
+		if hasWatchableDrops && allClaimed {
+			f.cfg.MarkCampaignCompleted(campaign.ID)
+			f.cfg.Save()
+			source := "inventory"
+			if !campaign.InInventory {
+				source = "gameEventDrops"
+			}
+			f.addLog("[Drops] Campaign %q fully claimed (detected via %s) — marked as completed", campaign.Name, source)
+			continue
+		}
+
 		for _, drop := range campaign.Drops {
 			if drop.IsClaimed {
+				continue
+			}
+
+			// Skip sub-only drops (0 required minutes = can't be earned by watching)
+			if drop.RequiredMinutesWatched <= 0 {
 				continue
 			}
 

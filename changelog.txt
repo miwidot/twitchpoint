@@ -1,3 +1,43 @@
+== 2026-04-07 01:12 == Feature: Detect already-completed drop campaigns via gameEventDrops (v1.4.0) ==
+
+Fixed a critical issue where already-completed drop campaigns (e.g. GZW Stage 2) showed
+as 0% and were re-farmed unnecessarily. Root cause: Twitch removes fully-claimed campaigns
+from dropCampaignsInProgress (Inventory), and the Dashboard returns no progress data
+(self is always null). Without either source providing claimed status, completed campaigns
+looked identical to brand-new ones.
+
+Solution (same approach as DevilXD's TwitchDropsMiner):
+The Inventory API also returns `gameEventDrops` — a permanent list of ALL ever-claimed
+benefit IDs with `lastAwardedAt` timestamps. This persists even after campaigns are removed
+from dropCampaignsInProgress. By cross-referencing each drop's benefit ID against this list
+(with a campaign time window check to avoid false matches across campaigns), we can now
+correctly identify already-completed drops.
+
+4-step merge pipeline:
+1. Dashboard → all campaigns (no progress data)
+2. Inventory → in-progress campaigns + gameEventDrops (all claimed benefit history)
+3. Merge inventory progress into dashboard campaigns (by drop ID)
+4. For drops NOT in inventory: check benefit ID against gameEventDrops with timestamp
+   validation → mark as claimed if matched within campaign time window
+
+The CompletedCampaigns config cache (from v1.3.9) remains as a second layer — once a
+campaign is detected as fully claimed, its ID is stored in config.json so future cycles
+skip it immediately without needing the API check.
+
+Changes:
+- Added `gameEventDrops { id lastAwardedAt }` to Inventory GQL query
+- Added BenefitID field to TimeBasedDrop (parsed from benefitEdges[0].benefit.id)
+- New parseGameEventDrops() extracts benefit ID → lastAwardedAt map from inventory
+- New isWithinCampaignWindow() validates award timestamps against campaign period
+- GetDropsInventory() merge step 4: cross-reference benefits with gameEventDrops
+- processDrops() log now shows detection source (inventory vs gameEventDrops)
+- Debug logging for connected campaigns (benefitID, claimed status, progress)
+
+Files modified:
+- internal/twitch/drops.go (gameEventDrops query, BenefitID, merge step 4)
+- internal/farmer/drops.go (detection source logging, debug output)
+- cmd/twitchpoint/main.go (version bump to 1.4.0)
+
 == 2026-04-07 00:18 == Bugfix: Merge drop progress from Inventory into Dashboard (v1.3.9) ==
 
 ViewerDropsDashboard returns all campaigns but WITHOUT progress data (self is null).

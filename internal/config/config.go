@@ -24,8 +24,9 @@ type Config struct {
 	WebEnabled     bool           `json:"web_enabled"`               // enable web UI
 	WebPort        int            `json:"web_port"`                  // web server port (default 8080)
 	IrcEnabled     bool           `json:"irc_enabled"`               // enable IRC for viewer presence (default true)
-	DropsEnabled       bool           `json:"drops_enabled"`                        // enable drop mining (default true)
-	DisabledCampaigns  []string       `json:"disabled_campaigns,omitempty"`         // campaign IDs to skip
+	DropsEnabled        bool     `json:"drops_enabled"`                         // enable drop mining (default true)
+	DisabledCampaigns   []string `json:"disabled_campaigns,omitempty"`          // campaign IDs to skip
+	CompletedCampaigns  []string `json:"completed_campaigns,omitempty"`         // campaign IDs already fully claimed
 
 	path string // file path, not serialized
 }
@@ -236,6 +237,23 @@ func (c *Config) SetCampaignEnabled(campaignID string, enabled bool) {
 		if !c.IsCampaignDisabled(campaignID) {
 			c.DisabledCampaigns = append(c.DisabledCampaigns, campaignID)
 		}
+	}
+}
+
+// IsCampaignCompleted checks if a campaign has been fully claimed.
+func (c *Config) IsCampaignCompleted(campaignID string) bool {
+	for _, id := range c.CompletedCampaigns {
+		if id == campaignID {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkCampaignCompleted adds a campaign ID to the completed list.
+func (c *Config) MarkCampaignCompleted(campaignID string) {
+	if !c.IsCampaignCompleted(campaignID) {
+		c.CompletedCampaigns = append(c.CompletedCampaigns, campaignID)
 	}
 }
 

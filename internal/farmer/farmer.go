@@ -875,10 +875,25 @@ func (f *Farmer) rotateChannels() {
 	}
 	f.mu.RUnlock()
 
-	// Sort all lists deterministically by channel ID
+	// Sort P0 by campaign end time (soonest expiring first gets the Spade slot)
+	f.drops.mu.RLock()
 	sort.Slice(priority0, func(i, j int) bool {
-		return priority0[i].ChannelID < priority0[j].ChannelID
+		ci := priority0[i].Snapshot().CampaignID
+		cj := priority0[j].Snapshot().CampaignID
+		ei := f.drops.campaignCache[ci].EndAt
+		ej := f.drops.campaignCache[cj].EndAt
+		if ei.IsZero() {
+			return false
+		}
+		if ej.IsZero() {
+			return true
+		}
+		if ei.Equal(ej) {
+			return priority0[i].ChannelID < priority0[j].ChannelID
+		}
+		return ei.Before(ej)
 	})
+	f.drops.mu.RUnlock()
 	sort.Slice(priority1, func(i, j int) bool {
 		return priority1[i].ChannelID < priority1[j].ChannelID
 	})

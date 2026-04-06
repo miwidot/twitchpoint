@@ -2,6 +2,7 @@ package twitch
 
 import (
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -51,10 +52,16 @@ const queryDropsDashboard = `query ViewerDropsDashboard {
 	}
 }`
 
-// GQL query for fetching campaigns with progress (fallback if dashboard fails).
+// GQL query for fetching campaigns with progress + gameEventDrops (claimed benefit history).
+// gameEventDrops contains ALL ever-claimed benefit IDs with lastAwardedAt timestamps.
+// This is key for detecting already-completed campaigns that disappear from dropCampaignsInProgress.
 const queryDropsInventory = `query Inventory {
 	currentUser {
 		inventory {
+			gameEventDrops {
+				id
+				lastAwardedAt
+			}
 			dropCampaignsInProgress {
 				id
 				name
@@ -114,6 +121,7 @@ type DropCampaign struct {
 	StartAt            time.Time
 	EndAt              time.Time
 	IsAccountConnected bool // whether the user's account is linked for this game
+	InInventory        bool // true if campaign appeared in Inventory (has/had progress)
 	Drops              []TimeBasedDrop
 	Channels           []DropChannel // allowed channels (empty = any channel with the game)
 }
@@ -126,6 +134,7 @@ type TimeBasedDrop struct {
 	CurrentMinutesWatched  int
 	DropInstanceID         string // non-empty when progress exists
 	IsClaimed              bool
+	BenefitID              string // benefit ID for cross-referencing with gameEventDrops
 	BenefitName            string
 }
 
@@ -155,25 +164,32 @@ func (d *TimeBasedDrop) ProgressPercent() int {
 
 // GetDropsInventory fetches ALL available drop campaigns with progress data.
 // Step 1: ViewerDropsDashboard → all campaigns the user is eligible for (no progress).
-// Step 2: Inventory → campaigns with existing progress (currentMinutesWatched, isClaimed).
+// Step 2: Inventory → campaigns with progress + gameEventDrops (all ever-claimed benefit IDs).
 // Step 3: Merge progress from Inventory into Dashboard campaigns.
+// Step 4: Use gameEventDrops to detect already-completed drops not in Inventory.
 // Falls back to Inventory-only if Dashboard fails.
 func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 	dashboardCampaigns, err := g.getDropsDashboard()
 	if err != nil || dashboardCampaigns == nil {
 		// Fallback: inventory only (still has progress data)
-		return g.getDropsFromInventory()
+		campaigns, _, invErr := g.getDropsFromInventory()
+		if invErr != nil {
+			return nil, invErr
+		}
+		return campaigns, nil
 	}
 
-	// Fetch inventory for progress data
-	inventoryCampaigns, _ := g.getDropsFromInventory()
-	if len(inventoryCampaigns) == 0 {
-		return dashboardCampaigns, nil
-	}
+	// Fetch inventory for progress data + gameEventDrops
+	inventoryCampaigns, claimedBenefits, _ := g.getDropsFromInventory()
 
-	// Build lookup: dropID -> drop progress from inventory
+	log.Printf("[Drops/Merge] Dashboard=%d campaigns, Inventory=%d campaigns, gameEventDrops=%d benefits",
+		len(dashboardCampaigns), len(inventoryCampaigns), len(claimedBenefits))
+
+	// Build lookups from inventory campaigns
+	inventoryCampaignIDs := make(map[string]bool)
 	progressByDropID := make(map[string]TimeBasedDrop)
 	for _, ic := range inventoryCampaigns {
+		inventoryCampaignIDs[ic.ID] = true
 		for _, drop := range ic.Drops {
 			progressByDropID[drop.ID] = drop
 		}
@@ -181,16 +197,59 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 
 	// Merge progress into dashboard campaigns
 	for i := range dashboardCampaigns {
+		if inventoryCampaignIDs[dashboardCampaigns[i].ID] {
+			dashboardCampaigns[i].InInventory = true
+		}
 		for j := range dashboardCampaigns[i].Drops {
-			if inv, ok := progressByDropID[dashboardCampaigns[i].Drops[j].ID]; ok {
-				dashboardCampaigns[i].Drops[j].CurrentMinutesWatched = inv.CurrentMinutesWatched
-				dashboardCampaigns[i].Drops[j].DropInstanceID = inv.DropInstanceID
-				dashboardCampaigns[i].Drops[j].IsClaimed = inv.IsClaimed
+			drop := &dashboardCampaigns[i].Drops[j]
+
+			// Step 3: Merge progress from inventory (in-progress campaigns)
+			if inv, ok := progressByDropID[drop.ID]; ok {
+				drop.CurrentMinutesWatched = inv.CurrentMinutesWatched
+				drop.DropInstanceID = inv.DropInstanceID
+				drop.IsClaimed = inv.IsClaimed
+				continue
+			}
+
+			// Step 4: Use gameEventDrops to detect already-claimed drops.
+			// If a drop's benefit ID appears in gameEventDrops AND the lastAwardedAt
+			// falls within the campaign's time window, the drop was already claimed.
+			// This catches campaigns that disappeared from dropCampaignsInProgress.
+			if drop.BenefitID != "" && len(claimedBenefits) > 0 {
+				if lastAwarded, found := claimedBenefits[drop.BenefitID]; found {
+					campaign := dashboardCampaigns[i]
+					if isWithinCampaignWindow(lastAwarded, campaign.StartAt, campaign.EndAt) {
+						drop.IsClaimed = true
+						drop.CurrentMinutesWatched = drop.RequiredMinutesWatched
+						log.Printf("[Drops/Merge] gameEventDrops: marked %q drop %q as claimed (benefit=%s, awarded=%s)",
+							campaign.Name, drop.Name, drop.BenefitID, lastAwarded.Format(time.RFC3339))
+					} else {
+						log.Printf("[Drops/Merge] gameEventDrops: benefit %s found but outside window (awarded=%s, campaign=%s..%s)",
+							drop.BenefitID, lastAwarded.Format(time.RFC3339),
+							campaign.StartAt.Format(time.RFC3339), campaign.EndAt.Format(time.RFC3339))
+					}
+				}
 			}
 		}
 	}
 
 	return dashboardCampaigns, nil
+}
+
+// isWithinCampaignWindow checks if an award timestamp falls within the campaign's time window.
+// Returns true if we can't determine the window (missing timestamps) — benefit of the doubt.
+func isWithinCampaignWindow(awarded, campaignStart, campaignEnd time.Time) bool {
+	if awarded.IsZero() {
+		// Benefit was claimed but no timestamp — assume it's valid
+		return true
+	}
+	if !campaignStart.IsZero() && awarded.Before(campaignStart) {
+		return false // claimed before this campaign started
+	}
+	if !campaignEnd.IsZero() && awarded.After(campaignEnd) {
+		return false // claimed after this campaign ended
+	}
+	return true
 }
 
 // getDropsDashboard fetches all campaigns via ViewerDropsDashboard.
@@ -227,7 +286,8 @@ func (g *GQLClient) getDropsDashboard() ([]DropCampaign, error) {
 }
 
 // getDropsFromInventory fetches campaigns via the Inventory query (fallback).
-func (g *GQLClient) getDropsFromInventory() ([]DropCampaign, error) {
+// Also returns gameEventDrops: a map of benefitID → lastAwardedAt for ALL ever-claimed benefits.
+func (g *GQLClient) getDropsFromInventory() ([]DropCampaign, map[string]time.Time, error) {
 	req := &GQLRequest{
 		OperationName: "Inventory",
 		Query:         queryDropsInventory,
@@ -235,37 +295,77 @@ func (g *GQLClient) getDropsFromInventory() ([]DropCampaign, error) {
 
 	resp, err := g.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get drops inventory: %w", err)
+		return nil, nil, fmt.Errorf("get drops inventory: %w", err)
 	}
 
 	currentUser, ok := resp.Data["currentUser"]
 	if !ok || currentUser == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	userMap, ok := currentUser.(map[string]interface{})
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	inventory, ok := userMap["inventory"]
 	if !ok || inventory == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	invMap, ok := inventory.(map[string]interface{})
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
+
+	// Parse gameEventDrops — permanent history of all claimed benefit IDs
+	claimedBenefits := parseGameEventDrops(invMap)
 
 	campaignsRaw, ok := invMap["dropCampaignsInProgress"]
 	if !ok || campaignsRaw == nil {
-		return nil, nil
+		return nil, claimedBenefits, nil
 	}
 	campaignList, ok := campaignsRaw.([]interface{})
 	if !ok {
-		return nil, nil
+		return nil, claimedBenefits, nil
 	}
 
-	return parseCampaignList(campaignList), nil
+	return parseCampaignList(campaignList), claimedBenefits, nil
+}
+
+// parseGameEventDrops extracts the benefit ID → lastAwardedAt map from the inventory response.
+// gameEventDrops contains ALL benefits ever claimed by the user, even from completed/expired campaigns.
+func parseGameEventDrops(invMap map[string]interface{}) map[string]time.Time {
+	result := make(map[string]time.Time)
+
+	geDropsRaw, ok := invMap["gameEventDrops"]
+	if !ok || geDropsRaw == nil {
+		return result
+	}
+	geDropsList, ok := geDropsRaw.([]interface{})
+	if !ok {
+		return result
+	}
+
+	for _, item := range geDropsList {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id := getString(itemMap, "id")
+		if id == "" {
+			continue
+		}
+		lastAwarded := getString(itemMap, "lastAwardedAt")
+		if lastAwarded != "" {
+			if t, err := time.Parse(time.RFC3339, lastAwarded); err == nil {
+				result[id] = t
+			}
+		} else {
+			// Benefit exists but no timestamp — still claimed
+			result[id] = time.Time{}
+		}
+	}
+
+	return result
 }
 
 // parseCampaignList parses a list of campaign objects from GQL response.
@@ -336,7 +436,8 @@ func parseCampaignList(campaignList []interface{}) []DropCampaign {
 							if edge, ok := edges[0].(map[string]interface{}); ok {
 								if benefit, ok := edge["benefit"]; ok && benefit != nil {
 									if bMap, ok := benefit.(map[string]interface{}); ok {
-										drop.BenefitName = getString(bMap, "name")
+										drop.BenefitID = getString(bMap, "id")
+									drop.BenefitName = getString(bMap, "name")
 									}
 								}
 							}
