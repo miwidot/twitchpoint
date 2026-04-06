@@ -98,7 +98,7 @@ func (f *Farmer) processDrops() {
 		f.writeLogFile(fmt.Sprintf("[Drops] Processing campaign %q (game=%q, status=%q, drops=%d, endsAt=%s, connected=%v)",
 			campaign.Name, campaign.GameName, campaign.Status, len(campaign.Drops), campaign.EndAt.Format("2006-01-02 15:04"), campaign.IsAccountConnected))
 
-		// Skip non-ACTIVE campaigns (dashboard query returns all statuses)
+		// Skip non-ACTIVE campaigns (inventory returns ACTIVE and EXPIRED)
 		if campaign.Status != "" && campaign.Status != "ACTIVE" {
 			f.writeLogFile(fmt.Sprintf("[Drops] Skipping non-active campaign %q (status=%s)", campaign.Name, campaign.Status))
 			continue
@@ -118,14 +118,6 @@ func (f *Farmer) processDrops() {
 
 		// Skip campaigns where account is not linked (drops won't be credited)
 		if !campaign.IsAccountConnected {
-			f.writeLogFile(fmt.Sprintf("[Drops] Skipping unlinked campaign %q (game=%q)", campaign.Name, campaign.GameName))
-			allDrops = append(allDrops, ActiveDrop{
-				CampaignID:         campaign.ID,
-				CampaignName:       campaign.Name,
-				GameName:           campaign.GameName,
-				IsEnabled:          true,
-				IsAccountConnected: false,
-			})
 			continue
 		}
 

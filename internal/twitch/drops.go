@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// GQL query for fetching ALL available drop campaigns (not just ones with progress).
-// Uses currentUser.dropCampaigns which is the Viewer Drops Dashboard — returns every
-// campaign the user is eligible for, including ones they haven't started watching yet.
+// GQL query for fetching ALL available drop campaigns via the Viewer Drops Dashboard.
+// Returns every campaign the user is eligible for, including ones not yet started.
+// Requires Android App Client-ID (kd1unb4b3q4t58fwlpcbzcbnm76a8fp) — returns null with TV Client-ID.
 const queryDropsDashboard = `query ViewerDropsDashboard {
 	currentUser {
 		dropCampaigns {
@@ -26,8 +26,6 @@ const queryDropsDashboard = `query ViewerDropsDashboard {
 			timeBasedDrops {
 				id
 				name
-				startAt
-				endAt
 				requiredMinutesWatched
 				benefitEdges {
 					benefit {
@@ -53,13 +51,14 @@ const queryDropsDashboard = `query ViewerDropsDashboard {
 	}
 }`
 
-// GQL query for fetching progress on campaigns already started (fallback).
+// GQL query for fetching campaigns with progress (fallback if dashboard fails).
 const queryDropsInventory = `query Inventory {
 	currentUser {
 		inventory {
 			dropCampaignsInProgress {
 				id
 				name
+				status
 				game {
 					id
 					displayName
@@ -154,16 +153,16 @@ func (d *TimeBasedDrop) ProgressPercent() int {
 	return pct
 }
 
-// GetDropsInventory fetches ALL available drop campaigns using the ViewerDropsDashboard query.
-// This returns every campaign the user is eligible for, not just ones with existing progress.
-// Falls back to the old Inventory query if the dashboard query fails.
+// GetDropsInventory fetches ALL available drop campaigns.
+// Primary: ViewerDropsDashboard (all campaigns the user is eligible for).
+// Fallback: Inventory query (only campaigns with existing progress).
 func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 	campaigns, err := g.getDropsDashboard()
-	if err != nil || campaigns == nil {
-		// Fallback to old inventory query
-		return g.getDropsFromInventory()
+	if err == nil && campaigns != nil {
+		return campaigns, nil
 	}
-	return campaigns, nil
+	// Fallback to inventory query
+	return g.getDropsFromInventory()
 }
 
 // getDropsDashboard fetches all campaigns via ViewerDropsDashboard.
@@ -199,7 +198,7 @@ func (g *GQLClient) getDropsDashboard() ([]DropCampaign, error) {
 	return parseCampaignList(campaignList), nil
 }
 
-// getDropsFromInventory fetches campaigns via the old Inventory query (fallback).
+// getDropsFromInventory fetches campaigns via the Inventory query (fallback).
 func (g *GQLClient) getDropsFromInventory() ([]DropCampaign, error) {
 	req := &GQLRequest{
 		OperationName: "Inventory",

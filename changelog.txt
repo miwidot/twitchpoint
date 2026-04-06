@@ -1,3 +1,31 @@
+== 2026-04-07 00:01 == Feature: Discover ALL available drop campaigns (v1.3.8) ==
+
+Switched from SmartBox/TV Client-ID to Android App Client-ID which unlocks the
+ViewerDropsDashboard API — now returns ALL 100+ campaigns the user is eligible
+for, not just the ~9 with existing progress.
+
+BREAKING: Existing users must re-login once (`--login` flag or delete token from
+config.json) because OAuth tokens are tied to the Client-ID they were created with.
+
+Changes:
+- Client-ID switched from TV (ue6666qo...) to Android App (kd1unb4b3q...)
+  - No integrity tokens needed (same as before)
+  - ViewerDropsDashboard now returns data instead of null
+- Primary query: ViewerDropsDashboard (all eligible campaigns)
+- Fallback: Inventory query (campaigns with progress only)
+- Unlinked campaigns (account not connected) fully hidden from UI
+  - Previously shown as UNLINKED rows — now filtered out server-side
+  - Cleaned up dead UNLINKED code in Web UI and TUI
+- Status field added to inventory query for proper ACTIVE/EXPIRED filtering
+
+Files modified:
+- internal/twitch/gql.go (Android App Client-ID)
+- internal/twitch/drops.go (dashboard primary, inventory fallback, status field)
+- internal/farmer/drops.go (skip unlinked entirely, remove from UI payload)
+- internal/web/static/index.html (remove UNLINKED badge/dead code)
+- internal/ui/components.go (remove UNLINKED status branch)
+- cmd/twitchpoint/main.go (version bump to 1.3.8)
+
 == 2026-04-06 18:47 == Feature: Discover ALL available drop campaigns (v1.3.7) ==
 
 Switched from the limited dropCampaignsInProgress query (only returns campaigns

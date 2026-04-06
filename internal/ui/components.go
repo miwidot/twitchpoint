@@ -207,9 +207,7 @@ func renderDropsTable(drops []farmer.ActiveDrop, width int) string {
 		}
 
 		var status string
-		if !drop.IsAccountConnected {
-			status = lipgloss.NewStyle().Foreground(colorRed).Render("UNLINKED")
-		} else if !drop.IsEnabled {
+		if !drop.IsEnabled {
 			status = subtitleStyle.Render("DISABLED")
 		} else {
 			status = dropStyle.Render("ACTIVE")
