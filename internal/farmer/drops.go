@@ -579,6 +579,39 @@ func (f *Farmer) findLiveFromGameDirectory(gameName string) string {
 	return ""
 }
 
+// findLiveFromGameDirectoryExcluding is like findLiveFromGameDirectory but skips a specific login.
+// Used during failover to avoid re-selecting the channel that just went offline/raided.
+func (f *Farmer) findLiveFromGameDirectoryExcluding(gameName, excludeLogin string) string {
+	streams, err := f.gql.GetGameStreams(gameName, 100)
+	if err != nil {
+		f.addLog("[Drops] Failed to query game directory for %q: %v", gameName, err)
+		return ""
+	}
+
+	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] Got %d streams for game %q (excluding %q)", len(streams), gameName, excludeLogin))
+
+	for _, stream := range streams {
+		login := strings.ToLower(stream.BroadcasterLogin)
+
+		if login == excludeLogin {
+			continue
+		}
+
+		// Skip if already tracked
+		f.mu.RLock()
+		_, tracked := f.loginMap[login]
+		f.mu.RUnlock()
+		if tracked {
+			continue
+		}
+
+		return login
+	}
+
+	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] No suitable replacement found for game %q", gameName))
+	return ""
+}
+
 // SetCampaignEnabled enables or disables a drop campaign.
 func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
 	f.cfg.SetCampaignEnabled(campaignID, enabled)

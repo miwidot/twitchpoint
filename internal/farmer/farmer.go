@@ -755,9 +755,9 @@ func (f *Farmer) handleDropFailover(channelID string) {
 		}
 	}
 
-	// 3. Try game directory
+	// 3. Try game directory (exclude the current failing channel)
 	if campaign.GameName != "" {
-		login := f.findLiveFromGameDirectory(campaign.GameName)
+		login := f.findLiveFromGameDirectoryExcluding(campaign.GameName, snap.Login)
 		if login != "" {
 			if err := f.addTemporaryChannel(login, campaignID); err == nil {
 				f.addLog("[Drops] Failover: auto-selected %s from game directory", login)
