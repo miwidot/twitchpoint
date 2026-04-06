@@ -15,7 +15,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/web"
 )
 
-const appVersion = "1.3.3"
+const appVersion = "1.3.4"
 
 func main() {
 	web.Version = appVersion

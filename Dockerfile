@@ -23,8 +23,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/twitchpoint .
 
-# Config volume
+# Config and logs volumes
 VOLUME /app/config
+VOLUME /app/logs
 
 # Web UI port
 EXPOSE 8080

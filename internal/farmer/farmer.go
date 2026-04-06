@@ -37,6 +37,7 @@ type Farmer struct {
 	logMu      sync.RWMutex
 	logEntries []LogEntry
 	logFile    *os.File
+	logDate    string // current log file date (YYYY-MM-DD) for rotation
 
 	startTime time.Time
 	stopCh    chan struct{}
@@ -82,12 +83,17 @@ func New(cfg *config.Config, version string) *Farmer {
 func (f *Farmer) Start() error {
 	f.startTime = time.Now()
 
-	// Open debug log file (append mode)
-	logFile, err := os.OpenFile("debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Open daily debug log file (append mode)
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		return fmt.Errorf("create logs dir: %w", err)
+	}
+	logPath := fmt.Sprintf("logs/debug-%s.log", time.Now().Format("2006-01-02"))
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("open debug.log: %w", err)
+		return fmt.Errorf("open %s: %w", logPath, err)
 	}
 	f.logFile = logFile
+	f.logDate = time.Now().Format("2006-01-02")
 	f.writeLogFile("=== TwitchPoint Farmer started ===")
 
 	// Initialize GQL client
@@ -995,6 +1001,19 @@ func (f *Farmer) writeLogFile(msg string) {
 	if f.logFile == nil {
 		return
 	}
+
+	// Daily rotation: check if we've crossed midnight
+	today := time.Now().Format("2006-01-02")
+	if today != f.logDate {
+		newPath := fmt.Sprintf("logs/debug-%s.log", today)
+		newFile, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			f.logFile.Close()
+			f.logFile = newFile
+			f.logDate = today
+		}
+	}
+
 	line := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
 	f.logFile.WriteString(line)
 }

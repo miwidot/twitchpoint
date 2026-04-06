@@ -136,6 +136,10 @@ func (f *Farmer) processDrops() {
 			f.mu.RUnlock()
 			needsAutoSelect = !hasOnline
 		}
+
+		f.writeLogFile(fmt.Sprintf("[Drops] Campaign %q: matchedChannels=%d, needsAutoSelect=%v",
+			campaign.Name, len(campaignChannelIDs), needsAutoSelect))
+
 		if needsAutoSelect {
 			autoLogin := f.autoSelectDropChannel(campaign)
 			if autoLogin != "" {
@@ -146,6 +150,8 @@ func (f *Farmer) processDrops() {
 					campaignChannelIDs[chID] = autoLogin
 				}
 				f.mu.RUnlock()
+			} else {
+				f.writeLogFile(fmt.Sprintf("[Drops] Auto-select returned empty for campaign %q", campaign.Name))
 			}
 		}
 
@@ -355,6 +361,9 @@ func (f *Farmer) matchCampaignChannels(campaign twitch.DropCampaign) map[string]
 // autoSelectDropChannel tries to find and add a live channel for a campaign with no matches.
 // Returns the login of the added channel, or empty string if none found.
 func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
+	f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Starting auto-select for campaign %q (game=%q, allowedChannels=%d)",
+		campaign.Name, campaign.GameName, len(campaign.Channels)))
+
 	if len(campaign.Channels) > 0 {
 		// Campaign has an allowed channels list — must select from those
 
@@ -362,15 +371,21 @@ func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
 		if campaign.GameName != "" {
 			login := f.findAllowedChannelViaDirectory(campaign)
 			if login != "" {
+				f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Strategy 1 (directory) found %q for %q", login, campaign.Name))
 				return login
 			}
+			f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Strategy 1 (directory) found no match for %q", campaign.Name))
+		} else {
+			f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Strategy 1 skipped: no GameName for %q", campaign.Name))
 		}
 
-		// Strategy 2: Check individual allowed channels (limited to 25 to avoid rate-limiting)
+		// Strategy 2: Check individual allowed channels (limited to 50 to avoid rate-limiting)
 		login := f.findLiveFromAllowedChannels(campaign)
 		if login != "" {
+			f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Strategy 2 (individual) found %q for %q", login, campaign.Name))
 			return login
 		}
+		f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Strategy 2 (individual) found no match for %q", campaign.Name))
 
 		f.addLog("[Drops] No live allowed channel found for %q (%d allowed channels)", campaign.Name, len(campaign.Channels))
 		return ""
@@ -381,10 +396,15 @@ func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
 		login := f.findLiveFromGameDirectory(campaign.GameName)
 		if login != "" {
 			if err := f.addTemporaryChannel(login, campaign.ID); err == nil {
+				f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Game directory found %q for unrestricted campaign %q", login, campaign.Name))
 				return login
+			} else {
+				f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] addTemporaryChannel(%q) failed: %v", login, err))
 			}
 		}
 		f.addLog("[Drops] No live stream found for game %q (%s)", campaign.GameName, campaign.Name)
+	} else {
+		f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] No GameName and no Channels for %q — cannot auto-select", campaign.Name))
 	}
 
 	return ""
@@ -393,10 +413,13 @@ func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
 // findAllowedChannelViaDirectory queries the game directory and cross-references
 // results with the campaign's allowed channels. Much faster than checking each individually.
 func (f *Farmer) findAllowedChannelViaDirectory(campaign twitch.DropCampaign) string {
-	streams, err := f.gql.GetGameStreams(campaign.GameName, 30)
+	streams, err := f.gql.GetGameStreams(campaign.GameName, 100)
 	if err != nil {
+		f.writeLogFile(fmt.Sprintf("[Drops/Directory] GetGameStreams(%q) error: %v", campaign.GameName, err))
 		return ""
 	}
+
+	f.writeLogFile(fmt.Sprintf("[Drops/Directory] Got %d streams for game %q", len(streams), campaign.GameName))
 
 	// Build allowed lookup (by login and by ID)
 	allowedByLogin := make(map[string]bool, len(campaign.Channels))
@@ -413,6 +436,7 @@ func (f *Farmer) findAllowedChannelViaDirectory(campaign twitch.DropCampaign) st
 		}
 	}
 
+	matched := 0
 	for _, stream := range streams {
 		login := strings.ToLower(stream.BroadcasterLogin)
 
@@ -420,29 +444,45 @@ func (f *Farmer) findAllowedChannelViaDirectory(campaign twitch.DropCampaign) st
 		if !allowedByLogin[login] && !allowedByID[stream.BroadcasterID] {
 			continue
 		}
+		matched++
 
-		// Skip if already tracked
+		// Check if already tracked — if so, reuse it for this campaign
 		f.mu.RLock()
-		_, tracked := f.loginMap[login]
+		chID, tracked := f.loginMap[login]
 		f.mu.RUnlock()
 		if tracked {
+			f.mu.RLock()
+			ch, exists := f.channels[chID]
+			f.mu.RUnlock()
+			if exists {
+				ch.mu.Lock()
+				ch.CampaignID = campaign.ID
+				ch.mu.Unlock()
+				f.writeLogFile(fmt.Sprintf("[Drops/Directory] Reusing already-tracked channel %q for campaign %q", login, campaign.Name))
+				return login
+			}
 			continue
 		}
 
 		if err := f.addTemporaryChannel(login, campaign.ID); err == nil {
 			return login
 		}
+		f.writeLogFile(fmt.Sprintf("[Drops/Directory] addTemporaryChannel(%q) failed: %v", login, err))
 	}
 
+	f.writeLogFile(fmt.Sprintf("[Drops/Directory] %d streams matched allowed list, none usable for %q", matched, campaign.Name))
 	return ""
 }
 
 // findLiveFromAllowedChannels checks individual allowed channels to find a live one.
-// Limited to 25 channels to avoid rate-limiting.
+// Limited to 50 channels to avoid rate-limiting.
 func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) string {
 	checked := 0
+	skippedEmpty := 0
+	skippedOffline := 0
 	for _, dropCh := range campaign.Channels {
-		if checked >= 25 {
+		if checked >= 50 {
+			f.writeLogFile(fmt.Sprintf("[Drops/Individual] Hit 50-channel limit for %q (%d total allowed)", campaign.Name, len(campaign.Channels)))
 			break
 		}
 
@@ -452,14 +492,25 @@ func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) strin
 			login = strings.ToLower(dropCh.DisplayName)
 		}
 		if login == "" {
+			skippedEmpty++
 			continue
 		}
 
-		// Skip if already tracked
+		// Check if already tracked — reuse for this campaign
 		f.mu.RLock()
-		_, tracked := f.loginMap[login]
+		chID, tracked := f.loginMap[login]
 		f.mu.RUnlock()
 		if tracked {
+			f.mu.RLock()
+			ch, exists := f.channels[chID]
+			f.mu.RUnlock()
+			if exists && ch.Snapshot().IsOnline {
+				ch.mu.Lock()
+				ch.CampaignID = campaign.ID
+				ch.mu.Unlock()
+				f.writeLogFile(fmt.Sprintf("[Drops/Individual] Reusing already-tracked online channel %q for campaign %q", login, campaign.Name))
+				return login
+			}
 			continue
 		}
 
@@ -474,10 +525,18 @@ func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) strin
 			if err := f.addTemporaryChannel(login, campaign.ID); err == nil {
 				return login
 			}
+			f.writeLogFile(fmt.Sprintf("[Drops/Individual] addTemporaryChannel(%q) failed: %v", login, err))
+		} else {
+			skippedOffline++
 		}
 
 		// Rate limiting: 200ms between GQL calls
 		time.Sleep(200 * time.Millisecond)
+	}
+
+	if skippedEmpty > 0 || checked > 0 {
+		f.writeLogFile(fmt.Sprintf("[Drops/Individual] Campaign %q: checked=%d, offline=%d, emptyLogin=%d",
+			campaign.Name, checked, skippedOffline, skippedEmpty))
 	}
 	return ""
 }
@@ -485,25 +544,30 @@ func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) strin
 // findLiveFromGameDirectory queries the game directory for live streams.
 // Returns the login of the first suitable stream, or empty string.
 func (f *Farmer) findLiveFromGameDirectory(gameName string) string {
-	streams, err := f.gql.GetGameStreams(gameName, 10)
+	streams, err := f.gql.GetGameStreams(gameName, 100)
 	if err != nil {
 		f.addLog("[Drops] Failed to query game directory for %q: %v", gameName, err)
 		return ""
 	}
 
+	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] Got %d streams for game %q", len(streams), gameName))
+
 	for _, stream := range streams {
 		login := strings.ToLower(stream.BroadcasterLogin)
 
-		// Skip if already tracked
+		// If already tracked, reuse it (caller will set campaign ID)
 		f.mu.RLock()
 		_, tracked := f.loginMap[login]
 		f.mu.RUnlock()
 		if tracked {
-			continue
+			f.writeLogFile(fmt.Sprintf("[Drops/GameDir] %q already tracked, returning for reuse", login))
+			return login
 		}
 
 		return login
 	}
+
+	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] No streams found for game %q", gameName))
 	return ""
 }
 

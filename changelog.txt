@@ -1,3 +1,22 @@
+== 2026-04-06 08:51 == Enhancement: Drops auto-select improvements & daily debug logging (v1.3.4) ==
+
+Improved drops auto-select reliability and added comprehensive debug logging to
+diagnose cases where drops don't auto-start.
+
+Changes:
+- Daily rotating debug logs: logs/debug-YYYY-MM-DD.log (auto-creates logs/ dir)
+- Added debug logging at all silent-failure points in drops auto-select flow
+- Increased game directory query from 30 to 100 streams for better coverage
+- Increased individual channel check limit from 25 to 50
+- Already-tracked channels are now reused for drops instead of skipped
+- Docker: added /app/logs volume for persistent debug log access
+
+Files modified:
+- internal/farmer/farmer.go (daily log rotation, logDate field)
+- internal/farmer/drops.go (debug logging, increased limits, already-tracked fix)
+- Dockerfile (added logs volume)
+- cmd/twitchpoint/main.go (version bump to 1.3.4)
+
 == 2026-02-24 22:12 == Bugfix: Console X button kills process on Windows (v1.2.4) ==
 
 Clicking the X button on the console window terminated the entire process including
