@@ -63,6 +63,10 @@ func (f *Farmer) dropCheckLoop() {
 
 // processDrops fetches the inventory, updates channel drop state, and auto-claims completed drops.
 func (f *Farmer) processDrops() {
+	// Health check: verify temp drop channels are still online.
+	// PubSub may miss StreamDown events, leaving stale "online" state.
+	f.verifyTempChannelHealth()
+
 	campaigns, err := f.gql.GetDropsInventory()
 	if err != nil {
 		f.addLog("[Drops] Failed to fetch inventory: %v", err)
@@ -673,6 +677,51 @@ func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
 	// Trigger immediate re-evaluation
 	go f.processDrops()
 	return nil
+}
+
+// verifyTempChannelHealth checks that temporary drop channels are still online.
+// PubSub may miss StreamDown events, leaving channels with stale "online" state
+// that blocks failover. This verifies via GQL API and triggers failover if needed.
+func (f *Farmer) verifyTempChannelHealth() {
+	type tempCheck struct {
+		chID       string
+		login      string
+		campaignID string
+	}
+
+	f.mu.RLock()
+	var toCheck []tempCheck
+	for chID, ch := range f.channels {
+		snap := ch.Snapshot()
+		if snap.IsTemporary && snap.CampaignID != "" && snap.IsOnline {
+			toCheck = append(toCheck, tempCheck{chID, ch.Login, snap.CampaignID})
+		}
+	}
+	f.mu.RUnlock()
+
+	if len(toCheck) == 0 {
+		return
+	}
+
+	for _, tc := range toCheck {
+		info, err := f.gql.GetChannelInfo(tc.login)
+		if err != nil {
+			continue
+		}
+		if !info.IsLive {
+			f.writeLogFile(fmt.Sprintf("[Drops/Health] Temp channel %s is offline (stale state, PubSub missed StreamDown)", tc.login))
+			// Update the channel state to offline
+			f.mu.RLock()
+			if ch, ok := f.channels[tc.chID]; ok {
+				ch.mu.Lock()
+				ch.IsOnline = false
+				ch.mu.Unlock()
+			}
+			f.mu.RUnlock()
+			// Trigger failover to find a replacement
+			f.handleDropFailover(tc.chID)
+		}
+	}
 }
 
 // GetActiveDrops returns the current active drops for the Web UI.

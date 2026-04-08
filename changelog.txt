@@ -1,3 +1,23 @@
+== 2026-04-08 21:05 == Bugfix: Temp drop channels stuck offline without failover (v1.4.1) ==
+
+Fixed a bug where temporary drop channels could go offline without triggering failover,
+causing drop progress to stall for hours. Root cause: PubSub occasionally misses
+StreamDown events for temporary channels, leaving them with stale IsOnline=true state.
+The drop check cycle then sees matchedChannels=1 and skips auto-select, even though
+the channel is offline and no Spade heartbeats are being sent.
+
+Added verifyTempChannelHealth() — runs at the start of every drop check cycle (every
+5 min). For each temporary channel with an active campaign, it queries the GQL API to
+verify the channel is actually online. If offline, updates the state and triggers
+handleDropFailover() to find a replacement from the game directory.
+
+Real-world case: Arena Breakout "Cobra Strike AK-74N" drop was stuck at 375/480 for
+14+ hours because j3llybag3l went offline without a PubSub event.
+
+Files modified:
+- internal/farmer/drops.go (verifyTempChannelHealth, called from processDrops)
+- cmd/twitchpoint/main.go (version bump to 1.4.1)
+
 == 2026-04-07 01:12 == Feature: Detect already-completed drop campaigns via gameEventDrops (v1.4.0) ==
 
 Fixed a critical issue where already-completed drop campaigns (e.g. GZW Stage 2) showed
