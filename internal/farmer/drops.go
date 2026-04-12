@@ -323,7 +323,7 @@ func (f *Farmer) processDrops() {
 	f.mu.RUnlock()
 
 	// Remove stale temporary channels no longer serving an active drop
-	f.cleanupTemporaryChannels(activeCampaignIDs)
+	f.cleanupTemporaryChannels(activeCampaignIDs, activeDropChannels)
 
 	// Store campaign cache and active drops
 	f.drops.mu.Lock()
@@ -344,10 +344,9 @@ func (f *Farmer) processDrops() {
 	}
 }
 
-// cleanupTemporaryChannels removes temp channels that are no longer useful:
-// - campaign ended or was disabled (not in activeCampaignIDs)
-// - channel went offline and has no active drop progress
-func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs map[string]bool) {
+// cleanupTemporaryChannels removes temp channels that are no longer useful.
+// Only temp channels in activeDropChannels (assigned a drop this cycle) are kept.
+func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs, activeDropChannels map[string]bool) {
 	f.mu.RLock()
 	var staleChannels []string
 	for chID, ch := range f.channels {
@@ -355,20 +354,12 @@ func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs map[string]bool) {
 		if !snap.IsTemporary {
 			continue
 		}
-		// Campaign no longer active (ended/disabled/claimed)
-		if snap.CampaignID != "" && !activeCampaignIDs[snap.CampaignID] {
-			staleChannels = append(staleChannels, chID)
+		// Keep temp channels that are actively assigned to a drop this cycle
+		if activeDropChannels[chID] {
 			continue
 		}
-		// Offline and not actively tracking a drop — dead weight
-		if !snap.IsOnline && !snap.HasActiveDrop {
-			staleChannels = append(staleChannels, chID)
-			continue
-		}
-		// Zombie: temp channel lost its campaign link and has no active drop
-		if snap.CampaignID == "" && !snap.HasActiveDrop {
-			staleChannels = append(staleChannels, chID)
-		}
+		// Everything else is stale — campaign ended, exclusive-filtered, replaced by failover, etc.
+		staleChannels = append(staleChannels, chID)
 	}
 	f.mu.RUnlock()
 

@@ -1,3 +1,17 @@
+== 2026-04-13 01:41 == Bugfix: Stale temp channels lingering at P2 (v1.5.1) ==
+
+Temp channels that were auto-added for drops but no longer assigned a drop in the
+current cycle (replaced by failover, exclusive-filtered, campaign ended) were not
+cleaned up if they were still online. They lingered at P2 with TEMP badge, wasting
+PubSub/IRC resources.
+
+Simplified cleanupTemporaryChannels: only temp channels actively assigned to a drop
+this cycle (in activeDropChannels) are kept. Everything else is removed.
+
+Files modified:
+- internal/farmer/drops.go (simplified cleanup logic)
+- cmd/twitchpoint/main.go (version bump to 1.5.1)
+
 == 2026-04-12 21:46 == Feature: Exclusive Streamer Drops opt-in + gameEventDrops shared benefit fix (v1.5.0) ==
 
 Streamer-exclusive drop campaigns (e.g. "Klean - Exclusive Drops", "Sixquatre - ED")
