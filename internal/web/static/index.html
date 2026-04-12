@@ -538,8 +538,13 @@
             </table>
         </div>
 
-        <div class="section-header" id="drops-section" style="display:none">
+        <div class="section-header" id="drops-section">
             <h2>Drop Campaigns</h2>
+            <label style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);font-weight:normal">
+                Exclusive Streamer Drops
+                <input type="checkbox" class="drops-toggle" id="exclusive-drops-toggle"
+                    onchange="toggleExclusiveDrops(this.checked)">
+            </label>
         </div>
         <div class="table-container" id="drops-table-container" style="display:none">
             <table>
@@ -735,12 +740,10 @@
             const tbody = document.getElementById('drops-body');
 
             if (!drops || drops.length === 0) {
-                section.style.display = 'none';
                 container.style.display = 'none';
                 return;
             }
 
-            section.style.display = 'flex';
             container.style.display = 'block';
 
             tbody.innerHTML = drops.map(drop => {
@@ -793,6 +796,34 @@
                         <td>${expiresHtml}</td>
                     </tr>`;
             }).join('');
+        }
+
+        async function toggleExclusiveDrops(enabled) {
+            try {
+                const res = await fetch(API + '/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ exclusive_drops: enabled })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                } else {
+                    showToast(`Exclusive drops ${enabled ? 'enabled' : 'disabled'}`, 'success');
+                }
+                fetchDrops();
+            } catch (e) {
+                showToast('Failed to toggle exclusive drops: ' + e.message, 'error');
+            }
+        }
+
+        async function loadSettings() {
+            try {
+                const res = await fetch(API + '/api/settings');
+                const data = await res.json();
+                const toggle = document.getElementById('exclusive-drops-toggle');
+                if (toggle) toggle.checked = data.exclusive_drops || false;
+            } catch (e) {}
         }
 
         async function toggleCampaign(campaignId, enabled) {
@@ -975,6 +1006,7 @@
         });
 
         // Initial load
+        loadSettings();
         refresh();
 
         // Auto-refresh every 5 seconds

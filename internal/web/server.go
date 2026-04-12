@@ -44,6 +44,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
 	s.mux.HandleFunc("/api/drops", s.handleDrops)
 	s.mux.HandleFunc("/api/drops/", s.handleDropAction)
+	s.mux.HandleFunc("/api/settings", s.handleSettings)
 
 	// Static files (embedded)
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -325,6 +326,32 @@ func (s *Server) handleDropAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]interface{}{"status": "ok", "campaign_id": campaignID, "enabled": req.Enabled})
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		jsonResponse(w, map[string]interface{}{
+			"exclusive_drops": s.farmer.GetExclusiveDrops(),
+		})
+	case http.MethodPut:
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonError(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if val, ok := req["exclusive_drops"]; ok {
+			if enabled, ok := val.(bool); ok {
+				if err := s.farmer.SetExclusiveDrops(enabled); err != nil {
+					jsonError(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+		jsonResponse(w, map[string]string{"status": "ok"})
+	default:
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func formatDuration(d time.Duration) string {

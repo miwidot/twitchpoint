@@ -1,3 +1,39 @@
+== 2026-04-12 21:46 == Feature: Exclusive Streamer Drops opt-in + gameEventDrops shared benefit fix (v1.5.0) ==
+
+Streamer-exclusive drop campaigns (e.g. "Klean - Exclusive Drops", "Sixquatre - ED")
+are now disabled by default and require explicit opt-in. These campaigns are tied to
+a single streamer and can only be earned by watching that specific channel. Previously,
+25+ exclusive GZW campaigns flooded the drop list with unfarmable entries.
+
+Exclusive detection: campaigns with 1-2 allowed channels are considered exclusive.
+Regular drops (0 channels = any game streamer, or many channels) are unaffected.
+
+Also fixed a bug in the gameEventDrops detection where campaigns sharing the same
+benefit ID (e.g. all GZW exclusive drops share Tier 1 benefit ID) would be incorrectly
+marked as completed when only one was claimed. Fix: gameEventDrops now only marks a
+campaign as completed if ALL watchable drops' benefit IDs are found — campaign-level
+decision instead of per-drop.
+
+Also fixed drops without an assigned channel cluttering the active drops list.
+Drops are now only shown in the UI when a live channel is matched.
+
+Changes:
+- Config: new `exclusive_drops` field (default: false)
+- processDrops: skip campaigns with ≤ 2 allowed channels unless exclusive_drops enabled
+- gameEventDrops merge: campaign-level check (all benefits must match, not individual)
+- Active drops: only include drops with an assigned channel
+- Web UI: "Exclusive Streamer Drops" toggle in Drop Campaigns header (always visible)
+- API: GET/PUT /api/settings for exclusive_drops toggle
+- Farmer: GetExclusiveDrops() / SetExclusiveDrops() methods
+
+Files modified:
+- internal/config/config.go (ExclusiveDrops field, auto-migration)
+- internal/farmer/drops.go (exclusive filter, channel-only drops, setter/getter)
+- internal/twitch/drops.go (campaign-level gameEventDrops check)
+- internal/web/server.go (settings route/handler)
+- internal/web/static/index.html (exclusive toggle, always-visible section)
+- cmd/twitchpoint/main.go (version bump to 1.5.0)
+
 == 2026-04-08 21:05 == Bugfix: Temp drop channels stuck offline without failover (v1.4.1) ==
 
 Fixed a bug where temporary drop channels could go offline without triggering failover,

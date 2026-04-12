@@ -24,9 +24,10 @@ type Config struct {
 	WebEnabled     bool           `json:"web_enabled"`               // enable web UI
 	WebPort        int            `json:"web_port"`                  // web server port (default 8080)
 	IrcEnabled     bool           `json:"irc_enabled"`               // enable IRC for viewer presence (default true)
-	DropsEnabled        bool     `json:"drops_enabled"`                         // enable drop mining (default true)
-	DisabledCampaigns   []string `json:"disabled_campaigns,omitempty"`          // campaign IDs to skip
-	CompletedCampaigns  []string `json:"completed_campaigns,omitempty"`         // campaign IDs already fully claimed
+	DropsEnabled          bool     `json:"drops_enabled"`                         // enable drop mining (default true)
+	ExclusiveDrops        bool     `json:"exclusive_drops"`                       // farm streamer-exclusive drops (default false)
+	DisabledCampaigns     []string `json:"disabled_campaigns,omitempty"`          // campaign IDs to skip
+	CompletedCampaigns    []string `json:"completed_campaigns,omitempty"`         // campaign IDs already fully claimed
 
 	path string // file path, not serialized
 }
@@ -88,6 +89,7 @@ func Load(path string) (*Config, error) {
 	if _, hasDrops := raw["drops_enabled"]; !hasDrops {
 		cfg.DropsEnabled = true
 	}
+	// ExclusiveDrops defaults to false — no override needed, zero value is correct
 
 	// Migrate legacy channels and detect if new fields need to be written
 	needsSave := cfg.migrate()
@@ -97,7 +99,8 @@ func Load(path string) (*Config, error) {
 	_, hasWebPort := raw["web_port"]
 	_, hasIrcEnabled := raw["irc_enabled"]
 	_, hasDropsEnabled := raw["drops_enabled"]
-	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled || !hasDropsEnabled {
+	_, hasExclusiveDrops := raw["exclusive_drops"]
+	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled || !hasDropsEnabled || !hasExclusiveDrops {
 		needsSave = true
 	}
 

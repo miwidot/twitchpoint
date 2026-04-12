@@ -137,6 +137,12 @@ func (f *Farmer) processDrops() {
 			continue
 		}
 
+		// Skip streamer-exclusive campaigns unless explicitly enabled.
+		// Exclusive = campaign has 1-2 allowed channels (streamer-specific deals).
+		if len(campaign.Channels) > 0 && len(campaign.Channels) <= 2 && !f.cfg.ExclusiveDrops {
+			continue
+		}
+
 		// Skip campaigns we've already fully claimed (tracked in config)
 		if f.cfg.IsCampaignCompleted(campaign.ID) {
 			f.writeLogFile(fmt.Sprintf("[Drops] Skipping completed campaign %q", campaign.Name))
@@ -281,21 +287,26 @@ func (f *Farmer) processDrops() {
 				f.mu.RUnlock()
 			}
 
-			allDrops = append(allDrops, ActiveDrop{
-				CampaignID:         campaign.ID,
-				CampaignName:       campaign.Name,
-				GameName:           campaign.GameName,
-				DropName:           dropName,
-				ChannelLogin:       bestLogin,
-				Progress:           drop.CurrentMinutesWatched,
-				Required:           drop.RequiredMinutesWatched,
-				Percent:            drop.ProgressPercent(),
-				IsClaimed:          false,
-				EndAt:              campaign.EndAt,
-				IsAutoSelected:     isAutoSelected,
-				IsEnabled:          true,
-				IsAccountConnected: true,
-			})
+			// Only track drops that have a channel assigned — drops without
+			// a live channel can't earn progress and just clutter the UI.
+			// They'll be re-evaluated next cycle when a channel comes online.
+			if bestLogin != "" {
+				allDrops = append(allDrops, ActiveDrop{
+					CampaignID:         campaign.ID,
+					CampaignName:       campaign.Name,
+					GameName:           campaign.GameName,
+					DropName:           dropName,
+					ChannelLogin:       bestLogin,
+					Progress:           drop.CurrentMinutesWatched,
+					Required:           drop.RequiredMinutesWatched,
+					Percent:            drop.ProgressPercent(),
+					IsClaimed:          false,
+					EndAt:              campaign.EndAt,
+					IsAutoSelected:     isAutoSelected,
+					IsEnabled:          true,
+					IsAccountConnected: true,
+				})
+			}
 		}
 	}
 
@@ -677,6 +688,26 @@ func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
 	// Trigger immediate re-evaluation
 	go f.processDrops()
 	return nil
+}
+
+// SetExclusiveDrops enables or disables farming of streamer-exclusive drops.
+func (f *Farmer) SetExclusiveDrops(enabled bool) error {
+	f.cfg.ExclusiveDrops = enabled
+	if err := f.cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	if enabled {
+		f.addLog("[Drops] Exclusive streamer drops enabled")
+	} else {
+		f.addLog("[Drops] Exclusive streamer drops disabled")
+	}
+	go f.processDrops()
+	return nil
+}
+
+// GetExclusiveDrops returns whether exclusive drops are enabled.
+func (f *Farmer) GetExclusiveDrops() bool {
+	return f.cfg.ExclusiveDrops
 }
 
 // verifyTempChannelHealth checks that temporary drop channels are still online.

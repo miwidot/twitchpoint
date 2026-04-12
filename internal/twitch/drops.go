@@ -200,35 +200,52 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 		if inventoryCampaignIDs[dashboardCampaigns[i].ID] {
 			dashboardCampaigns[i].InInventory = true
 		}
+
+		// Step 3: Merge progress from inventory (per-drop)
 		for j := range dashboardCampaigns[i].Drops {
 			drop := &dashboardCampaigns[i].Drops[j]
-
-			// Step 3: Merge progress from inventory (in-progress campaigns)
 			if inv, ok := progressByDropID[drop.ID]; ok {
 				drop.CurrentMinutesWatched = inv.CurrentMinutesWatched
 				drop.DropInstanceID = inv.DropInstanceID
 				drop.IsClaimed = inv.IsClaimed
-				continue
+			}
+		}
+
+		// Step 4: Use gameEventDrops to detect already-completed campaigns.
+		// Only applies to campaigns NOT in inventory (fully claimed → removed by Twitch).
+		// IMPORTANT: Only mark as completed if ALL watchable drops' benefit IDs are found
+		// in gameEventDrops. This prevents false positives when multiple campaigns share
+		// the same benefit ID (e.g. GZW streamer-exclusive drops all share Tier 1 ID).
+		if !dashboardCampaigns[i].InInventory && len(claimedBenefits) > 0 {
+			campaign := dashboardCampaigns[i]
+			allBenefitsClaimed := true
+			hasWatchableDrops := false
+
+			for _, drop := range campaign.Drops {
+				if drop.RequiredMinutesWatched <= 0 {
+					continue // sub-only, skip
+				}
+				hasWatchableDrops = true
+				if drop.BenefitID == "" {
+					allBenefitsClaimed = false
+					break
+				}
+				lastAwarded, found := claimedBenefits[drop.BenefitID]
+				if !found || !isWithinCampaignWindow(lastAwarded, campaign.StartAt, campaign.EndAt) {
+					allBenefitsClaimed = false
+					break
+				}
 			}
 
-			// Step 4: Use gameEventDrops to detect already-claimed drops.
-			// If a drop's benefit ID appears in gameEventDrops AND the lastAwardedAt
-			// falls within the campaign's time window, the drop was already claimed.
-			// This catches campaigns that disappeared from dropCampaignsInProgress.
-			if drop.BenefitID != "" && len(claimedBenefits) > 0 {
-				if lastAwarded, found := claimedBenefits[drop.BenefitID]; found {
-					campaign := dashboardCampaigns[i]
-					if isWithinCampaignWindow(lastAwarded, campaign.StartAt, campaign.EndAt) {
+			if hasWatchableDrops && allBenefitsClaimed {
+				for j := range dashboardCampaigns[i].Drops {
+					drop := &dashboardCampaigns[i].Drops[j]
+					if drop.RequiredMinutesWatched > 0 {
 						drop.IsClaimed = true
 						drop.CurrentMinutesWatched = drop.RequiredMinutesWatched
-						log.Printf("[Drops/Merge] gameEventDrops: marked %q drop %q as claimed (benefit=%s, awarded=%s)",
-							campaign.Name, drop.Name, drop.BenefitID, lastAwarded.Format(time.RFC3339))
-					} else {
-						log.Printf("[Drops/Merge] gameEventDrops: benefit %s found but outside window (awarded=%s, campaign=%s..%s)",
-							drop.BenefitID, lastAwarded.Format(time.RFC3339),
-							campaign.StartAt.Format(time.RFC3339), campaign.EndAt.Format(time.RFC3339))
 					}
 				}
+				log.Printf("[Drops/Merge] gameEventDrops: campaign %q fully claimed (all benefits found)", campaign.Name)
 			}
 		}
 	}
