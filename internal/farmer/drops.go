@@ -137,12 +137,6 @@ func (f *Farmer) processDrops() {
 			continue
 		}
 
-		// Skip streamer-exclusive campaigns unless explicitly enabled.
-		// Exclusive = campaign has 1-2 allowed channels (streamer-specific deals).
-		if len(campaign.Channels) > 0 && len(campaign.Channels) <= 2 && !f.cfg.ExclusiveDrops {
-			continue
-		}
-
 		// Skip campaigns we've already fully claimed (tracked in config)
 		if f.cfg.IsCampaignCompleted(campaign.ID) {
 			f.writeLogFile(fmt.Sprintf("[Drops] Skipping completed campaign %q", campaign.Name))
@@ -152,10 +146,16 @@ func (f *Farmer) processDrops() {
 		newCache[campaign.ID] = campaign
 		activeCampaignIDs[campaign.ID] = true
 
+		// Detect exclusive campaigns (1-2 allowed channels = streamer-specific)
+		isExclusive := len(campaign.Channels) > 0 && len(campaign.Channels) <= 2
+
 		// Build a lookup of campaign channel IDs -> configured channel login
 		campaignChannelIDs := f.matchCampaignChannels(campaign)
 
-		// Auto-select: if no channels match OR none are online, try to find a live one
+		// Auto-select: if no channels match OR none are online, try to find a live one.
+		// Exception: exclusive campaigns don't auto-select — only farm if the
+		// specific streamer is already in the user's configured channel list.
+		// This prevents 25+ exclusive campaigns from flooding Spade slots.
 		needsAutoSelect := len(campaignChannelIDs) == 0
 		if !needsAutoSelect {
 			// Check if any matched channel is actually online
@@ -171,8 +171,12 @@ func (f *Farmer) processDrops() {
 			needsAutoSelect = !hasOnline
 		}
 
-		f.writeLogFile(fmt.Sprintf("[Drops] Campaign %q: matchedChannels=%d, needsAutoSelect=%v",
-			campaign.Name, len(campaignChannelIDs), needsAutoSelect))
+		if isExclusive {
+			needsAutoSelect = false // never auto-add temp channels for exclusive drops
+		}
+
+		f.writeLogFile(fmt.Sprintf("[Drops] Campaign %q: matchedChannels=%d, needsAutoSelect=%v, exclusive=%v",
+			campaign.Name, len(campaignChannelIDs), needsAutoSelect, isExclusive))
 
 		if needsAutoSelect {
 			autoLogin := f.autoSelectDropChannel(campaign)
@@ -679,26 +683,6 @@ func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
 	// Trigger immediate re-evaluation
 	go f.processDrops()
 	return nil
-}
-
-// SetExclusiveDrops enables or disables farming of streamer-exclusive drops.
-func (f *Farmer) SetExclusiveDrops(enabled bool) error {
-	f.cfg.ExclusiveDrops = enabled
-	if err := f.cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
-	}
-	if enabled {
-		f.addLog("[Drops] Exclusive streamer drops enabled")
-	} else {
-		f.addLog("[Drops] Exclusive streamer drops disabled")
-	}
-	go f.processDrops()
-	return nil
-}
-
-// GetExclusiveDrops returns whether exclusive drops are enabled.
-func (f *Farmer) GetExclusiveDrops() bool {
-	return f.cfg.ExclusiveDrops
 }
 
 // verifyTempChannelHealth checks that temporary drop channels are still online.

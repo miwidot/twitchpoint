@@ -1,3 +1,26 @@
+== 2026-04-14 22:03 == Bugfix: Exclusive drops blocking normal drop farming (v1.5.2) ==
+
+Removed the exclusive_drops toggle (introduced in v1.5.0) — it was the wrong approach.
+When enabled, 25+ streamer-exclusive campaigns consumed all Spade slots, starving normal
+drops. When disabled, ALL exclusive drops were blocked even if the user had those streamers
+in their channel list.
+
+New approach: exclusive campaigns (1-2 allowed channels) are processed normally but
+auto-select is disabled for them. This means:
+- If a streamer is in your configured channel list → their exclusive drops farm naturally
+- If not → no temp channel is added, no Spade slot consumed
+- Normal drops (open or many allowed channels) still auto-select freely
+
+Removed: exclusive_drops config field, Web UI toggle, /api/settings endpoint,
+SetExclusiveDrops/GetExclusiveDrops methods. Stale config field auto-cleaned on load.
+
+Files modified:
+- internal/farmer/drops.go (exclusive auto-select block, removed toggle methods)
+- internal/config/config.go (removed ExclusiveDrops field, cleanup migration)
+- internal/web/server.go (removed settings route/handler)
+- internal/web/static/index.html (removed toggle, removed loadSettings)
+- cmd/twitchpoint/main.go (version bump to 1.5.2)
+
 == 2026-04-13 01:41 == Bugfix: Stale temp channels lingering at P2 (v1.5.1) ==
 
 Temp channels that were auto-added for drops but no longer assigned a drop in the

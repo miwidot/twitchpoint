@@ -12,6 +12,7 @@ const defaultConfigFile = "config.json"
 
 // ChannelEntry holds per-channel config.
 type ChannelEntry struct {
+	ID       string `json:"id,omitempty"` // Twitch channel ID (persisted, survives renames)
 	Login    string `json:"login"`
 	Priority int    `json:"priority"` // 1 = always watch, 2 = rotate (default)
 }
@@ -25,7 +26,6 @@ type Config struct {
 	WebPort        int            `json:"web_port"`                  // web server port (default 8080)
 	IrcEnabled     bool           `json:"irc_enabled"`               // enable IRC for viewer presence (default true)
 	DropsEnabled          bool     `json:"drops_enabled"`                         // enable drop mining (default true)
-	ExclusiveDrops        bool     `json:"exclusive_drops"`                       // farm streamer-exclusive drops (default false)
 	DisabledCampaigns     []string `json:"disabled_campaigns,omitempty"`          // campaign IDs to skip
 	CompletedCampaigns    []string `json:"completed_campaigns,omitempty"`         // campaign IDs already fully claimed
 
@@ -89,18 +89,21 @@ func Load(path string) (*Config, error) {
 	if _, hasDrops := raw["drops_enabled"]; !hasDrops {
 		cfg.DropsEnabled = true
 	}
-	// ExclusiveDrops defaults to false — no override needed, zero value is correct
 
 	// Migrate legacy channels and detect if new fields need to be written
 	needsSave := cfg.migrate()
+
+	// Remove stale exclusive_drops field from config
+	if _, hasExclusiveDrops := raw["exclusive_drops"]; hasExclusiveDrops {
+		needsSave = true
+	}
 
 	// Check if new fields are missing from file
 	_, hasWebEnabled := raw["web_enabled"]
 	_, hasWebPort := raw["web_port"]
 	_, hasIrcEnabled := raw["irc_enabled"]
 	_, hasDropsEnabled := raw["drops_enabled"]
-	_, hasExclusiveDrops := raw["exclusive_drops"]
-	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled || !hasDropsEnabled || !hasExclusiveDrops {
+	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled || !hasDropsEnabled {
 		needsSave = true
 	}
 
@@ -159,6 +162,36 @@ func (c *Config) GetChannelLogins() []string {
 		logins[i] = cc.Login
 	}
 	return logins
+}
+
+// GetChannelEntries returns all channel entries (with ID, login, priority).
+func (c *Config) GetChannelEntries() []ChannelEntry {
+	result := make([]ChannelEntry, len(c.ChannelConfigs))
+	copy(result, c.ChannelConfigs)
+	return result
+}
+
+// UpdateChannelLogin updates the login for a channel identified by ID.
+// Returns true if the channel was found and updated.
+func (c *Config) UpdateChannelLogin(channelID, newLogin string) bool {
+	for i, cc := range c.ChannelConfigs {
+		if cc.ID == channelID {
+			c.ChannelConfigs[i].Login = newLogin
+			return true
+		}
+	}
+	return false
+}
+
+// SetChannelID sets the ID for a channel identified by login.
+func (c *Config) SetChannelID(login, channelID string) {
+	login = strings.ToLower(login)
+	for i, cc := range c.ChannelConfigs {
+		if cc.Login == login {
+			c.ChannelConfigs[i].ID = channelID
+			return
+		}
+	}
 }
 
 // GetPriority returns the priority for a channel (1 or 2). Returns 2 if not found.
