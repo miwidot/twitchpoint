@@ -1,3 +1,26 @@
+== 2026-04-15 00:58 == Bugfix: Deduplicate campaigns sharing same benefit IDs (v1.5.3) ==
+
+Multiple campaigns sharing the same drop benefit ID (e.g. 25 GZW streamer-exclusive
+campaigns all offering the same Tier 1 item) each triggered auto-select and created
+temp channels, consuming all Spade slots and blocking normal drops.
+
+Fix: campaign-level deduplication BEFORE auto-select. If a campaign's first unclaimed
+watchable drop has a benefit ID already being farmed by another campaign, the entire
+campaign is skipped — no auto-select, no temp channel, no Spade slot consumed.
+
+Drops are sequential (Tier 1 → Tier 2), so if Tier 1 is already farmed elsewhere,
+the campaign can't make progress anyway.
+
+Also removed the exclusive_drops toggle (v1.5.0) — replaced by this smarter approach.
+Auto-select works for all campaigns, dedup prevents slot starvation naturally.
+
+Files modified:
+- internal/farmer/drops.go (campaign-level dedup before auto-select, per-drop dedup)
+- internal/config/config.go (removed ExclusiveDrops field)
+- internal/web/server.go (removed settings endpoint)
+- internal/web/static/index.html (removed exclusive toggle)
+- cmd/twitchpoint/main.go (version bump to 1.5.3)
+
 == 2026-04-14 22:03 == Bugfix: Exclusive drops blocking normal drop farming (v1.5.2) ==
 
 Removed the exclusive_drops toggle (introduced in v1.5.0) — it was the wrong approach.

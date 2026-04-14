@@ -96,6 +96,11 @@ func (f *Farmer) processDrops() {
 	activeDropChannels := make(map[string]bool)
 	var allDrops []ActiveDrop
 
+	// Deduplicate: track benefit IDs already being farmed this cycle.
+	// If multiple campaigns share the same benefit ID (e.g. 25 GZW exclusive drops
+	// all have the same Tier 1), only farm it from one campaign — saves Spade slots.
+	farmingBenefitIDs := make(map[string]bool)
+
 	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
 
 	// Debug: log claimed status for connected campaigns to verify gameEventDrops merge
@@ -143,19 +148,34 @@ func (f *Farmer) processDrops() {
 			continue
 		}
 
+		// Deduplicate: if this campaign's first unclaimed watchable drop has a benefit ID
+		// that's already being farmed by another campaign, skip entirely.
+		// Drops are sequential (Tier 1 → Tier 2), so if Tier 1 is already farmed
+		// elsewhere, this campaign can't make progress anyway.
+		campaignRedundant := false
+		for _, drop := range campaign.Drops {
+			if drop.IsClaimed || drop.RequiredMinutesWatched <= 0 {
+				continue
+			}
+			// First unclaimed watchable drop — check if its benefit is already farming
+			if drop.BenefitID != "" && farmingBenefitIDs[drop.BenefitID] {
+				campaignRedundant = true
+			}
+			break // only check the first unclaimed drop
+		}
+		if campaignRedundant {
+			// Still track as active so temp cleanup doesn't remove related channels
+			activeCampaignIDs[campaign.ID] = true
+			continue
+		}
+
 		newCache[campaign.ID] = campaign
 		activeCampaignIDs[campaign.ID] = true
-
-		// Detect exclusive campaigns (1-2 allowed channels = streamer-specific)
-		isExclusive := len(campaign.Channels) > 0 && len(campaign.Channels) <= 2
 
 		// Build a lookup of campaign channel IDs -> configured channel login
 		campaignChannelIDs := f.matchCampaignChannels(campaign)
 
-		// Auto-select: if no channels match OR none are online, try to find a live one.
-		// Exception: exclusive campaigns don't auto-select — only farm if the
-		// specific streamer is already in the user's configured channel list.
-		// This prevents 25+ exclusive campaigns from flooding Spade slots.
+		// Auto-select: if no channels match OR none are online, try to find a live one
 		needsAutoSelect := len(campaignChannelIDs) == 0
 		if !needsAutoSelect {
 			// Check if any matched channel is actually online
@@ -171,12 +191,8 @@ func (f *Farmer) processDrops() {
 			needsAutoSelect = !hasOnline
 		}
 
-		if isExclusive {
-			needsAutoSelect = false // never auto-add temp channels for exclusive drops
-		}
-
-		f.writeLogFile(fmt.Sprintf("[Drops] Campaign %q: matchedChannels=%d, needsAutoSelect=%v, exclusive=%v",
-			campaign.Name, len(campaignChannelIDs), needsAutoSelect, isExclusive))
+		f.writeLogFile(fmt.Sprintf("[Drops] Campaign %q: matchedChannels=%d, needsAutoSelect=%v",
+			campaign.Name, len(campaignChannelIDs), needsAutoSelect))
 
 		if needsAutoSelect {
 			autoLogin := f.autoSelectDropChannel(campaign)
@@ -224,6 +240,12 @@ func (f *Farmer) processDrops() {
 
 			// Skip sub-only drops (0 required minutes = can't be earned by watching)
 			if drop.RequiredMinutesWatched <= 0 {
+				continue
+			}
+
+			// Deduplicate: skip if this benefit ID is already being farmed by another campaign.
+			// Prevents 25 exclusive campaigns from each creating a drop for the same Tier 1 item.
+			if drop.BenefitID != "" && farmingBenefitIDs[drop.BenefitID] {
 				continue
 			}
 
@@ -295,6 +317,10 @@ func (f *Farmer) processDrops() {
 			// a live channel can't earn progress and just clutter the UI.
 			// They'll be re-evaluated next cycle when a channel comes online.
 			if bestLogin != "" {
+				// Mark benefit ID as farming for deduplication
+				if drop.BenefitID != "" {
+					farmingBenefitIDs[drop.BenefitID] = true
+				}
 				allDrops = append(allDrops, ActiveDrop{
 					CampaignID:         campaign.ID,
 					CampaignName:       campaign.Name,
