@@ -129,9 +129,9 @@ func (f *Farmer) Start() error {
 	}
 
 	// Initialize channels first (stores all PubSub topics before connecting)
-	for _, login := range f.cfg.GetChannelLogins() {
-		if err := f.addChannel(login); err != nil {
-			f.addLog("Failed to add channel %s: %v", login, err)
+	for _, entry := range f.cfg.GetChannelEntries() {
+		if err := f.addChannelFromEntry(entry); err != nil {
+			f.addLog("Failed to add channel %s: %v", entry.Login, err)
 		}
 	}
 
@@ -196,12 +196,49 @@ func (f *Farmer) Done() <-chan struct{} {
 	return f.stopCh
 }
 
+// addChannelFromEntry resolves a channel from config, using ID if available (handles renames).
+func (f *Farmer) addChannelFromEntry(entry config.ChannelEntry) error {
+	var info *twitch.ChannelInfo
+	var err error
+
+	if entry.ID != "" {
+		// Resolve by ID — handles channel renames
+		info, err = f.gql.GetChannelInfoByID(entry.ID)
+		if err != nil {
+			// Fallback to login if ID lookup fails
+			info, err = f.gql.GetChannelInfo(entry.Login)
+		} else if info.Login != entry.Login {
+			// Channel was renamed — update config
+			f.addLog("Channel renamed: %s → %s (ID: %s)", entry.Login, info.Login, info.ID)
+			f.cfg.UpdateChannelLogin(entry.ID, info.Login)
+			f.cfg.Save()
+		}
+	} else {
+		// No ID stored — resolve by login and persist the ID
+		info, err = f.gql.GetChannelInfo(entry.Login)
+		if err == nil {
+			f.cfg.SetChannelID(entry.Login, info.ID)
+			f.cfg.Save()
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("get channel info: %w", err)
+	}
+
+	return f.addChannelWithInfo(info)
+}
+
 func (f *Farmer) addChannel(login string) error {
 	info, err := f.gql.GetChannelInfo(login)
 	if err != nil {
 		return fmt.Errorf("get channel info: %w", err)
 	}
 
+	return f.addChannelWithInfo(info)
+}
+
+func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
 	state := NewChannelState(info.Login, info.DisplayName, info.ID)
 	state.Priority = f.cfg.GetPriority(info.Login)
 
@@ -216,7 +253,7 @@ func (f *Farmer) addChannel(login string) error {
 		fmt.Sprintf("raid.%s", info.ID),
 	}
 	if err := f.pubsub.Listen(topics); err != nil {
-		f.addLog("PubSub subscribe error for %s: %v", login, err)
+		f.addLog("PubSub subscribe error for %s: %v", info.Login, err)
 	}
 
 	// Join IRC channel for viewer presence
@@ -240,8 +277,9 @@ func (f *Farmer) addChannel(login string) error {
 	}
 
 	// Fetch initial balance
+	channelLogin := info.Login
 	go func() {
-		balance, err := f.gql.GetChannelPointsBalance(login)
+		balance, err := f.gql.GetChannelPointsBalance(channelLogin)
 		if err == nil && balance > 0 {
 			state.SetBalance(balance)
 			f.addLog("%s balance: %d points", info.DisplayName, balance)
@@ -356,6 +394,7 @@ func (f *Farmer) AddChannelLive(login string) error {
 			ch.IsTemporary = false
 			ch.mu.Unlock()
 			f.cfg.AddChannel(login)
+			f.cfg.SetChannelID(login, chID)
 			if err := f.cfg.Save(); err != nil {
 				f.addLog("Warning: could not save config: %v", err)
 			}
@@ -366,17 +405,20 @@ func (f *Farmer) AddChannelLive(login string) error {
 	}
 	f.mu.RUnlock()
 
-	if err := f.addChannel(login); err != nil {
-		return err
+	// Resolve channel info first so we have the ID
+	info, err := f.gql.GetChannelInfo(login)
+	if err != nil {
+		return fmt.Errorf("get channel info: %w", err)
 	}
 
-	// Also save to config
-	f.cfg.AddChannel(login)
+	// Save to config with ID
+	f.cfg.AddChannel(info.Login)
+	f.cfg.SetChannelID(info.Login, info.ID)
 	if err := f.cfg.Save(); err != nil {
 		f.addLog("Warning: could not save config: %v", err)
 	}
 
-	return nil
+	return f.addChannelWithInfo(info)
 }
 
 // RemoveChannelLive removes a channel at runtime.

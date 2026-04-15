@@ -1,3 +1,34 @@
+== 2026-04-16 01:03 == Feature: Smart exclusive drop deduplication — max 1 at a time (v1.6.0) ==
+
+Complete rework of exclusive drop handling. Streamer-exclusive campaigns (1-2 allowed
+channels) that share benefit IDs are now deduplicated at campaign level with a pre-
+processing step. Only ONE exclusive campaign per benefit group is farmed at a time —
+the one with the most progress (finishes fastest). Once complete, the next-best is
+picked automatically.
+
+Previous approach (v1.5.0-1.5.3) had multiple issues:
+- v1.5.0: Toggle that either blocked all exclusive or let all through (Spade starvation)
+- v1.5.2: Auto-select block didn't help (no GZW streamers in config = no farming)
+- v1.5.3: Per-drop dedup marked benefit on first encounter even if offline (nothing farmed)
+- Continuity fix caused 4 campaigns to farm in parallel (screenshot showed 5 active drops)
+
+New approach: pickExclusiveCampaigns() groups exclusive campaigns by first unclaimed
+benefit ID, picks the one with most total progress per group. Simple, deterministic,
+no Spade starvation. Per-drop dedup kept as safety net.
+
+Also removed: exclusive_drops config field, Web UI toggle, /api/settings endpoint.
+
+Changes:
+- internal/farmer/drops.go (pickExclusiveCampaigns, campaign-level exclusive filter)
+- internal/config/config.go (removed ExclusiveDrops, cleanup migration)
+- internal/web/server.go (removed settings endpoint)
+- internal/web/static/index.html (removed toggle)
+- internal/twitch/drops.go (campaign-level gameEventDrops check)
+- internal/twitch/gql.go (GetChannelInfoByID for rename detection)
+- internal/farmer/farmer.go (addChannelFromEntry, channel ID persistence)
+- internal/config/config.go (ChannelEntry.ID, GetChannelEntries, UpdateChannelLogin)
+- cmd/twitchpoint/main.go (version bump to 1.6.0)
+
 == 2026-04-15 00:58 == Bugfix: Deduplicate campaigns sharing same benefit IDs (v1.5.3) ==
 
 Multiple campaigns sharing the same drop benefit ID (e.g. 25 GZW streamer-exclusive

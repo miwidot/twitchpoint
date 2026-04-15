@@ -96,9 +96,10 @@ func (f *Farmer) processDrops() {
 	activeDropChannels := make(map[string]bool)
 	var allDrops []ActiveDrop
 
-	// Deduplicate: track benefit IDs already being farmed this cycle.
-	// If multiple campaigns share the same benefit ID (e.g. 25 GZW exclusive drops
-	// all have the same Tier 1), only farm it from one campaign — saves Spade slots.
+	// Deduplicate exclusive campaigns (≤2 allowed channels) that share benefit IDs.
+	// Multiple streamer-exclusive campaigns often share the same Tier 1 item.
+	// Only farm ONE at a time — the one with the most progress (finishes fastest).
+	exclusivePicked := f.pickExclusiveCampaigns(campaigns)
 	farmingBenefitIDs := make(map[string]bool)
 
 	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
@@ -148,23 +149,9 @@ func (f *Farmer) processDrops() {
 			continue
 		}
 
-		// Deduplicate: if this campaign's first unclaimed watchable drop has a benefit ID
-		// that's already being farmed by another campaign, skip entirely.
-		// Drops are sequential (Tier 1 → Tier 2), so if Tier 1 is already farmed
-		// elsewhere, this campaign can't make progress anyway.
-		campaignRedundant := false
-		for _, drop := range campaign.Drops {
-			if drop.IsClaimed || drop.RequiredMinutesWatched <= 0 {
-				continue
-			}
-			// First unclaimed watchable drop — check if its benefit is already farming
-			if drop.BenefitID != "" && farmingBenefitIDs[drop.BenefitID] {
-				campaignRedundant = true
-			}
-			break // only check the first unclaimed drop
-		}
-		if campaignRedundant {
-			// Still track as active so temp cleanup doesn't remove related channels
+		// Deduplicate exclusive campaigns: only the picked campaign per benefit group is farmed.
+		isExclusive := len(campaign.Channels) > 0 && len(campaign.Channels) <= 2
+		if isExclusive && !exclusivePicked[campaign.ID] {
 			activeCampaignIDs[campaign.ID] = true
 			continue
 		}
@@ -709,6 +696,63 @@ func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
 	// Trigger immediate re-evaluation
 	go f.processDrops()
 	return nil
+}
+
+// pickExclusiveCampaigns selects which exclusive campaigns (≤2 allowed channels) to farm.
+// Groups exclusive campaigns by their first unclaimed benefit ID, then picks ONE per group:
+// the campaign with the most progress (finishes fastest). Returns a set of picked campaign IDs.
+func (f *Farmer) pickExclusiveCampaigns(campaigns []twitch.DropCampaign) map[string]bool {
+	// Group exclusive campaigns by first unclaimed benefit ID
+	type candidate struct {
+		campaignID string
+		progress   int // total progress across all drops
+	}
+	groups := make(map[string][]candidate) // benefitID → candidates
+
+	for _, c := range campaigns {
+		if c.Status != "" && c.Status != "ACTIVE" {
+			continue
+		}
+		if !c.IsAccountConnected {
+			continue
+		}
+		isExclusive := len(c.Channels) > 0 && len(c.Channels) <= 2
+		if !isExclusive {
+			continue
+		}
+
+		// Find first unclaimed watchable drop's benefit ID
+		benefitID := ""
+		totalProgress := 0
+		for _, drop := range c.Drops {
+			if drop.RequiredMinutesWatched <= 0 {
+				continue
+			}
+			totalProgress += drop.CurrentMinutesWatched
+			if !drop.IsClaimed && benefitID == "" {
+				benefitID = drop.BenefitID
+			}
+		}
+		if benefitID == "" {
+			continue // all drops claimed or no benefit ID
+		}
+
+		groups[benefitID] = append(groups[benefitID], candidate{c.ID, totalProgress})
+	}
+
+	// Pick the best candidate per group (most progress = finishes fastest)
+	picked := make(map[string]bool)
+	for _, candidates := range groups {
+		best := candidates[0]
+		for _, c := range candidates[1:] {
+			if c.progress > best.progress {
+				best = c
+			}
+		}
+		picked[best.campaignID] = true
+	}
+
+	return picked
 }
 
 // verifyTempChannelHealth checks that temporary drop channels are still online.

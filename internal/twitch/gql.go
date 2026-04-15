@@ -45,6 +45,13 @@ const (
 		user(id: $id) { displayName }
 	}`
 
+	queryGetChannelInfoByID = `query GetChannelInfoByID($id: ID!) {
+		user(id: $id) {
+			id login displayName
+			stream { id viewersCount game { displayName } }
+		}
+	}`
+
 	queryChannelPointsBalance = `query ChannelPointsContext($channelLogin: String!) {
 		community(name: $channelLogin) {
 			channel {
@@ -226,6 +233,52 @@ func (g *GQLClient) GetChannelInfo(login string) (*ChannelInfo, error) {
 
 	info.ID = getString(userMap, "id")
 	info.DisplayName = getString(userMap, "displayName")
+
+	if stream, ok := userMap["stream"]; ok && stream != nil {
+		if streamMap, ok := stream.(map[string]interface{}); ok {
+			info.IsLive = true
+			info.BroadcastID = getString(streamMap, "id")
+			info.ViewerCount = getInt(streamMap, "viewersCount")
+			if game, ok := streamMap["game"]; ok && game != nil {
+				if gameMap, ok := game.(map[string]interface{}); ok {
+					info.GameName = getString(gameMap, "displayName")
+				}
+			}
+		}
+	}
+
+	return info, nil
+}
+
+// GetChannelInfoByID resolves full channel info by ID (handles renames).
+func (g *GQLClient) GetChannelInfoByID(channelID string) (*ChannelInfo, error) {
+	req := &GQLRequest{
+		Query: queryGetChannelInfoByID,
+		Variables: map[string]interface{}{
+			"id": channelID,
+		},
+	}
+
+	resp, err := g.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get channel info by id: %w", err)
+	}
+
+	user, ok := resp.Data["user"]
+	if !ok || user == nil {
+		return nil, fmt.Errorf("channel ID %s not found", channelID)
+	}
+
+	userMap, ok := user.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected data format")
+	}
+
+	info := &ChannelInfo{
+		ID:          getString(userMap, "id"),
+		Login:       getString(userMap, "login"),
+		DisplayName: getString(userMap, "displayName"),
+	}
 
 	if stream, ok := userMap["stream"]; ok && stream != nil {
 		if streamMap, ok := stream.(map[string]interface{}); ok {
