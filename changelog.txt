@@ -1,3 +1,18 @@
+== 2026-04-17 03:18 == Bugfix: Disabled campaigns blocking exclusive drop group (v1.6.1) ==
+
+pickExclusiveCampaigns() didn't check disabled/completed/expired status. If a disabled
+campaign in an exclusive group had the most progress, it was picked, then filtered out
+in the main loop — but the other campaigns in the group were also skipped (because
+they weren't "picked"). Result: entire exclusive group silently disabled, nothing farmed.
+
+Fix: pickExclusiveCampaigns now skips disabled, completed, and expired campaigns before
+considering them as candidates. Disabling a campaign via Web UI now correctly allows
+the next-best non-disabled campaign in the group to be farmed.
+
+Files modified:
+- internal/farmer/drops.go (pickExclusiveCampaigns filters disabled/completed/expired)
+- cmd/twitchpoint/main.go (version bump to 1.6.1)
+
 == 2026-04-16 01:03 == Feature: Smart exclusive drop deduplication — max 1 at a time (v1.6.0) ==
 
 Complete rework of exclusive drop handling. Streamer-exclusive campaigns (1-2 allowed

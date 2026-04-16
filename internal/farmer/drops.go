@@ -716,6 +716,15 @@ func (f *Farmer) pickExclusiveCampaigns(campaigns []twitch.DropCampaign) map[str
 		if !c.IsAccountConnected {
 			continue
 		}
+		if !c.EndAt.IsZero() && c.EndAt.Before(time.Now()) {
+			continue
+		}
+		if f.cfg.IsCampaignDisabled(c.ID) {
+			continue
+		}
+		if f.cfg.IsCampaignCompleted(c.ID) {
+			continue
+		}
 		isExclusive := len(c.Channels) > 0 && len(c.Channels) <= 2
 		if !isExclusive {
 			continue
