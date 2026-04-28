@@ -638,10 +638,12 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 			f.spade.StopWatching(ch.ChannelID)
 			f.addLog("%s went OFFLINE", ch.DisplayName)
 
-			// If channel had active drop, trigger failover
-			if hasDropBefore && campaignID != "" {
-				go f.handleDropFailover(ch.ChannelID)
-			}
+			// v1.7.0: drop replacement is handled by the next selector cycle (≤5 min).
+			// No more synchronous failover state machine — selector picks fresh from
+			// the live drops-enabled pool every cycle, so a dead channel just means
+			// "no drop assigned for up to one cycle" rather than orphaned state.
+			_ = hasDropBefore
+			_ = campaignID
 
 			// Try to fill freed Spade slot
 			f.fillSpadeSlots()
@@ -672,19 +674,11 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 		f.addLog("Raid detected: %s -> %s", sourceName, data.TargetDisplayName)
 
-		// If source has active drop and target is not tracked, trigger failover
-		if ok {
-			snap := ch.Snapshot()
-			if snap.HasActiveDrop && snap.CampaignID != "" {
-				targetLogin := strings.ToLower(data.TargetLogin)
-				f.mu.RLock()
-				_, targetTracked := f.loginMap[targetLogin]
-				f.mu.RUnlock()
-				if !targetTracked {
-					go f.handleDropFailover(ch.ChannelID)
-				}
-			}
-		}
+		// v1.7.0: raid handling no longer triggers immediate failover — the next
+		// selector cycle (≤5 min) will repick if the source channel has gone
+		// offline or changed game. The raid event itself is still processed for
+		// auto-join below.
+		_ = ok
 
 		go func() {
 			if err := f.gql.JoinRaid(data.RaidID); err != nil {
@@ -705,148 +699,6 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 			f.addLog("[PubSub] %v", err)
 		}
 	}
-}
-
-// handleDropFailover finds a replacement channel when a drop channel goes offline or raids away.
-func (f *Farmer) handleDropFailover(channelID string) {
-	f.mu.RLock()
-	ch, ok := f.channels[channelID]
-	if !ok {
-		f.mu.RUnlock()
-		return
-	}
-	snap := ch.Snapshot()
-	f.mu.RUnlock()
-
-	if !snap.HasActiveDrop || snap.CampaignID == "" {
-		return
-	}
-
-	campaignID := snap.CampaignID
-
-	// Check cooldown: 5 min per campaign to prevent rapid cycling
-	f.drops.mu.Lock()
-	if f.drops.failoverCooldowns == nil {
-		f.drops.failoverCooldowns = make(map[string]time.Time)
-	}
-	if lastAttempt, ok := f.drops.failoverCooldowns[campaignID]; ok {
-		if time.Since(lastAttempt) < 5*time.Minute {
-			f.drops.mu.Unlock()
-			f.addLog("[Drops] Failover cooldown active for campaign %s, retry on next cycle", campaignID)
-			return
-		}
-	}
-	f.drops.failoverCooldowns[campaignID] = time.Now()
-	f.drops.mu.Unlock()
-
-	// Look up the campaign from cache
-	f.drops.mu.RLock()
-	campaign, hasCampaign := f.drops.campaignCache[campaignID]
-	f.drops.mu.RUnlock()
-
-	if !hasCampaign {
-		f.addLog("[Drops] Failover: campaign %s not in cache, will retry on next drop check", campaignID)
-		return
-	}
-
-	isOldChannelTemp := snap.IsTemporary
-
-	// Save drop info from old channel so we can transfer it to the replacement.
-	// Without this transfer, the new channel would not have HasActiveDrop=true and
-	// rotateChannels would not promote it to P0, leaving the drop unfarmed until
-	// the next dropCheckLoop (~10 min) re-evaluated everything.
-	oldDropName := snap.DropName
-	oldDropProgress := snap.DropProgress
-	oldDropRequired := snap.DropRequired
-
-	f.addLog("[Drops] Failover: %s went offline, looking for replacement for campaign %q", snap.DisplayName, campaign.Name)
-
-	// transferDrop moves drop state from the old offline channel to the new replacement
-	// so the UI/rotation reflect the change immediately, not at the next inventory cycle.
-	transferDrop := func(newLogin string) {
-		f.mu.RLock()
-		var newCh *ChannelState
-		if id, ok := f.loginMap[strings.ToLower(newLogin)]; ok {
-			newCh = f.channels[id]
-		}
-		oldCh, oldExists := f.channels[channelID]
-		f.mu.RUnlock()
-
-		if newCh != nil {
-			newCh.SetDropInfo(oldDropName, oldDropProgress, oldDropRequired)
-			newCh.mu.Lock()
-			newCh.CampaignID = campaignID
-			newCh.mu.Unlock()
-		}
-		if oldExists {
-			oldCh.ClearDropInfo()
-		}
-
-		// Update the activeDrops slice that the web UI reads, so the Channel column
-		// flips to the new login right away instead of next dropCheckLoop.
-		f.drops.mu.Lock()
-		for i := range f.drops.activeDrops {
-			if f.drops.activeDrops[i].CampaignID == campaignID {
-				f.drops.activeDrops[i].ChannelLogin = newLogin
-			}
-		}
-		f.drops.mu.Unlock()
-	}
-
-	// Helper: clean up old temp channel after successful replacement
-	cleanupOld := func() {
-		if isOldChannelTemp {
-			f.removeTemporaryChannel(channelID)
-		}
-	}
-
-	// 1. Try existing configured channels that match the campaign and are online
-	existing := f.matchCampaignChannels(campaign)
-	for chID := range existing {
-		if chID == channelID {
-			continue // skip the offline one
-		}
-		f.mu.RLock()
-		candidate, ok := f.channels[chID]
-		f.mu.RUnlock()
-		if ok && candidate.Snapshot().IsOnline {
-			f.addLog("[Drops] Failover: found existing online channel %s for campaign %q", candidate.DisplayName, campaign.Name)
-			transferDrop(candidate.Login)
-			cleanupOld()
-			f.rotateChannels()
-			return
-		}
-	}
-
-	// 2. Try allowed channels from the campaign — exclude the failing channel so
-	// we don't pick it as its own replacement (transferDrop would then SetDropInfo
-	// followed by ClearDropInfo on the same channel and clobber the drop state).
-	if len(campaign.Channels) > 0 {
-		login := f.findLiveFromAllowedChannels(campaign, snap.Login)
-		if login != "" {
-			f.addLog("[Drops] Failover: auto-selected %s from allowed channels", login)
-			transferDrop(login)
-			cleanupOld()
-			f.rotateChannels()
-			return
-		}
-	}
-
-	// 3. Try game directory (exclude the current failing channel)
-	if campaign.GameName != "" {
-		login := f.findLiveFromGameDirectoryExcluding(campaign.GameName, snap.Login)
-		if login != "" {
-			if err := f.addTemporaryChannel(login, campaignID); err == nil {
-				f.addLog("[Drops] Failover: auto-selected %s from game directory", login)
-				transferDrop(login)
-				cleanupOld()
-				f.rotateChannels()
-				return
-			}
-		}
-	}
-
-	f.addLog("[Drops] Failover: no replacement found for campaign %q, will retry on next drop check", campaign.Name)
 }
 
 // fillSpadeSlots tries to fill open Spade slots with online channels.
