@@ -55,6 +55,46 @@ func NewDropSelector(cfg *config.Config, gql *twitch.GQLClient) *DropSelector {
 	}
 }
 
+// filterEligibleCampaigns drops campaigns that are not currently farmable:
+// non-active status, expired, account not connected, disabled by user,
+// already completed, or have no watchable (non-sub-only, non-claimed) drops.
+func (s *DropSelector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []twitch.DropCampaign {
+	now := s.now()
+	out := make([]twitch.DropCampaign, 0, len(campaigns))
+
+	for _, c := range campaigns {
+		if c.Status != "" && c.Status != "ACTIVE" {
+			continue
+		}
+		if !c.EndAt.IsZero() && !c.EndAt.After(now) {
+			continue
+		}
+		if !c.IsAccountConnected {
+			continue
+		}
+		if s.cfg.IsCampaignDisabled(c.ID) {
+			continue
+		}
+		if s.cfg.IsCampaignCompleted(c.ID) {
+			continue
+		}
+		// Need at least one watchable, unclaimed drop
+		hasWatchable := false
+		for _, d := range c.Drops {
+			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
+				hasWatchable = true
+				break
+			}
+		}
+		if !hasWatchable {
+			continue
+		}
+		out = append(out, c)
+	}
+
+	return out
+}
+
 // keep imports used; sort/strings are used by later additions.
 var _ = sort.SliceStable
 var _ = strings.ToLower
