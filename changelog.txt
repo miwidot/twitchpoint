@@ -41,6 +41,14 @@ What changed:
   enabled drop). buildDropRows skips campaigns with no watchable drops
   and dedups same-name campaign rows so the table doesn't show 9× the
   same streamer-exclusive campaign.
+- TUI campaign management — two new keybinds matching the existing
+  a/d/p prompt-input pattern:
+    t   toggle campaign disabled state (partial-name match)
+    i   pin/unpin a campaign (partial-name match, only one pin)
+  Web UI is no longer required for these — TUI is fully self-sufficient.
+  findCampaignByPartial does case-insensitive substring match against
+  the current ActiveDrops, prefers exact match on ambiguity, errors out
+  with the candidate list when truly ambiguous.
 - Spade slot allocation unchanged: P0 (HasActiveDrop) wins slot 1,
   slot 2 follows existing P1 always-watch / P2 rotate rotation.
 - Channel-points farming unaffected.
