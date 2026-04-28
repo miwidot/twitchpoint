@@ -297,15 +297,26 @@ func (s *Server) handleDrops(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDropAction(w http.ResponseWriter, r *http.Request) {
-	// Extract campaignID and action from path: /api/drops/{campaignID}/toggle
+	// /api/drops/{campaignID}/{action}
 	path := strings.TrimPrefix(r.URL.Path, "/api/drops/")
-	parts := strings.Split(path, "/")
-	if len(parts) < 2 || parts[0] == "" || parts[1] != "toggle" {
-		jsonError(w, "invalid path, expected /api/drops/{campaignID}/toggle", http.StatusBadRequest)
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		jsonError(w, "invalid path, expected /api/drops/{campaignID}/{action}", http.StatusBadRequest)
 		return
 	}
-	campaignID := parts[0]
+	campaignID, action := parts[0], parts[1]
 
+	switch action {
+	case "toggle":
+		s.handleCampaignToggle(w, r, campaignID)
+	case "pin":
+		s.handleCampaignPin(w, r, campaignID)
+	default:
+		jsonError(w, "unknown action: "+action, http.StatusBadRequest)
+	}
+}
+
+func (s *Server) handleCampaignToggle(w http.ResponseWriter, r *http.Request, campaignID string) {
 	if r.Method != http.MethodPut {
 		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -325,6 +336,36 @@ func (s *Server) handleDropAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]interface{}{"status": "ok", "campaign_id": campaignID, "enabled": req.Enabled})
+}
+
+func (s *Server) handleCampaignPin(w http.ResponseWriter, r *http.Request, campaignID string) {
+	if r.Method != http.MethodPut {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Pinned bool `json:"pinned"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	cfg := s.farmer.Config()
+	if req.Pinned {
+		cfg.SetPinnedCampaign(campaignID)
+	} else if cfg.IsCampaignPinned(campaignID) {
+		cfg.SetPinnedCampaign("")
+	}
+	if err := cfg.Save(); err != nil {
+		jsonError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]string{
+		"pinned_campaign_id": cfg.GetPinnedCampaign(),
+	})
 }
 
 func formatDuration(d time.Duration) string {

@@ -921,6 +921,11 @@ func (f *Farmer) fetchAndStartWatching(ch *ChannelState) {
 	}
 }
 
+// Config returns the farmer's configuration. Used by the web layer for pin/disable mutations.
+func (f *Farmer) Config() *config.Config {
+	return f.cfg
+}
+
 func (f *Farmer) addLog(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	now := time.Now()
