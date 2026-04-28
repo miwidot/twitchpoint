@@ -192,5 +192,71 @@ func (s *DropSelector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 	return pool
 }
 
-// keep imports used; sort is used by later additions.
-var _ = sort.SliceStable
+// sortPool sorts entries in priority order:
+//   1. Channels serving any pinned campaign first
+//   2. Then by earliest endAt across the channel's campaigns (closest expiry wins)
+//   3. Then by viewer count desc (stability tie-break, mild preference for popular streams)
+func (s *DropSelector) sortPool(pool []*PoolEntry) {
+	// Pre-compute earliest end and pin status per entry for stable comparison
+	type cached struct {
+		hasPinned bool
+		minEnd    time.Time
+	}
+	keys := make(map[*PoolEntry]cached, len(pool))
+	for _, e := range pool {
+		var c cached
+		first := true
+		for _, ref := range e.Campaigns {
+			if ref.IsPinned {
+				c.hasPinned = true
+			}
+			if first || ref.EndAt.Before(c.minEnd) {
+				c.minEnd = ref.EndAt
+				first = false
+			}
+		}
+		keys[e] = c
+	}
+
+	sort.SliceStable(pool, func(i, j int) bool {
+		ki, kj := keys[pool[i]], keys[pool[j]]
+		// Pinned first
+		if ki.hasPinned != kj.hasPinned {
+			return ki.hasPinned
+		}
+		// Earlier endAt first
+		if !ki.minEnd.Equal(kj.minEnd) {
+			return ki.minEnd.Before(kj.minEnd)
+		}
+		// Higher viewers first
+		return pool[i].ViewerCount > pool[j].ViewerCount
+	})
+
+	// Also reorder each entry's own Campaigns list by (pinned, endAt) so
+	// callers can index Campaigns[0] for "primary campaign of this channel".
+	for _, e := range pool {
+		sort.SliceStable(e.Campaigns, func(i, j int) bool {
+			a, b := e.Campaigns[i], e.Campaigns[j]
+			if a.IsPinned != b.IsPinned {
+				return a.IsPinned
+			}
+			return a.EndAt.Before(b.EndAt)
+		})
+	}
+}
+
+// Select runs the full pipeline: filter → buildPool → sort → pick.
+// Returns (pickedChannel, sortedPool). pickedChannel is nil if pool empty.
+// The returned pool is sorted; callers can use pool[1:] as the queue for UI.
+func (s *DropSelector) Select(campaigns []twitch.DropCampaign) (*PoolEntry, []*PoolEntry) {
+	eligible := s.filterEligibleCampaigns(campaigns)
+	if len(eligible) == 0 {
+		return nil, nil
+	}
+	pool := s.buildPool(eligible)
+	if len(pool) == 0 {
+		return nil, nil
+	}
+	s.sortPool(pool)
+	return pool[0], pool
+}

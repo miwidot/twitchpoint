@@ -270,3 +270,100 @@ func TestBuildPool_DirectoryQueriedOncePerGame(t *testing.T) {
 		t.Fatalf("directory should be queried once per cycle per game, got %d calls", got)
 	}
 }
+
+func TestSortPool_PinnedFirst(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.PinnedCampaignID = "pinned-camp"
+	sel := newTestSelector(cfg)
+
+	a := &PoolEntry{ChannelLogin: "a", Campaigns: []CampaignRef{
+		{ID: "other", EndAt: testNow.Add(1 * time.Hour), IsPinned: false},
+	}}
+	b := &PoolEntry{ChannelLogin: "b", Campaigns: []CampaignRef{
+		{ID: "pinned-camp", EndAt: testNow.Add(10 * time.Hour), IsPinned: true},
+	}}
+
+	pool := []*PoolEntry{a, b}
+	sel.sortPool(pool)
+	if pool[0].ChannelLogin != "b" {
+		t.Fatalf("pinned channel should sort first, got %s", pool[0].ChannelLogin)
+	}
+}
+
+func TestSortPool_EarlierEndAtFirst(t *testing.T) {
+	cfg := &config.Config{}
+	sel := newTestSelector(cfg)
+
+	near := &PoolEntry{ChannelLogin: "near", Campaigns: []CampaignRef{
+		{EndAt: testNow.Add(2 * time.Hour)},
+	}}
+	far := &PoolEntry{ChannelLogin: "far", Campaigns: []CampaignRef{
+		{EndAt: testNow.Add(20 * time.Hour)},
+	}}
+
+	pool := []*PoolEntry{far, near}
+	sel.sortPool(pool)
+	if pool[0].ChannelLogin != "near" {
+		t.Fatalf("near-expiry channel should sort first, got %s", pool[0].ChannelLogin)
+	}
+}
+
+func TestSortPool_ViewerCountTieBreak(t *testing.T) {
+	cfg := &config.Config{}
+	sel := newTestSelector(cfg)
+
+	endAt := testNow.Add(2 * time.Hour)
+	low := &PoolEntry{ChannelLogin: "low", ViewerCount: 100, Campaigns: []CampaignRef{{EndAt: endAt}}}
+	high := &PoolEntry{ChannelLogin: "high", ViewerCount: 1000, Campaigns: []CampaignRef{{EndAt: endAt}}}
+
+	pool := []*PoolEntry{low, high}
+	sel.sortPool(pool)
+	if pool[0].ChannelLogin != "high" {
+		t.Fatalf("higher viewer count should win tie, got %s", pool[0].ChannelLogin)
+	}
+}
+
+func TestSelect_EmptyPoolReturnsNil(t *testing.T) {
+	cfg := &config.Config{}
+	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
+		"ABI": {}, // game returns no live streams
+	}}
+	sel := newSelectorWithStreams(cfg, src)
+
+	camp := twitch.DropCampaign{
+		ID: "abi", Status: "ACTIVE", IsAccountConnected: true, GameName: "ABI",
+		EndAt: testNow.Add(4 * time.Hour),
+		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
+	}
+
+	pick, queue := sel.Select([]twitch.DropCampaign{camp})
+	if pick != nil || queue != nil {
+		t.Fatalf("empty stream directory should yield nil pick, got %v / %v", pick, queue)
+	}
+}
+
+func TestSelect_PinForcesNonClosestExpiry(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.PinnedCampaignID = "pinned-far"
+	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
+		"GameA": {{BroadcasterID: "1", BroadcasterLogin: "near_streamer"}},
+		"GameB": {{BroadcasterID: "2", BroadcasterLogin: "far_streamer"}},
+	}}
+	sel := newSelectorWithStreams(cfg, src)
+
+	near := twitch.DropCampaign{
+		ID: "near", Status: "ACTIVE", IsAccountConnected: true, GameName: "GameA",
+		EndAt: testNow.Add(2 * time.Hour),
+		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
+	}
+	pinnedFar := twitch.DropCampaign{
+		ID: "pinned-far", Status: "ACTIVE", IsAccountConnected: true, GameName: "GameB",
+		EndAt: testNow.Add(20 * time.Hour),
+		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
+	}
+
+	pick, _ := sel.Select([]twitch.DropCampaign{near, pinnedFar})
+	if pick == nil || pick.ChannelLogin != "far_streamer" {
+		t.Fatalf("pin should override closest-expiry sort, picked %v", pick)
+	}
+}
