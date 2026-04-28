@@ -28,6 +28,7 @@ type Config struct {
 	DropsEnabled          bool     `json:"drops_enabled"`                         // enable drop mining (default true)
 	DisabledCampaigns     []string `json:"disabled_campaigns,omitempty"`          // campaign IDs to skip
 	CompletedCampaigns    []string `json:"completed_campaigns,omitempty"`         // campaign IDs already fully claimed
+	PinnedCampaignID      string   `json:"pinned_campaign_id,omitempty"`          // single campaign to prioritize over remaining-time sort (empty = no pin)
 
 	path string // file path, not serialized
 }
@@ -291,6 +292,22 @@ func (c *Config) MarkCampaignCompleted(campaignID string) {
 	if !c.IsCampaignCompleted(campaignID) {
 		c.CompletedCampaigns = append(c.CompletedCampaigns, campaignID)
 	}
+}
+
+// SetPinnedCampaign atomically sets the pinned campaign. Pass empty string to clear.
+// Only one campaign can be pinned at a time — calling this overwrites any previous pin.
+func (c *Config) SetPinnedCampaign(campaignID string) {
+	c.PinnedCampaignID = campaignID
+}
+
+// IsCampaignPinned returns true if the given campaign is the currently pinned one.
+func (c *Config) IsCampaignPinned(campaignID string) bool {
+	return c.PinnedCampaignID != "" && c.PinnedCampaignID == campaignID
+}
+
+// GetPinnedCampaign returns the currently pinned campaign ID, or empty string if none.
+func (c *Config) GetPinnedCampaign() string {
+	return c.PinnedCampaignID
 }
 
 // HasChannel checks if a channel is in the config.
