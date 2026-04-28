@@ -382,6 +382,32 @@
         .badge-temp { background: rgba(145, 71, 255, 0.2); color: var(--twitch-purple); }
         .badge-auto { background: rgba(0, 245, 147, 0.2); color: var(--green); }
 
+        /* v1.7.0 status badges + pin button */
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .status-active    { background: rgba(0, 245, 147, 0.2); color: var(--green); }
+        .status-queued    { background: rgba(255, 193, 7, 0.2);  color: #ffc107; }
+        .status-idle      { background: rgba(127, 127, 127, 0.2); color: #888; font-style: italic; }
+        .status-disabled  { background: rgba(127, 127, 127, 0.15); color: #777; text-decoration: line-through; }
+        .status-completed { background: rgba(74, 144, 226, 0.2); color: #4a90e2; }
+        .pin-btn {
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 6px;
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text);
+        }
+        .pin-btn:hover { background: rgba(145, 71, 255, 0.1); }
+
         /* Drops Campaign Table */
         .drops-toggle {
             appearance: none;
@@ -545,11 +571,15 @@
             <table>
                 <thead>
                     <tr>
+                        <th>📌</th>
+                        <th>#</th>
+                        <th>Status</th>
                         <th>On</th>
                         <th>Campaign</th>
                         <th>Game</th>
                         <th>Drop</th>
                         <th>Progress</th>
+                        <th>ETA</th>
                         <th>Channel</th>
                         <th>Expires</th>
                     </tr>
@@ -742,8 +772,22 @@
             container.style.display = 'block';
 
             tbody.innerHTML = drops.map(drop => {
-                const rowClass = !drop.is_enabled ? 'disabled-row' : '';
-                const checked = drop.is_enabled ? 'checked' : '';
+                const status = drop.status || '';
+                const statusClass = status.toLowerCase().replace(/[^a-z]/g, '');
+                const isCompleted = status === 'COMPLETED';
+                const isDisabled = status === 'DISABLED';
+                const rowClass = isDisabled ? 'disabled-row' : '';
+
+                const safeCampId = escapeHtml(drop.campaign_id);
+                const pinBtn = isCompleted ? '' :
+                    `<button class="pin-btn" title="${drop.is_pinned ? 'Unpin' : 'Pin'}" onclick="togglePin('${safeCampId}', ${!drop.is_pinned})">${drop.is_pinned ? '📌✓' : '📌'}</button>`;
+
+                const queuePos = drop.queue_index > 0 ? drop.queue_index : '—';
+                const statusBadge = `<span class="status-badge status-${statusClass}">${escapeHtml(status)}</span>`;
+
+                const checked = drop.is_enabled && !isDisabled ? 'checked' : '';
+                const toggleCell = isCompleted ? '<span style="color:var(--text-muted)">✓</span>' :
+                    `<input type="checkbox" class="drops-toggle" ${checked} onchange="toggleCampaign('${safeCampId}', this.checked)">`;
 
                 // Progress bar
                 const pct = drop.required > 0 ? Math.min(100, Math.round((drop.progress / drop.required) * 100)) : 0;
@@ -755,13 +799,17 @@
                         <span class="campaign-progress-text">${drop.progress}/${drop.required}min (${pct}%)</span>
                     </div>`;
 
-                // Channel with AUTO badge
+                // ETA
+                const etaMin = drop.eta_minutes;
+                let etaStr = '—';
+                if (etaMin > 0) {
+                    etaStr = etaMin < 60 ? `${etaMin}m` : `~${(etaMin / 60).toFixed(1)}h`;
+                }
+
+                // Channel
                 let channelHtml = drop.channel_login
                     ? escapeHtml(drop.channel_login)
-                    : '<span style="color:var(--text-muted)">none</span>';
-                if (drop.is_auto_selected && drop.channel_login) {
-                    channelHtml += ' <span class="badge badge-auto">AUTO</span>';
-                }
+                    : '<span style="color:var(--text-muted)">—</span>';
 
                 // Expires
                 let expiresHtml = '-';
@@ -779,18 +827,38 @@
 
                 return `
                     <tr class="${rowClass}">
-                        <td>
-                            <input type="checkbox" class="drops-toggle" ${checked}
-                                onchange="toggleCampaign('${drop.campaign_id}', this.checked)">
-                        </td>
+                        <td>${pinBtn}</td>
+                        <td>${queuePos}</td>
+                        <td>${statusBadge}</td>
+                        <td>${toggleCell}</td>
                         <td>${escapeHtml(drop.campaign_name)}</td>
                         <td class="game-name">${escapeHtml(drop.game_name)}</td>
                         <td>${escapeHtml(drop.drop_name)}</td>
                         <td>${progressHtml}</td>
+                        <td>${etaStr}</td>
                         <td>${channelHtml}</td>
                         <td>${expiresHtml}</td>
                     </tr>`;
             }).join('');
+        }
+
+        async function togglePin(campaignId, pinned) {
+            try {
+                const res = await fetch(API + `/api/drops/${encodeURIComponent(campaignId)}/pin`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pinned })
+                });
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                } else {
+                    showToast(pinned ? 'Campaign pinned' : 'Campaign unpinned', 'success');
+                }
+                fetchDrops();
+            } catch (e) {
+                showToast('Failed to toggle pin: ' + e.message, 'error');
+            }
         }
 
         async function toggleCampaign(campaignId, enabled) {
