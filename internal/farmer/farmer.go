@@ -99,6 +99,9 @@ func (f *Farmer) Start() error {
 	// Initialize GQL client
 	f.gql = twitch.NewGQLClient(f.cfg.AuthToken)
 
+	// Initialize drop selector now that gql client exists
+	f.drops.selector = NewDropSelector(f.cfg, f.gql)
+
 	// Validate auth token by getting user info
 	user, err := f.gql.GetUserInfo()
 	if err != nil {
@@ -222,15 +225,6 @@ func (f *Farmer) addChannelFromEntry(entry config.ChannelEntry) error {
 		}
 	}
 
-	if err != nil {
-		return fmt.Errorf("get channel info: %w", err)
-	}
-
-	return f.addChannelWithInfo(info)
-}
-
-func (f *Farmer) addChannel(login string) error {
-	info, err := f.gql.GetChannelInfo(login)
 	if err != nil {
 		return fmt.Errorf("get channel info: %w", err)
 	}
@@ -757,7 +751,47 @@ func (f *Farmer) handleDropFailover(channelID string) {
 
 	isOldChannelTemp := snap.IsTemporary
 
+	// Save drop info from old channel so we can transfer it to the replacement.
+	// Without this transfer, the new channel would not have HasActiveDrop=true and
+	// rotateChannels would not promote it to P0, leaving the drop unfarmed until
+	// the next dropCheckLoop (~10 min) re-evaluated everything.
+	oldDropName := snap.DropName
+	oldDropProgress := snap.DropProgress
+	oldDropRequired := snap.DropRequired
+
 	f.addLog("[Drops] Failover: %s went offline, looking for replacement for campaign %q", snap.DisplayName, campaign.Name)
+
+	// transferDrop moves drop state from the old offline channel to the new replacement
+	// so the UI/rotation reflect the change immediately, not at the next inventory cycle.
+	transferDrop := func(newLogin string) {
+		f.mu.RLock()
+		var newCh *ChannelState
+		if id, ok := f.loginMap[strings.ToLower(newLogin)]; ok {
+			newCh = f.channels[id]
+		}
+		oldCh, oldExists := f.channels[channelID]
+		f.mu.RUnlock()
+
+		if newCh != nil {
+			newCh.SetDropInfo(oldDropName, oldDropProgress, oldDropRequired)
+			newCh.mu.Lock()
+			newCh.CampaignID = campaignID
+			newCh.mu.Unlock()
+		}
+		if oldExists {
+			oldCh.ClearDropInfo()
+		}
+
+		// Update the activeDrops slice that the web UI reads, so the Channel column
+		// flips to the new login right away instead of next dropCheckLoop.
+		f.drops.mu.Lock()
+		for i := range f.drops.activeDrops {
+			if f.drops.activeDrops[i].CampaignID == campaignID {
+				f.drops.activeDrops[i].ChannelLogin = newLogin
+			}
+		}
+		f.drops.mu.Unlock()
+	}
 
 	// Helper: clean up old temp channel after successful replacement
 	cleanupOld := func() {
@@ -777,20 +811,21 @@ func (f *Farmer) handleDropFailover(channelID string) {
 		f.mu.RUnlock()
 		if ok && candidate.Snapshot().IsOnline {
 			f.addLog("[Drops] Failover: found existing online channel %s for campaign %q", candidate.DisplayName, campaign.Name)
-			candidate.mu.Lock()
-			candidate.CampaignID = campaignID
-			candidate.mu.Unlock()
+			transferDrop(candidate.Login)
 			cleanupOld()
 			f.rotateChannels()
 			return
 		}
 	}
 
-	// 2. Try allowed channels from the campaign
+	// 2. Try allowed channels from the campaign — exclude the failing channel so
+	// we don't pick it as its own replacement (transferDrop would then SetDropInfo
+	// followed by ClearDropInfo on the same channel and clobber the drop state).
 	if len(campaign.Channels) > 0 {
-		login := f.findLiveFromAllowedChannels(campaign)
+		login := f.findLiveFromAllowedChannels(campaign, snap.Login)
 		if login != "" {
 			f.addLog("[Drops] Failover: auto-selected %s from allowed channels", login)
+			transferDrop(login)
 			cleanupOld()
 			f.rotateChannels()
 			return
@@ -803,6 +838,7 @@ func (f *Farmer) handleDropFailover(channelID string) {
 		if login != "" {
 			if err := f.addTemporaryChannel(login, campaignID); err == nil {
 				f.addLog("[Drops] Failover: auto-selected %s from game directory", login)
+				transferDrop(login)
 				cleanupOld()
 				f.rotateChannels()
 				return
@@ -1113,9 +1149,24 @@ func (f *Farmer) GetChannels() []ChannelSnapshot {
 		snapshots = append(snapshots, ch.Snapshot())
 	}
 
-	// Sort by display name
+	// Sort: watching first, then online, then offline — each group alphabetically
 	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].DisplayName < snapshots[j].DisplayName
+		si, sj := snapshots[i], snapshots[j]
+		// Rank: 0 = watching (highest), 1 = online, 2 = offline
+		rank := func(s ChannelSnapshot) int {
+			if s.IsWatching {
+				return 0
+			}
+			if s.IsOnline {
+				return 1
+			}
+			return 2
+		}
+		ri, rj := rank(si), rank(sj)
+		if ri != rj {
+			return ri < rj
+		}
+		return si.DisplayName < sj.DisplayName
 	})
 
 	return snapshots

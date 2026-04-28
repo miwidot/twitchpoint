@@ -34,11 +34,13 @@ type ActiveDrop struct {
 // dropState holds internal state for the drop tracker.
 type dropState struct {
 	mu            sync.RWMutex
-	activeDrops   []ActiveDrop
+	activeDrops   []ActiveDrop                   // for /api/drops, status=ACTIVE/DISABLED/COMPLETED
+	queuedDrops   []ActiveDrop                   // for /api/drops, status=QUEUED
+	idleDrops     []ActiveDrop                   // for /api/drops, status=IDLE
 	campaignCache map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
+	currentPickID string                         // ChannelID currently assigned the drop slot, "" if none
 
-	failoverCooldowns map[string]time.Time // campaignID -> last failover attempt
-	dropStallCount    map[string]int       // channelID -> consecutive cycles where drop progress did not increase
+	selector *DropSelector
 }
 
 // dropCheckLoop polls the drops inventory every 10 minutes.
@@ -66,304 +68,325 @@ func (f *Farmer) dropCheckLoop() {
 	}
 }
 
-// processDrops fetches the inventory, updates channel drop state, and auto-claims completed drops.
-func (f *Farmer) processDrops() {
-	// Health check: verify temp drop channels are still online.
-	// PubSub may miss StreamDown events, leaving stale "online" state.
-	f.verifyTempChannelHealth()
 
+// processDrops fetches the inventory, runs the selector, applies the pick to
+// Spade, and auto-claims any completed drops. Called every 5 min by dropCheckLoop.
+func (f *Farmer) processDrops() {
 	campaigns, err := f.gql.GetDropsInventory()
 	if err != nil {
 		f.addLog("[Drops] Failed to fetch inventory: %v", err)
 		return
 	}
 
-	// Sort campaigns by end time — soonest expiring first so they get channel priority
-	sort.Slice(campaigns, func(i, j int) bool {
-		ei, ej := campaigns[i].EndAt, campaigns[j].EndAt
-		// Zero end time (unknown) goes last
-		if ei.IsZero() {
-			return false
-		}
-		if ej.IsZero() {
-			return true
-		}
-		return ei.Before(ej)
-	})
-
-	// Rebuild campaign cache for failover lookups
-	newCache := make(map[string]twitch.DropCampaign)
-
-	// Build a set of channelIDs that have active drops this cycle
-	activeDropChannels := make(map[string]bool)
-	var allDrops []ActiveDrop
-
-	// Deduplicate exclusive campaigns (≤2 allowed channels) that share benefit IDs.
-	// Multiple streamer-exclusive campaigns often share the same Tier 1 item.
-	// Only farm ONE at a time — the one with the most progress (finishes fastest).
-	exclusivePicked := f.pickExclusiveCampaigns(campaigns)
-	farmingBenefitIDs := make(map[string]bool)
-
 	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
 
-	// Debug: log claimed status for connected campaigns to verify gameEventDrops merge
-	for _, campaign := range campaigns {
-		if campaign.IsAccountConnected {
-			for _, drop := range campaign.Drops {
-				if drop.RequiredMinutesWatched > 0 {
-					f.writeLogFile(fmt.Sprintf("[Drops/Debug] %q drop %q: benefitID=%q claimed=%v progress=%d/%d",
-						campaign.Name, drop.Name, drop.BenefitID, drop.IsClaimed, drop.CurrentMinutesWatched, drop.RequiredMinutesWatched))
-				}
-			}
-		}
+	// 1. Auto-claim any drops that are complete and have an instance ID.
+	f.autoClaimAndMarkCompleted(campaigns)
+
+	// 2. Run the selector on the (now-updated) inventory.
+	pick, pool := f.drops.selector.Select(campaigns)
+
+	// 3. Build per-campaign UI rows.
+	active, queued, idle := f.buildDropRows(campaigns, pick, pool)
+
+	// 4. Rebuild campaign cache (for web UI endAt lookups).
+	newCache := make(map[string]twitch.DropCampaign, len(campaigns))
+	for _, c := range campaigns {
+		newCache[c.ID] = c
 	}
 
-	for _, campaign := range campaigns {
-		f.writeLogFile(fmt.Sprintf("[Drops] Processing campaign %q (game=%q, status=%q, drops=%d, endsAt=%s, connected=%v)",
-			campaign.Name, campaign.GameName, campaign.Status, len(campaign.Drops), campaign.EndAt.Format("2006-01-02 15:04"), campaign.IsAccountConnected))
+	// 5. Apply pick: register channel as temp if new, set HasActiveDrop.
+	f.applySelectorPick(pick, campaigns)
 
-		// Skip non-ACTIVE campaigns (inventory returns ACTIVE and EXPIRED)
-		if campaign.Status != "" && campaign.Status != "ACTIVE" {
-			f.writeLogFile(fmt.Sprintf("[Drops] Skipping non-active campaign %q (status=%s)", campaign.Name, campaign.Status))
+	// 6. Store rows + cache atomically.
+	f.drops.mu.Lock()
+	f.drops.activeDrops = active
+	f.drops.queuedDrops = queued
+	f.drops.idleDrops = idle
+	f.drops.campaignCache = newCache
+	if pick != nil {
+		f.drops.currentPickID = pick.ChannelID
+	} else {
+		f.drops.currentPickID = ""
+	}
+	f.drops.mu.Unlock()
+
+	// 7. Drop existing temp channels that are no longer the pick.
+	f.cleanupNonPickedTempChannels(pick)
+
+	// 8. Trigger rotation so Spade slot 1 reflects the new pick.
+	f.rotateChannels()
+
+	if pick != nil {
+		campaignNames := make([]string, len(pick.Campaigns))
+		for i, c := range pick.Campaigns {
+			campaignNames[i] = c.Name
+		}
+		f.addLog("[Drops/Pool] picked %s (campaigns: %s)", pick.DisplayName, strings.Join(campaignNames, ", "))
+	} else {
+		f.addLog("[Drops/Pool] empty pool — drops idle, slots free for points")
+	}
+}
+
+// autoClaimAndMarkCompleted handles drop claims and marks fully-claimed
+// campaigns as completed in config.
+func (f *Farmer) autoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
+	for _, c := range campaigns {
+		if c.Status != "" && c.Status != "ACTIVE" {
+			continue
+		}
+		if !c.IsAccountConnected {
+			continue
+		}
+		if f.cfg.IsCampaignCompleted(c.ID) {
 			continue
 		}
 
-		// Skip expired campaigns (Twitch may return stale data)
-		if !campaign.EndAt.IsZero() && campaign.EndAt.Before(time.Now()) {
-			f.writeLogFile(fmt.Sprintf("[Drops] Skipping expired campaign %q", campaign.Name))
-			continue
-		}
-
-		// Skip disabled campaigns
-		if f.cfg.IsCampaignDisabled(campaign.ID) {
-			f.writeLogFile(fmt.Sprintf("[Drops] Skipping disabled campaign %q", campaign.Name))
-			continue
-		}
-
-		// Skip campaigns where account is not linked (drops won't be credited)
-		if !campaign.IsAccountConnected {
-			continue
-		}
-
-		// Skip campaigns we've already fully claimed (tracked in config)
-		if f.cfg.IsCampaignCompleted(campaign.ID) {
-			f.writeLogFile(fmt.Sprintf("[Drops] Skipping completed campaign %q", campaign.Name))
-			continue
-		}
-
-		// Deduplicate exclusive campaigns: only the picked campaign per benefit group is farmed.
-		isExclusive := len(campaign.Channels) > 0 && len(campaign.Channels) <= 2
-		if isExclusive && !exclusivePicked[campaign.ID] {
-			continue
-		}
-
-		newCache[campaign.ID] = campaign
-
-		// Build a lookup of campaign channel IDs -> configured channel login
-		campaignChannelIDs := f.matchCampaignChannels(campaign)
-
-		// Auto-select: if no channels match OR none are online, try to find a live one
-		needsAutoSelect := len(campaignChannelIDs) == 0
-		if !needsAutoSelect {
-			// Check if any matched channel is actually online
-			hasOnline := false
-			f.mu.RLock()
-			for chID := range campaignChannelIDs {
-				if ch, ok := f.channels[chID]; ok && ch.Snapshot().IsOnline {
-					hasOnline = true
-					break
-				}
-			}
-			f.mu.RUnlock()
-			needsAutoSelect = !hasOnline
-		}
-
-		f.writeLogFile(fmt.Sprintf("[Drops] Campaign %q: matchedChannels=%d, needsAutoSelect=%v",
-			campaign.Name, len(campaignChannelIDs), needsAutoSelect))
-
-		if needsAutoSelect {
-			autoLogin := f.autoSelectDropChannel(campaign)
-			if autoLogin != "" {
-				// Direct lookup — don't re-match because game directory channels
-				// won't appear in campaign.Channels and matchCampaignChannels would miss them
-				f.mu.RLock()
-				if chID, ok := f.loginMap[autoLogin]; ok {
-					campaignChannelIDs[chID] = autoLogin
-				}
-				f.mu.RUnlock()
-			} else {
-				f.writeLogFile(fmt.Sprintf("[Drops] Auto-select returned empty for campaign %q", campaign.Name))
-			}
-		}
-
-		// Check if all watchable drops are claimed → mark campaign as completed
 		allClaimed := true
-		hasWatchableDrops := false
-		for _, drop := range campaign.Drops {
-			if drop.RequiredMinutesWatched <= 0 {
-				continue // sub-only, ignore
-			}
-			hasWatchableDrops = true
-			if !drop.IsClaimed {
-				allClaimed = false
-				break
-			}
-		}
-		if hasWatchableDrops && allClaimed {
-			f.cfg.MarkCampaignCompleted(campaign.ID)
-			f.cfg.Save()
-			source := "inventory"
-			if !campaign.InInventory {
-				source = "gameEventDrops"
-			}
-			f.addLog("[Drops] Campaign %q fully claimed (detected via %s) — marked as completed", campaign.Name, source)
-			continue
-		}
-
-		for _, drop := range campaign.Drops {
-			if drop.IsClaimed {
+		hasWatchable := false
+		for _, d := range c.Drops {
+			if d.RequiredMinutesWatched <= 0 {
 				continue
 			}
-
-			// Skip sub-only drops (0 required minutes = can't be earned by watching)
-			if drop.RequiredMinutesWatched <= 0 {
+			hasWatchable = true
+			if d.IsClaimed {
 				continue
 			}
-
-			// Deduplicate: skip if this benefit ID is already being farmed by another campaign.
-			// Prevents 25 exclusive campaigns from each creating a drop for the same Tier 1 item.
-			if drop.BenefitID != "" && farmingBenefitIDs[drop.BenefitID] {
-				continue
-			}
-
-			dropName := drop.BenefitName
-			if dropName == "" {
-				dropName = drop.Name
-			}
-
-			// Check if this drop is complete and can be claimed
-			if drop.IsComplete() && drop.DropInstanceID != "" {
-				f.addLog("[Drops] Claiming completed drop: %s (%s)", dropName, campaign.Name)
-				go func(instanceID, name string) {
+			allClaimed = false
+			if d.IsComplete() && d.DropInstanceID != "" {
+				name := d.BenefitName
+				if name == "" {
+					name = d.Name
+				}
+				instanceID := d.DropInstanceID
+				dropName := name
+				campaignName := c.Name
+				go func() {
 					if err := f.gql.ClaimDrop(instanceID); err != nil {
-						f.addLog("[Drops] Failed to claim %s: %v", name, err)
+						f.addLog("[Drops] Failed to claim %s: %v", dropName, err)
 					} else {
-						f.addLog("[Drops] Claimed: %s", name)
+						f.addLog("[Drops] Claimed: %s (%s)", dropName, campaignName)
 					}
-				}(drop.DropInstanceID, dropName)
-				continue
+				}()
 			}
+		}
 
-			// Pick the single best channel for this drop:
-			// watching > online > offline, prefer non-temporary
-			bestChID := ""
-			bestLogin := ""
-			bestScore := -1
-			isAutoSelected := false
+		if hasWatchable && allClaimed {
+			f.cfg.MarkCampaignCompleted(c.ID)
+			f.cfg.Save()
+			f.addLog("[Drops] Campaign %q fully claimed — marked as completed", c.Name)
+		}
+	}
+}
 
-			f.mu.RLock()
-			for chID, login := range campaignChannelIDs {
-				ch, ok := f.channels[chID]
-				if !ok {
-					continue
-				}
-				snap := ch.Snapshot()
-				score := 0
-				if snap.IsOnline {
-					score = 1
-				}
-				if snap.IsWatching {
-					score = 2
-				}
-				// Prefer non-temporary channels at equal score
-				if !snap.IsTemporary && score == bestScore {
-					score++
-				}
-				if score > bestScore {
-					bestScore = score
-					bestChID = chID
-					bestLogin = login
-				}
-			}
-			f.mu.RUnlock()
+// buildDropRows produces the per-campaign UI rows for the web API.
+func (f *Farmer) buildDropRows(
+	campaigns []twitch.DropCampaign,
+	pick *PoolEntry,
+	pool []*PoolEntry,
+) (active, queued, idle []ActiveDrop) {
+	pinnedID := f.cfg.GetPinnedCampaign()
 
-			if bestChID != "" {
-				activeDropChannels[bestChID] = true
-				f.mu.RLock()
-				if ch, ok := f.channels[bestChID]; ok {
-					ch.SetDropInfo(dropName, drop.CurrentMinutesWatched, drop.RequiredMinutesWatched)
-					ch.mu.Lock()
-					ch.CampaignID = campaign.ID
-					ch.mu.Unlock()
-					isAutoSelected = ch.Snapshot().IsTemporary
-				}
-				f.mu.RUnlock()
-			}
-
-			// Only track drops that have a channel assigned — drops without
-			// a live channel can't earn progress and just clutter the UI.
-			// They'll be re-evaluated next cycle when a channel comes online.
-			if bestLogin != "" {
-				// Mark benefit ID as farming for deduplication
-				if drop.BenefitID != "" {
-					farmingBenefitIDs[drop.BenefitID] = true
-				}
-				allDrops = append(allDrops, ActiveDrop{
-					CampaignID:         campaign.ID,
-					CampaignName:       campaign.Name,
-					GameName:           campaign.GameName,
-					DropName:           dropName,
-					ChannelLogin:       bestLogin,
-					Progress:           drop.CurrentMinutesWatched,
-					Required:           drop.RequiredMinutesWatched,
-					Percent:            drop.ProgressPercent(),
-					IsClaimed:          false,
-					EndAt:              campaign.EndAt,
-					IsAutoSelected:     isAutoSelected,
-					IsEnabled:          true,
-					IsAccountConnected: true,
-				})
+	campaignsInPool := make(map[string]*PoolEntry)
+	for _, e := range pool {
+		for _, ref := range e.Campaigns {
+			if _, exists := campaignsInPool[ref.ID]; !exists {
+				campaignsInPool[ref.ID] = e
 			}
 		}
 	}
 
-	// Clear drops for channels no longer in any active campaign
-	f.mu.RLock()
-	for chID, ch := range f.channels {
-		if !activeDropChannels[chID] {
-			snap := ch.Snapshot()
-			if snap.HasActiveDrop {
+	pickedCampaignIDs := make(map[string]bool)
+	if pick != nil {
+		for _, ref := range pick.Campaigns {
+			pickedCampaignIDs[ref.ID] = true
+		}
+	}
+
+	queueIdx := 1
+	for _, c := range campaigns {
+		if c.Status != "" && c.Status != "ACTIVE" {
+			continue
+		}
+		if !c.EndAt.IsZero() && !c.EndAt.After(time.Now()) {
+			continue
+		}
+		if !c.IsAccountConnected {
+			continue
+		}
+
+		row := campaignToRow(c, pinnedID)
+
+		switch {
+		case f.cfg.IsCampaignDisabled(c.ID):
+			row.Status = "DISABLED"
+			active = append(active, row)
+		case f.cfg.IsCampaignCompleted(c.ID):
+			row.Status = "COMPLETED"
+			active = append(active, row)
+		case pickedCampaignIDs[c.ID]:
+			row.Status = "ACTIVE"
+			row.QueueIndex = queueIdx
+			queueIdx++
+			if pick != nil {
+				row.ChannelLogin = pick.ChannelLogin
+			}
+			active = append(active, row)
+		case campaignsInPool[c.ID] != nil:
+			row.Status = "QUEUED"
+			row.QueueIndex = queueIdx
+			queueIdx++
+			queued = append(queued, row)
+		default:
+			row.Status = "IDLE"
+			idle = append(idle, row)
+		}
+	}
+
+	return active, queued, idle
+}
+
+// campaignToRow projects a DropCampaign into the ActiveDrop UI shape.
+func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
+	var dropName string
+	var progress, required int
+	for _, d := range c.Drops {
+		if d.RequiredMinutesWatched <= 0 || d.IsClaimed {
+			continue
+		}
+		dropName = d.BenefitName
+		if dropName == "" {
+			dropName = d.Name
+		}
+		progress = d.CurrentMinutesWatched
+		required = d.RequiredMinutesWatched
+		break
+	}
+
+	pct := 0
+	if required > 0 {
+		pct = (progress * 100) / required
+		if pct > 100 {
+			pct = 100
+		}
+	}
+
+	eta := required - progress
+	if eta < 0 {
+		eta = 0
+	}
+
+	return ActiveDrop{
+		CampaignID:         c.ID,
+		CampaignName:       c.Name,
+		GameName:           c.GameName,
+		DropName:           dropName,
+		Progress:           progress,
+		Required:           required,
+		Percent:            pct,
+		EndAt:              c.EndAt,
+		IsEnabled:          true,
+		IsAccountConnected: c.IsAccountConnected,
+		IsPinned:           c.ID == pinnedID && pinnedID != "",
+		EtaMinutes:         eta,
+	}
+}
+
+// applySelectorPick registers the picked channel as a temp channel if not
+// already tracked, sets HasActiveDrop=true on it, and clears HasActiveDrop on
+// any other channel that was the previous pick.
+func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampaign) {
+	f.drops.mu.RLock()
+	prevPickID := f.drops.currentPickID
+	f.drops.mu.RUnlock()
+
+	if pick == nil {
+		if prevPickID != "" {
+			f.mu.RLock()
+			ch, ok := f.channels[prevPickID]
+			f.mu.RUnlock()
+			if ok {
 				ch.ClearDropInfo()
 			}
+		}
+		return
+	}
+
+	f.mu.RLock()
+	ch, exists := f.channels[pick.ChannelID]
+	f.mu.RUnlock()
+
+	if !exists {
+		primaryCampID := ""
+		if len(pick.Campaigns) > 0 {
+			primaryCampID = pick.Campaigns[0].ID
+		}
+		if err := f.addTemporaryChannel(pick.ChannelLogin, primaryCampID); err != nil {
+			f.addLog("[Drops/Pool] failed to add %s: %v", pick.ChannelLogin, err)
+			return
+		}
+		f.mu.RLock()
+		ch = f.channels[pick.ChannelID]
+		f.mu.RUnlock()
+		if ch == nil {
+			return
+		}
+	}
+
+	primaryCampID := ""
+	if len(pick.Campaigns) > 0 {
+		primaryCampID = pick.Campaigns[0].ID
+	}
+	for _, c := range campaigns {
+		if c.ID != primaryCampID {
+			continue
+		}
+		for _, d := range c.Drops {
+			if d.RequiredMinutesWatched <= 0 || d.IsClaimed {
+				continue
+			}
+			name := d.BenefitName
+			if name == "" {
+				name = d.Name
+			}
+			ch.SetDropInfo(name, d.CurrentMinutesWatched, d.RequiredMinutesWatched)
+			ch.mu.Lock()
+			ch.CampaignID = c.ID
+			ch.mu.Unlock()
+			break
+		}
+		break
+	}
+
+	if prevPickID != "" && prevPickID != pick.ChannelID {
+		f.mu.RLock()
+		prevCh, ok := f.channels[prevPickID]
+		f.mu.RUnlock()
+		if ok {
+			prevCh.ClearDropInfo()
+		}
+	}
+}
+
+// cleanupNonPickedTempChannels removes every temporary channel that is NOT
+// the current pick.
+func (f *Farmer) cleanupNonPickedTempChannels(pick *PoolEntry) {
+	pickID := ""
+	if pick != nil {
+		pickID = pick.ChannelID
+	}
+
+	f.mu.RLock()
+	var stale []string
+	for chID, ch := range f.channels {
+		if ch.Snapshot().IsTemporary && chID != pickID {
+			stale = append(stale, chID)
 		}
 	}
 	f.mu.RUnlock()
 
-	// Remove stale temporary channels no longer serving an active drop
-	f.cleanupTemporaryChannels(activeDropChannels)
-
-	// Atomic swap: capture previous activeDrops for stall detection and store new state.
-	f.drops.mu.Lock()
-	oldDrops := f.drops.activeDrops
-	f.drops.activeDrops = allDrops
-	f.drops.campaignCache = newCache
-	f.drops.mu.Unlock()
-
-	// Detect stalled temp channels: if Twitch isn't crediting drop progress
-	// (most often because the stream isn't drops-enabled, or just changed game),
-	// fail over so we don't sit on a dead channel for hours.
-	f.checkDropProgressStalls(oldDrops, allDrops)
-
-	// Clean old failover cooldown entries
-	f.cleanupFailoverCooldowns()
-
-	// Trigger rotation to apply P0 priority for drop channels
-	if len(activeDropChannels) > 0 {
-		f.rotateChannels()
-	}
-
-	if len(allDrops) > 0 {
-		f.addLog("[Drops] Tracking %d active drop(s) across %d channel(s)", len(allDrops), len(activeDropChannels))
+	for _, chID := range stale {
+		f.removeTemporaryChannel(chID)
 	}
 }
 
@@ -947,16 +970,19 @@ func (f *Farmer) verifyTempChannelHealth() {
 	}
 }
 
-// GetActiveDrops returns the current active drops for the Web UI.
+// GetActiveDrops returns the union of active+queued+idle drops for the web UI.
+// Order: ACTIVE / DISABLED / COMPLETED first, then QUEUED, then IDLE.
 func (f *Farmer) GetActiveDrops() []ActiveDrop {
 	f.drops.mu.RLock()
 	defer f.drops.mu.RUnlock()
 
-	if len(f.drops.activeDrops) == 0 {
+	total := len(f.drops.activeDrops) + len(f.drops.queuedDrops) + len(f.drops.idleDrops)
+	if total == 0 {
 		return nil
 	}
-
-	result := make([]ActiveDrop, len(f.drops.activeDrops))
-	copy(result, f.drops.activeDrops)
-	return result
+	out := make([]ActiveDrop, 0, total)
+	out = append(out, f.drops.activeDrops...)
+	out = append(out, f.drops.queuedDrops...)
+	out = append(out, f.drops.idleDrops...)
+	return out
 }
