@@ -203,6 +203,7 @@ func (f *Farmer) buildDropRows(
 	}
 
 	queueIdx := 1
+	seenWatchableNames := make(map[string]bool) // dedup sub-only-deduped campaign noise (e.g. 9× "S5 Support ABI Partners")
 	for _, c := range campaigns {
 		if c.Status != "" && c.Status != "ACTIVE" {
 			continue
@@ -213,6 +214,29 @@ func (f *Farmer) buildDropRows(
 		if !c.IsAccountConnected {
 			continue
 		}
+
+		// Skip campaigns with no watchable drops (sub-only, or all drops claimed).
+		// These can't be farmed, so showing them in the queue is just noise.
+		// EXCEPTION: keep them if disabled or completed so the user can see why.
+		hasWatchable := false
+		for _, d := range c.Drops {
+			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
+				hasWatchable = true
+				break
+			}
+		}
+		if !hasWatchable && !f.cfg.IsCampaignDisabled(c.ID) && !f.cfg.IsCampaignCompleted(c.ID) {
+			continue
+		}
+
+		// Dedup by name: when Twitch returns N copies of the same campaign with
+		// different IDs (each with one allowed channel — typical for streamer-
+		// exclusive drops), show only the first. The selector still considers
+		// all of them; this is purely a UI dedup.
+		if seenWatchableNames[c.Name] {
+			continue
+		}
+		seenWatchableNames[c.Name] = true
 
 		row := campaignToRow(c, pinnedID)
 

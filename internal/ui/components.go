@@ -206,11 +206,24 @@ func renderDropsTable(drops []farmer.ActiveDrop, width int) string {
 			channel = channel[:channelW-2] + ".."
 		}
 
+		// Use the v1.7.0 Status field directly (ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED).
+		// Falls back to legacy ACTIVE/DISABLED labels for any older payload that didn't set Status.
+		statusLabel := drop.Status
+		if statusLabel == "" {
+			if !drop.IsEnabled {
+				statusLabel = "DISABLED"
+			} else {
+				statusLabel = "ACTIVE"
+			}
+		}
 		var status string
-		if !drop.IsEnabled {
-			status = subtitleStyle.Render("DISABLED")
-		} else {
-			status = dropStyle.Render("ACTIVE")
+		switch statusLabel {
+		case "ACTIVE":
+			status = dropStyle.Render(statusLabel)
+		case "DISABLED", "COMPLETED":
+			status = subtitleStyle.Render(statusLabel)
+		default: // QUEUED, IDLE, anything else
+			status = subtitleStyle.Render(statusLabel)
 		}
 
 		row := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s",
