@@ -29,6 +29,18 @@ What changed:
 - New PUT /api/drops/{id}/pin endpoint. Web UI gains pin button per
   campaign, Status column (ACTIVE / QUEUED / IDLE / DISABLED /
   COMPLETED), QueueIndex column, ETA column.
+- Demote-on-stall (minimal recovery): each cycle compares the previous
+  pick's CurrentMinutesWatched against the new inventory. If progress
+  did not increase, the channel goes into stallCooldown (30 min ≈ 6
+  cycles) and the selector excludes it from the pool. When credit
+  recovers on a previously-stalled channel, the cooldown is cleared.
+  This is the smallest possible recovery from the "Twitch silently
+  refuses to credit a specific drops-enabled streamer" case, without
+  reintroducing v1.6.x's state-machine failover complexity.
+- TUI now honors the new Status field (was hardcoding "ACTIVE" for every
+  enabled drop). buildDropRows skips campaigns with no watchable drops
+  and dedups same-name campaign rows so the table doesn't show 9× the
+  same streamer-exclusive campaign.
 - Spade slot allocation unchanged: P0 (HasActiveDrop) wins slot 1,
   slot 2 follows existing P1 always-watch / P2 rotate rotation.
 - Channel-points farming unaffected.
