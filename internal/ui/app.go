@@ -44,6 +44,8 @@ const (
 	inputAddChannel
 	inputRemoveChannel
 	inputSetPriority
+	inputToggleCampaign
+	inputPinCampaign
 )
 
 // NewModel creates a new UI model.
@@ -132,6 +134,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputMode = inputSetPriority
 		m.inputValue = ""
 		return m, nil
+	case "t":
+		m.inputMode = inputToggleCampaign
+		m.inputValue = ""
+		return m, nil
+	case "i":
+		m.inputMode = inputPinCampaign
+		m.inputValue = ""
+		return m, nil
 	case "up", "k":
 		if m.channelScroll > 0 {
 			m.channelScroll--
@@ -185,6 +195,58 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 				if err := m.farmer.SetPriorityLive(parts[0], pri); err != nil {
 					m.errMsg = fmt.Sprintf("Error: %v", err)
 					m.errExpiry = time.Now().Add(5 * time.Second)
+				}
+			}
+		}
+	case inputToggleCampaign:
+		// Partial campaign name → toggle disabled state (idempotent flip).
+		if value != "" {
+			drop, err := m.findCampaignByPartial(value)
+			if err != nil {
+				m.errMsg = err.Error()
+				m.errExpiry = time.Now().Add(5 * time.Second)
+			} else {
+				// Flip current state: enabled drops become disabled and vice versa.
+				newEnabled := !drop.IsEnabled
+				if drop.Status == "DISABLED" {
+					newEnabled = true
+				} else if drop.Status == "ACTIVE" || drop.Status == "QUEUED" || drop.Status == "IDLE" {
+					newEnabled = false
+				}
+				if err := m.farmer.SetCampaignEnabled(drop.CampaignID, newEnabled); err != nil {
+					m.errMsg = fmt.Sprintf("Error: %v", err)
+					m.errExpiry = time.Now().Add(5 * time.Second)
+				} else {
+					word := "disabled"
+					if newEnabled {
+						word = "enabled"
+					}
+					m.errMsg = fmt.Sprintf("%s %q", word, drop.CampaignName)
+					m.errExpiry = time.Now().Add(3 * time.Second)
+				}
+			}
+		}
+	case inputPinCampaign:
+		// Partial campaign name → toggle pin (idempotent).
+		if value != "" {
+			drop, err := m.findCampaignByPartial(value)
+			if err != nil {
+				m.errMsg = err.Error()
+				m.errExpiry = time.Now().Add(5 * time.Second)
+			} else {
+				cfg := m.farmer.Config()
+				if drop.IsPinned {
+					cfg.SetPinnedCampaign("")
+					m.errMsg = fmt.Sprintf("unpinned %q", drop.CampaignName)
+				} else {
+					cfg.SetPinnedCampaign(drop.CampaignID)
+					m.errMsg = fmt.Sprintf("pinned %q", drop.CampaignName)
+				}
+				if err := cfg.Save(); err != nil {
+					m.errMsg = fmt.Sprintf("Error saving: %v", err)
+					m.errExpiry = time.Now().Add(5 * time.Second)
+				} else {
+					m.errExpiry = time.Now().Add(3 * time.Second)
 				}
 			}
 		}
@@ -316,6 +378,41 @@ func (m Model) View() string {
 	return strings.Join(sections, "\n")
 }
 
+// findCampaignByPartial does a case-insensitive substring match against the
+// current ActiveDrops snapshot. Returns the unique match or an error if not
+// found / multiple matches.
+func (m Model) findCampaignByPartial(query string) (*farmer.ActiveDrop, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil, fmt.Errorf("empty query")
+	}
+	drops := m.farmer.GetActiveDrops()
+	var matches []farmer.ActiveDrop
+	for _, d := range drops {
+		if strings.Contains(strings.ToLower(d.CampaignName), query) {
+			matches = append(matches, d)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no campaign matches %q", query)
+	case 1:
+		return &matches[0], nil
+	default:
+		// Prefer exact match if there is one
+		for i, d := range matches {
+			if strings.EqualFold(d.CampaignName, query) {
+				return &matches[i], nil
+			}
+		}
+		names := make([]string, 0, len(matches))
+		for _, d := range matches {
+			names = append(names, d.CampaignName)
+		}
+		return nil, fmt.Errorf("ambiguous %q matches: %s", query, strings.Join(names, ", "))
+	}
+}
+
 func (m Model) renderInput() string {
 	var prompt, hint string
 	switch m.inputMode {
@@ -328,6 +425,12 @@ func (m Model) renderInput() string {
 	case inputSetPriority:
 		prompt = "Set priority (name 1|2): "
 		hint = "  (1=always watch, 2=rotate)"
+	case inputToggleCampaign:
+		prompt = "Toggle campaign (partial name): "
+		hint = "  (toggles disabled state)"
+	case inputPinCampaign:
+		prompt = "Pin campaign (partial name): "
+		hint = "  (toggles pin; only one campaign can be pinned)"
 	}
 
 	input := helpKeyStyle.Render(prompt) + m.inputValue + lipgloss.NewStyle().

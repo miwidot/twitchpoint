@@ -301,6 +301,8 @@ func renderHelpBar() string {
 		{"a", "add channel"},
 		{"d", "remove channel"},
 		{"p", "set priority"},
+		{"t", "toggle campaign"},
+		{"i", "pin campaign"},
 		{"↑↓", "scroll"},
 	}
 
