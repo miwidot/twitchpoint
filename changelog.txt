@@ -1,3 +1,203 @@
+== 2026-04-28 23:23 == Major: Drop subsystem rewrite — channel-pool selector (v1.7.0) ==
+
+Replaces ~1500 LoC of parallel-multi-drop coordination (drops.go +
+farmer.go failover/stall machinery) with a ~250 LoC single channel-pool
+selector. Inspired by TwitchDropsMiner.
+
+What changed:
+- New file internal/farmer/dropselector.go: pure-function pipeline
+  filter → buildPool → sort → pick. Pool dedupes channels that serve
+  multiple campaigns. 17 table-driven unit tests covering filter,
+  buildPool, sortPool, and the Select orchestration.
+- internal/farmer/drops.go rewritten: ~600 LoC slim coordinator that
+  polls inventory, runs selector, applies pick to Spade slot 1 via the
+  existing HasActiveDrop/rotateChannels mechanism. Helpers:
+  autoClaimAndMarkCompleted, buildDropRows, campaignToRow,
+  applySelectorPick, cleanupNonPickedTempChannels.
+- handleDropFailover, transferDrop, verifyTempChannelHealth (the
+  stale-detection part), checkDropProgressStalls, pickExclusiveCampaigns,
+  findAllowedChannelViaDirectory, findLiveFromAllowedChannels,
+  findLiveFromGameDirectory, findLiveFromGameDirectoryExcluding,
+  spadeSlotsSaturated, matchCampaignChannels — all removed. Every cycle
+  now picks fresh from the live drops-enabled pool, so failover is
+  implicit (next cycle, next pick). StreamDown and Raid handlers no
+  longer trigger inline failover — they just mark the channel offline
+  and the next selector cycle (≤5 min) repicks.
+- New config field PinnedCampaignID with helpers
+  SetPinnedCampaign / IsCampaignPinned / GetPinnedCampaign. Backward
+  compatible — old configs load with empty pin. 3 unit tests.
+- New PUT /api/drops/{id}/pin endpoint. Web UI gains pin button per
+  campaign, Status column (ACTIVE / QUEUED / IDLE / DISABLED /
+  COMPLETED), QueueIndex column, ETA column.
+- Spade slot allocation unchanged: P0 (HasActiveDrop) wins slot 1,
+  slot 2 follows existing P1 always-watch / P2 rotate rotation.
+- Channel-points farming unaffected.
+
+Why: v1.5.x → v1.6.5 produced a chain of fixes (exclusive dedup, failover
+state transfer, drops-enabled filter, stall failover, "pick yourself as
+replacement" bug) where each fix exposed the next sync bug between
+per-campaign and per-channel state machines. Collapsing to one channel
+pick per cycle removes the synchronization surface entirely.
+
+Net delta: 565 lines removed from drops.go, 159 lines removed from
+farmer.go, 60 lines added for selector + tests, 51 added for pin
+endpoint, 79 added for UI. Total ~600 LoC removed, fully unit-tested.
+
+Files: internal/config/config.go (+22), internal/config/config_test.go
+(new 87), internal/farmer/dropselector.go (new 263),
+internal/farmer/dropselector_test.go (new 333),
+internal/farmer/drops.go (rewritten ~580, was 958),
+internal/farmer/farmer.go (-148), internal/web/server.go (+45 for pin
+endpoint), internal/web/static/index.html (+79 for table UI),
+cmd/twitchpoint/main.go (1.6.5 → 1.7.0).
+
+== 2026-04-28 21:54 == Bugfix: Stall-failover picked the failing channel as its own replacement (v1.6.5) ==
+
+Cascading bug exposed by the new [Drops/Health] stall-failover from v1.6.4:
+
+When checkDropProgressStalls fired for buggy on "ABI Partner-Only Drops" at
+21:49:58, handleDropFailover walked its 3 fallback strategies. Step 2
+(findLiveFromAllowedChannels over the campaign's 72 allowed channels) iterated
+the list and immediately returned "buggy" — he was online, was already in our
+loginMap, so the helper printed "Reusing already-tracked online channel
+buggy". transferDrop then ran SetDropInfo on the new channel and ClearDropInfo
+on the old channel — but newCh and oldCh were the same channel, so
+ClearDropInfo wiped the drop state. cleanupOld then called
+removeTemporaryChannel(buggy) and buggy was gone from f.channels entirely,
+while f.drops.activeDrops still listed channel_login="buggy" → a phantom drop
+pointing at a deleted channel. Result in the web UI: "ABI Partner-Only Drops
+… 0/240 … buggy [AUTO]" but no buggy in /api/channels and Spade slots filled
+by axel_tv (P1 Tarkov) and sirhansvader (P1 Just Chatting) instead of
+buggy himself.
+
+Step 1 (existing tracked channels) already excluded the failing channel via
+"if chID == channelID continue". Step 3 (game directory) used
+findLiveFromGameDirectoryExcluding. Only Step 2 was missing the guard.
+
+Fix: findLiveFromAllowedChannels now takes an excludeLogin parameter
+(case-insensitive). handleDropFailover Step 2 passes snap.Login so the failing
+channel is never selected as its own replacement. autoSelectDropChannel's
+Strategy 2 call passes "" since there's no failure context there.
+
+Files: internal/farmer/drops.go, internal/farmer/farmer.go,
+cmd/twitchpoint/main.go (1.6.4 → 1.6.5).
+
+== 2026-04-28 21:37 == Bugfix: Drops auto-select picked non-drops-enabled streams + stall failover (v1.6.4) ==
+
+Two related fixes for the drop auto-selection path. User report: "ABI Partner-
+Only Drops" was assigned to samoylov___ at 18:02 and the bot kept watching for
+3+ hours (Spade running, +10 channel-points crediting every cycle) but the drop
+progress stayed at 0/240 the entire time. Twitch was not crediting drop minutes
+because samoylov___'s stream was not drops-enabled — Strategy 1 of auto-select
+had picked him from the general game directory, which does not require the
+drops-enabled tag.
+
+Bug A (selection): findAllowedChannelViaDirectory queried the regular game
+directory via GetGameStreams, then cross-referenced against the campaign's
+allowed-channel list. A stream that was in the allowed list AND streaming the
+right game but currently broadcasting WITHOUT the drops-enabled system filter
+would be picked, watched for hours, and never credit a single minute. The two
+sibling helpers (findLiveFromGameDirectory, findLiveFromGameDirectoryExcluding)
+already used the drops-enabled variant — Strategy 1 was the only outlier.
+
+Fix: swap GetGameStreams → GetGameStreamsDropsEnabled in
+findAllowedChannelViaDirectory (drops.go:537). When zero allowed channels are
+currently live AND drops-enabled, Strategy 2 (individual channel polling via
+findLiveFromAllowedChannels) takes over as it always has.
+
+Bug B (no recovery): even with Strategy 1 fixed, Strategy 2 can still pick a
+live channel that toggles drops off mid-stream, or a streamer whose drops tag
+is set but Twitch silently stops crediting (raids, game switch). The previous
+verifyTempChannelHealth only failed over on offline channels, so a "watching
+but not earning" temp channel could sit forever.
+
+Fix: new checkDropProgressStalls compares this cycle's progress per
+(channelID, campaignID) against the previous cycle's, tracked in
+dropState.dropStallCount. After 2 consecutive cycles (~10 min) with zero
+progress increase on the same temp-channel/drop pair, handleDropFailover is
+triggered with a [Drops/Health] log line so the situation is visible.
+
+Both fixes apply only to TEMPORARY (auto-selected) channels. Non-temp
+configured channels are untouched — the user owns priority for those.
+
+Cleanup (no functional change): removed dead addChannel() in farmer.go,
+removed unused activeCampaignIDs map and parameter on cleanupTemporaryChannels,
+collapsed the misleading single-iteration loop in findLiveFromGameDirectory.
+
+Files: internal/farmer/drops.go, internal/farmer/farmer.go,
+cmd/twitchpoint/main.go (1.6.3 → 1.6.4).
+
+== 2026-04-27 02:36 == Bugfix: Failover did not transfer drop state to replacement (v1.6.3) ==
+
+When a drop channel went offline (e.g. SchlaubiYo raided away), handleDropFailover
+correctly picked a replacement (e.g. Axel_tv from existing tracked channels) but
+did not actually move the drop's state to the new channel:
+
+- Old channel kept HasActiveDrop=true, DropName, DropProgress, DropRequired
+  → UI continued showing it as P0 with the drop assigned
+- New channel only got CampaignID set, but HasActiveDrop stayed false
+  → rotateChannels did not promote it to P0, so no Spade slot, no farming
+- f.drops.activeDrops slice still listed the old login as ChannelLogin
+  → web UI's Drop Campaigns table kept the stale streamer reference
+
+Result: drop progress froze for ~10 minutes until the next dropCheckLoop did a
+full inventory re-sync, at which point everything healed itself. User-visible
+symptom: "drop wurde nicht reseted zum anderen streamer" — TUI showed offline
+SchlaubiYo as P0 51% with all 3 Arena Free Weekend drops still pointing to her,
+while neither of the 2 Spade slots was actually farming Arena Free Weekend.
+
+Fix: new transferDrop() helper inside handleDropFailover does an atomic state
+hand-off on every successful failover path:
+  1. SetDropInfo on the replacement (carries over name + progress + required)
+  2. Set CampaignID on the replacement
+  3. ClearDropInfo on the old channel
+  4. Rewrite ChannelLogin in f.drops.activeDrops for matching CampaignID
+
+All three failover paths (existing tracked, allowed list, game directory) now
+call transferDrop before cleanupOld + rotateChannels, so the rotation
+immediately gives the replacement a Spade slot and the UI updates within one
+event tick instead of one inventory cycle.
+
+Files: internal/farmer/farmer.go, cmd/twitchpoint/main.go (1.6.2 → 1.6.3).
+
+== 2026-04-27 02:21 == Bugfix: Dead temp channels & drops-enabled stream picks (v1.6.2) ==
+
+Two related bugs in drop auto-select that caused temp channels to be added but
+never actually farm anything:
+
+Bug B (slot saturation): autoSelectDropChannel created a temp channel without
+checking whether it would even win a Spade slot. With 5+ active P0 campaigns
+competing for 2 Spade slots, the rotation sorts P0 channels by campaign EndAt
+and only the 2 with earliest expiry watch — the rest sit dead with
+HasActiveDrop=true but never accrue progress. In the 2026-04-24 logs we saw
+8 temp channels (OverLordBou, Hyf1re, MCFixer, Trenlass, TheOMGS1,
+Clara_l_Exploratrice, thaqil, ItsRGS) that lived 30s–2h+ without a single
+WATCH event.
+
+Fix: new spadeSlotsSaturated() helper in drops.go counts existing online P0
+channels with EndAt earlier than the candidate campaign. If 2+ exist, skip
+auto-select entirely and log "Spade slots saturated by earlier-expiring P0
+campaigns". Zero-EndAt campaigns are treated as lowest-priority (matches
+rotateChannels sort behavior). Preemption still works when our EndAt is
+earlier than existing P0s.
+
+Bug A (drops-enabled filter): findLiveFromGameDirectory queried the game
+directory and picked the first stream regardless of whether the streamer was
+actually running drops. Picking a non-drops streamer wastes a Spade slot
+without making any drop progress (we observed Axel_tv on 24.04 21:03–21:28
+gaining only 12 minutes of progress over 25 watched minutes, plus a
+"Claim failed: NOT_FOUND" indicating the streamer wasn't in the campaign).
+
+Fix: new GetGameStreamsDropsEnabled() in twitch/gql.go using a sister GQL
+query that adds options: { sort: VIEWER_COUNT, systemFilters: [DROPS_ENABLED] }
+to the streams() field. findLiveFromGameDirectory and
+findLiveFromGameDirectoryExcluding now use this filtered variant.
+findAllowedChannelViaDirectory still uses the unfiltered query (Strategy 1
+needs the full directory to cross-reference allowed-channel lists).
+
+Files: internal/farmer/drops.go, internal/twitch/gql.go,
+cmd/twitchpoint/main.go (version bump 1.6.1 → 1.6.2).
+
 == 2026-04-17 03:18 == Bugfix: Disabled campaigns blocking exclusive drop group (v1.6.1) ==
 
 pickExclusiveCampaigns() didn't check disabled/completed/expired status. If a disabled
