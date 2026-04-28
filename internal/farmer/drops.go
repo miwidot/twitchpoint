@@ -25,6 +25,10 @@ type ActiveDrop struct {
 	IsAutoSelected     bool      `json:"is_auto_selected"`       // channel was auto-discovered
 	IsEnabled          bool      `json:"is_enabled"`              // campaign not disabled
 	IsAccountConnected bool      `json:"is_account_connected"`   // account linked for this game
+	Status             string    `json:"status"`                 // ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED
+	IsPinned           bool      `json:"is_pinned"`
+	QueueIndex         int       `json:"queue_index"`            // 1-based for ACTIVE/QUEUED/IDLE; 0 otherwise
+	EtaMinutes         int       `json:"eta_minutes"`            // RequiredMinutesWatched - CurrentMinutesWatched of next-to-claim drop
 }
 
 // dropState holds internal state for the drop tracker.
@@ -34,6 +38,7 @@ type dropState struct {
 	campaignCache map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
 
 	failoverCooldowns map[string]time.Time // campaignID -> last failover attempt
+	dropStallCount    map[string]int       // channelID -> consecutive cycles where drop progress did not increase
 }
 
 // dropCheckLoop polls the drops inventory every 10 minutes.
@@ -88,9 +93,6 @@ func (f *Farmer) processDrops() {
 
 	// Rebuild campaign cache for failover lookups
 	newCache := make(map[string]twitch.DropCampaign)
-
-	// Track which campaigns are still active (for temp channel cleanup)
-	activeCampaignIDs := make(map[string]bool)
 
 	// Build a set of channelIDs that have active drops this cycle
 	activeDropChannels := make(map[string]bool)
@@ -152,12 +154,10 @@ func (f *Farmer) processDrops() {
 		// Deduplicate exclusive campaigns: only the picked campaign per benefit group is farmed.
 		isExclusive := len(campaign.Channels) > 0 && len(campaign.Channels) <= 2
 		if isExclusive && !exclusivePicked[campaign.ID] {
-			activeCampaignIDs[campaign.ID] = true
 			continue
 		}
 
 		newCache[campaign.ID] = campaign
-		activeCampaignIDs[campaign.ID] = true
 
 		// Build a lookup of campaign channel IDs -> configured channel login
 		campaignChannelIDs := f.matchCampaignChannels(campaign)
@@ -340,13 +340,19 @@ func (f *Farmer) processDrops() {
 	f.mu.RUnlock()
 
 	// Remove stale temporary channels no longer serving an active drop
-	f.cleanupTemporaryChannels(activeCampaignIDs, activeDropChannels)
+	f.cleanupTemporaryChannels(activeDropChannels)
 
-	// Store campaign cache and active drops
+	// Atomic swap: capture previous activeDrops for stall detection and store new state.
 	f.drops.mu.Lock()
+	oldDrops := f.drops.activeDrops
 	f.drops.activeDrops = allDrops
 	f.drops.campaignCache = newCache
 	f.drops.mu.Unlock()
+
+	// Detect stalled temp channels: if Twitch isn't crediting drop progress
+	// (most often because the stream isn't drops-enabled, or just changed game),
+	// fail over so we don't sit on a dead channel for hours.
+	f.checkDropProgressStalls(oldDrops, allDrops)
 
 	// Clean old failover cooldown entries
 	f.cleanupFailoverCooldowns()
@@ -363,7 +369,7 @@ func (f *Farmer) processDrops() {
 
 // cleanupTemporaryChannels removes temp channels that are no longer useful.
 // Only temp channels in activeDropChannels (assigned a drop this cycle) are kept.
-func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs, activeDropChannels map[string]bool) {
+func (f *Farmer) cleanupTemporaryChannels(activeDropChannels map[string]bool) {
 	f.mu.RLock()
 	var staleChannels []string
 	for chID, ch := range f.channels {
@@ -382,6 +388,78 @@ func (f *Farmer) cleanupTemporaryChannels(activeCampaignIDs, activeDropChannels 
 
 	for _, chID := range staleChannels {
 		f.removeTemporaryChannel(chID)
+	}
+}
+
+// checkDropProgressStalls compares this cycle's drop progress against the
+// previous cycle for every temp channel that is currently assigned to a drop.
+// If the same temp channel + campaign combination appears in two consecutive
+// cycles AND the watch-minute progress did not increase, Twitch is not
+// crediting our viewing — usually because the stream is not drops-enabled
+// (the directory filter may have missed it, or the streamer toggled drops off
+// or switched game after we picked them). After stallThreshold consecutive
+// stuck cycles we trigger handleDropFailover so we don't burn hours on a dead
+// channel like we did with samoylov___ on 2026-04-28.
+func (f *Farmer) checkDropProgressStalls(oldDrops, newDrops []ActiveDrop) {
+	const stallThreshold = 2 // ≈ 10 min stuck (5-min cycle) → fail over
+
+	type key struct{ chID, campID string }
+
+	// Snapshot previous progress per channel+campaign.
+	oldProgress := make(map[key]int, len(oldDrops))
+	for _, ad := range oldDrops {
+		f.mu.RLock()
+		chID := f.loginMap[ad.ChannelLogin]
+		f.mu.RUnlock()
+		if chID == "" {
+			continue
+		}
+		oldProgress[key{chID, ad.CampaignID}] = ad.Progress
+	}
+
+	type victim struct {
+		chID  string
+		login string
+	}
+	var victims []victim
+
+	f.drops.mu.Lock()
+	if f.drops.dropStallCount == nil {
+		f.drops.dropStallCount = make(map[string]int)
+	}
+	newStallCount := make(map[string]int)
+	for _, ad := range newDrops {
+		f.mu.RLock()
+		chID := f.loginMap[ad.ChannelLogin]
+		isTemp := false
+		if chID != "" {
+			if ch, ok := f.channels[chID]; ok {
+				isTemp = ch.Snapshot().IsTemporary
+			}
+		}
+		f.mu.RUnlock()
+		if chID == "" || !isTemp {
+			continue
+		}
+		prev, hadPrev := oldProgress[key{chID, ad.CampaignID}]
+		if !hadPrev || prev != ad.Progress {
+			// First cycle on this assignment, or progress moved → not stalled, reset.
+			continue
+		}
+		count := f.drops.dropStallCount[chID] + 1
+		if count >= stallThreshold {
+			victims = append(victims, victim{chID, ad.ChannelLogin})
+			// Don't carry the count forward — failover effectively resets it.
+			continue
+		}
+		newStallCount[chID] = count
+	}
+	f.drops.dropStallCount = newStallCount
+	f.drops.mu.Unlock()
+
+	for _, v := range victims {
+		f.addLog("[Drops/Health] Temp channel %s assigned but no drop progress for %d cycles — likely not drops-enabled, triggering failover", v.login, stallThreshold)
+		f.handleDropFailover(v.chID)
 	}
 }
 
@@ -434,9 +512,55 @@ func (f *Farmer) matchCampaignChannels(campaign twitch.DropCampaign) map[string]
 	return result
 }
 
+// spadeSlotsSaturated returns true if 2+ existing online P0 channels already have
+// campaign EndAt earlier than the given campaign. In that case rotateChannels would
+// never give a new temp channel a Spade slot (P0 sorts by EndAt, only top 2 watch),
+// so creating one would just leave a dead channel sitting around.
+func (f *Farmer) spadeSlotsSaturated(campaign twitch.DropCampaign) bool {
+	const maxSlots = 2
+
+	var p0CampaignIDs []string
+	f.mu.RLock()
+	for _, ch := range f.channels {
+		snap := ch.Snapshot()
+		if snap.IsOnline && snap.HasActiveDrop && snap.CampaignID != "" {
+			p0CampaignIDs = append(p0CampaignIDs, snap.CampaignID)
+		}
+	}
+	f.mu.RUnlock()
+
+	if len(p0CampaignIDs) < maxSlots {
+		return false
+	}
+
+	earlierCount := 0
+	f.drops.mu.RLock()
+	for _, cid := range p0CampaignIDs {
+		c, ok := f.drops.campaignCache[cid]
+		if !ok || c.EndAt.IsZero() {
+			// Zero EndAt sorts LAST in rotateChannels, so it would lose to us — don't count.
+			continue
+		}
+		if campaign.EndAt.IsZero() {
+			// We have zero EndAt → any concrete EndAt beats us in the sort.
+			earlierCount++
+		} else if c.EndAt.Before(campaign.EndAt) {
+			earlierCount++
+		}
+	}
+	f.drops.mu.RUnlock()
+
+	return earlierCount >= maxSlots
+}
+
 // autoSelectDropChannel tries to find and add a live channel for a campaign with no matches.
 // Returns the login of the added channel, or empty string if none found.
 func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
+	if f.spadeSlotsSaturated(campaign) {
+		f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Skipping %q — Spade slots saturated by earlier-expiring P0 campaigns", campaign.Name))
+		return ""
+	}
+
 	f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Starting auto-select for campaign %q (game=%q, allowedChannels=%d)",
 		campaign.Name, campaign.GameName, len(campaign.Channels)))
 
@@ -456,7 +580,7 @@ func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
 		}
 
 		// Strategy 2: Check individual allowed channels (limited to 50 to avoid rate-limiting)
-		login := f.findLiveFromAllowedChannels(campaign)
+		login := f.findLiveFromAllowedChannels(campaign, "")
 		if login != "" {
 			f.writeLogFile(fmt.Sprintf("[Drops/AutoSelect] Strategy 2 (individual) found %q for %q", login, campaign.Name))
 			return login
@@ -488,10 +612,14 @@ func (f *Farmer) autoSelectDropChannel(campaign twitch.DropCampaign) string {
 
 // findAllowedChannelViaDirectory queries the game directory and cross-references
 // results with the campaign's allowed channels. Much faster than checking each individually.
+//
+// Uses the DROPS_ENABLED system filter so a stream that is in the allowed list
+// but is currently broadcasting without the drops-enabled tag (Twitch will not
+// credit any watch minutes) is filtered out before we ever assign it.
 func (f *Farmer) findAllowedChannelViaDirectory(campaign twitch.DropCampaign) string {
-	streams, err := f.gql.GetGameStreams(campaign.GameName, 100)
+	streams, err := f.gql.GetGameStreamsDropsEnabled(campaign.GameName, 100)
 	if err != nil {
-		f.writeLogFile(fmt.Sprintf("[Drops/Directory] GetGameStreams(%q) error: %v", campaign.GameName, err))
+		f.writeLogFile(fmt.Sprintf("[Drops/Directory] GetGameStreamsDropsEnabled(%q) error: %v", campaign.GameName, err))
 		return ""
 	}
 
@@ -551,8 +679,13 @@ func (f *Farmer) findAllowedChannelViaDirectory(campaign twitch.DropCampaign) st
 }
 
 // findLiveFromAllowedChannels checks individual allowed channels to find a live one.
-// Limited to 50 channels to avoid rate-limiting.
-func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) string {
+// Limited to 50 channels to avoid rate-limiting. Pass excludeLogin to skip a
+// known-bad channel (e.g. during failover so we don't re-select the channel
+// that just stalled — without this guard, the failover path picks the failing
+// channel as its own replacement, which then deletes the temp channel via
+// transferDrop's SetDropInfo+ClearDropInfo collision).
+func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign, excludeLogin string) string {
+	excludeLogin = strings.ToLower(excludeLogin)
 	checked := 0
 	skippedEmpty := 0
 	skippedOffline := 0
@@ -569,6 +702,9 @@ func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) strin
 		}
 		if login == "" {
 			skippedEmpty++
+			continue
+		}
+		if login == excludeLogin {
 			continue
 		}
 
@@ -617,46 +753,48 @@ func (f *Farmer) findLiveFromAllowedChannels(campaign twitch.DropCampaign) strin
 	return ""
 }
 
-// findLiveFromGameDirectory queries the game directory for live streams.
-// Returns the login of the first suitable stream, or empty string.
+// findLiveFromGameDirectory queries the game directory for live streams that
+// have the Drops Enabled filter set. Returns the login of the first suitable
+// stream, or empty string. We use the drops-enabled filter so we don't pick a
+// streamer who is in the game category but not actually running drops — those
+// would just sit as a temp channel without making any drop progress.
 func (f *Farmer) findLiveFromGameDirectory(gameName string) string {
-	streams, err := f.gql.GetGameStreams(gameName, 100)
+	streams, err := f.gql.GetGameStreamsDropsEnabled(gameName, 100)
 	if err != nil {
 		f.addLog("[Drops] Failed to query game directory for %q: %v", gameName, err)
 		return ""
 	}
 
-	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] Got %d streams for game %q", len(streams), gameName))
+	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] Got %d drops-enabled streams for game %q", len(streams), gameName))
 
-	for _, stream := range streams {
-		login := strings.ToLower(stream.BroadcasterLogin)
-
-		// If already tracked, reuse it (caller will set campaign ID)
-		f.mu.RLock()
-		_, tracked := f.loginMap[login]
-		f.mu.RUnlock()
-		if tracked {
-			f.writeLogFile(fmt.Sprintf("[Drops/GameDir] %q already tracked, returning for reuse", login))
-			return login
-		}
-
-		return login
+	if len(streams) == 0 {
+		f.writeLogFile(fmt.Sprintf("[Drops/GameDir] No streams found for game %q", gameName))
+		return ""
 	}
 
-	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] No streams found for game %q", gameName))
-	return ""
+	// Always pick the first (highest viewer count from VIEWER_COUNT sort).
+	login := strings.ToLower(streams[0].BroadcasterLogin)
+
+	f.mu.RLock()
+	_, tracked := f.loginMap[login]
+	f.mu.RUnlock()
+	if tracked {
+		f.writeLogFile(fmt.Sprintf("[Drops/GameDir] %q already tracked, returning for reuse", login))
+	}
+	return login
 }
 
 // findLiveFromGameDirectoryExcluding is like findLiveFromGameDirectory but skips a specific login.
 // Used during failover to avoid re-selecting the channel that just went offline/raided.
+// Like findLiveFromGameDirectory, it filters to drops-enabled streams only.
 func (f *Farmer) findLiveFromGameDirectoryExcluding(gameName, excludeLogin string) string {
-	streams, err := f.gql.GetGameStreams(gameName, 100)
+	streams, err := f.gql.GetGameStreamsDropsEnabled(gameName, 100)
 	if err != nil {
 		f.addLog("[Drops] Failed to query game directory for %q: %v", gameName, err)
 		return ""
 	}
 
-	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] Got %d streams for game %q (excluding %q)", len(streams), gameName, excludeLogin))
+	f.writeLogFile(fmt.Sprintf("[Drops/GameDir] Got %d drops-enabled streams for game %q (excluding %q)", len(streams), gameName, excludeLogin))
 
 	for _, stream := range streams {
 		login := strings.ToLower(stream.BroadcasterLogin)
