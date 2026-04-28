@@ -247,8 +247,11 @@ func (s *DropSelector) sortPool(pool []*PoolEntry) {
 
 // Select runs the full pipeline: filter → buildPool → sort → pick.
 // Returns (pickedChannel, sortedPool). pickedChannel is nil if pool empty.
+// skipChannels (channelID → true) are removed from the pool entirely — used
+// for stall-cooldown so a channel that wasn't crediting drops doesn't keep
+// getting re-picked. Pass nil if no skip set.
 // The returned pool is sorted; callers can use pool[1:] as the queue for UI.
-func (s *DropSelector) Select(campaigns []twitch.DropCampaign) (*PoolEntry, []*PoolEntry) {
+func (s *DropSelector) Select(campaigns []twitch.DropCampaign, skipChannels map[string]bool) (*PoolEntry, []*PoolEntry) {
 	eligible := s.filterEligibleCampaigns(campaigns)
 	if len(eligible) == 0 {
 		return nil, nil
@@ -256,6 +259,18 @@ func (s *DropSelector) Select(campaigns []twitch.DropCampaign) (*PoolEntry, []*P
 	pool := s.buildPool(eligible)
 	if len(pool) == 0 {
 		return nil, nil
+	}
+	if len(skipChannels) > 0 {
+		filtered := pool[:0]
+		for _, e := range pool {
+			if !skipChannels[e.ChannelID] {
+				filtered = append(filtered, e)
+			}
+		}
+		pool = filtered
+		if len(pool) == 0 {
+			return nil, nil
+		}
 	}
 	s.sortPool(pool)
 	return pool[0], pool

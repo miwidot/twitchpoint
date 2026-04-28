@@ -30,6 +30,12 @@ type ActiveDrop struct {
 	EtaMinutes         int       `json:"eta_minutes"`            // RequiredMinutesWatched - CurrentMinutesWatched of next-to-claim drop
 }
 
+// stallCooldownDuration is how long a channel is excluded from the pool
+// after Twitch failed to credit drop progress for that channel for one cycle.
+// 30 min ≈ 6 cycles — long enough that we exhaust other candidates before
+// retrying, short enough to recover from temporary Twitch hiccups.
+const stallCooldownDuration = 30 * time.Minute
+
 // dropState holds internal state for the drop tracker.
 type dropState struct {
 	mu            sync.RWMutex
@@ -38,6 +44,16 @@ type dropState struct {
 	idleDrops     []ActiveDrop                   // for /api/drops, status=IDLE
 	campaignCache map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
 	currentPickID string                         // ChannelID currently assigned the drop slot, "" if none
+
+	// Stall detection across cycles. After we pick a channel and watch it for one
+	// cycle, we check whether Twitch credited any drop minutes. If progress did
+	// not increase, the channel is added to stallCooldown for stallCooldownDuration
+	// and excluded from the next pool — so we don't get stuck on a channel that
+	// Twitch silently refuses to credit.
+	lastPickChannelID  string
+	lastPickCampaignID string
+	lastPickProgress   int
+	stallCooldown      map[string]time.Time // channelID → cooldown end
 
 	selector *DropSelector
 }
@@ -82,8 +98,16 @@ func (f *Farmer) processDrops() {
 	// 1. Auto-claim any drops that are complete and have an instance ID.
 	f.autoClaimAndMarkCompleted(campaigns)
 
-	// 2. Run the selector on the (now-updated) inventory.
-	pick, pool := f.drops.selector.Select(campaigns)
+	// 2a. Compare the previous pick's drop progress against this cycle's
+	//     inventory. If Twitch did not credit any new minutes, put the channel
+	//     into stallCooldown so the selector skips it next time.
+	f.applyStallDetection(campaigns)
+
+	// 2b. Build the active skip-set from stallCooldown (filtering expired entries).
+	skipChannels := f.activeStallSkipSet()
+
+	// 2c. Run the selector on the (now-updated) inventory, with stalled channels skipped.
+	pick, pool := f.drops.selector.Select(campaigns, skipChannels)
 
 	// 3. Build per-campaign UI rows.
 	active, queued, idle := f.buildDropRows(campaigns, pick, pool)
@@ -125,6 +149,117 @@ func (f *Farmer) processDrops() {
 	} else {
 		f.addLog("[Drops/Pool] empty pool — drops idle, slots free for points")
 	}
+
+	// 9. Snapshot the picked channel's current drop progress so the next cycle
+	//    can detect whether Twitch credited any minutes.
+	f.snapshotPickProgress(pick, campaigns)
+}
+
+// applyStallDetection compares the previous cycle's picked channel against the
+// current inventory. If the same drop's CurrentMinutesWatched did not increase,
+// Twitch credited zero minutes for our last cycle of watching that channel —
+// add it to stallCooldown so we don't pick it again for stallCooldownDuration.
+func (f *Farmer) applyStallDetection(campaigns []twitch.DropCampaign) {
+	f.drops.mu.Lock()
+	defer f.drops.mu.Unlock()
+
+	prevChID := f.drops.lastPickChannelID
+	prevCampID := f.drops.lastPickCampaignID
+	prevProgress := f.drops.lastPickProgress
+	if prevChID == "" || prevCampID == "" {
+		return // no previous pick to evaluate
+	}
+
+	// Find the previous pick's drop progress in the new inventory.
+	currentProgress := -1
+	for _, c := range campaigns {
+		if c.ID != prevCampID {
+			continue
+		}
+		for _, d := range c.Drops {
+			if d.RequiredMinutesWatched <= 0 {
+				continue
+			}
+			if d.IsClaimed {
+				continue
+			}
+			currentProgress = d.CurrentMinutesWatched
+			break
+		}
+		break
+	}
+
+	if currentProgress < 0 {
+		// Campaign disappeared from inventory or fully claimed. Either way,
+		// no stall to record.
+		return
+	}
+
+	if currentProgress > prevProgress {
+		// Twitch credited at least one minute — channel is healthy.
+		// If it had a stale cooldown from earlier, clear it.
+		delete(f.drops.stallCooldown, prevChID)
+		return
+	}
+
+	// No credit since last cycle.
+	if f.drops.stallCooldown == nil {
+		f.drops.stallCooldown = make(map[string]time.Time)
+	}
+	f.drops.stallCooldown[prevChID] = time.Now().Add(stallCooldownDuration)
+	f.addLog("[Drops/Pool] no credit on %s (progress stuck at %d/%d) — %v cooldown",
+		prevChID, currentProgress, prevProgress, stallCooldownDuration)
+}
+
+// activeStallSkipSet returns channelIDs currently in cooldown, expiring entries
+// removed from the underlying map as a side effect.
+func (f *Farmer) activeStallSkipSet() map[string]bool {
+	f.drops.mu.Lock()
+	defer f.drops.mu.Unlock()
+
+	skip := make(map[string]bool, len(f.drops.stallCooldown))
+	now := time.Now()
+	for chID, until := range f.drops.stallCooldown {
+		if now.Before(until) {
+			skip[chID] = true
+		} else {
+			delete(f.drops.stallCooldown, chID)
+		}
+	}
+	return skip
+}
+
+// snapshotPickProgress records the picked channel's primary-campaign drop
+// progress so the next cycle's applyStallDetection can compare.
+func (f *Farmer) snapshotPickProgress(pick *PoolEntry, campaigns []twitch.DropCampaign) {
+	f.drops.mu.Lock()
+	defer f.drops.mu.Unlock()
+
+	if pick == nil || len(pick.Campaigns) == 0 {
+		f.drops.lastPickChannelID = ""
+		f.drops.lastPickCampaignID = ""
+		f.drops.lastPickProgress = 0
+		return
+	}
+
+	primaryCampID := pick.Campaigns[0].ID
+	progress := 0
+	for _, c := range campaigns {
+		if c.ID != primaryCampID {
+			continue
+		}
+		for _, d := range c.Drops {
+			if d.RequiredMinutesWatched <= 0 || d.IsClaimed {
+				continue
+			}
+			progress = d.CurrentMinutesWatched
+			break
+		}
+		break
+	}
+	f.drops.lastPickChannelID = pick.ChannelID
+	f.drops.lastPickCampaignID = primaryCampID
+	f.drops.lastPickProgress = progress
 }
 
 // autoClaimAndMarkCompleted handles drop claims and marks fully-claimed

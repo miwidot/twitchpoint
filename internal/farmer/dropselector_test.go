@@ -336,7 +336,7 @@ func TestSelect_EmptyPoolReturnsNil(t *testing.T) {
 		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
 	}
 
-	pick, queue := sel.Select([]twitch.DropCampaign{camp})
+	pick, queue := sel.Select([]twitch.DropCampaign{camp}, nil)
 	if pick != nil || queue != nil {
 		t.Fatalf("empty stream directory should yield nil pick, got %v / %v", pick, queue)
 	}
@@ -362,8 +362,45 @@ func TestSelect_PinForcesNonClosestExpiry(t *testing.T) {
 		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
 	}
 
-	pick, _ := sel.Select([]twitch.DropCampaign{near, pinnedFar})
+	pick, _ := sel.Select([]twitch.DropCampaign{near, pinnedFar}, nil)
 	if pick == nil || pick.ChannelLogin != "far_streamer" {
 		t.Fatalf("pin should override closest-expiry sort, picked %v", pick)
+	}
+}
+
+func TestSelect_SkipChannelsExcludesFromPool(t *testing.T) {
+	cfg := &config.Config{}
+	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
+		"ABI": {
+			{BroadcasterID: "1", BroadcasterLogin: "stalled_streamer", ViewerCount: 700},
+			{BroadcasterID: "2", BroadcasterLogin: "healthy_streamer", ViewerCount: 200},
+		},
+	}}
+	sel := newSelectorWithStreams(cfg, src)
+
+	camp := twitch.DropCampaign{
+		ID: "abi", Status: "ACTIVE", IsAccountConnected: true, GameName: "ABI",
+		EndAt: testNow.Add(4 * time.Hour),
+		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
+	}
+
+	// No skip → top viewer "stalled_streamer" wins
+	pick, _ := sel.Select([]twitch.DropCampaign{camp}, nil)
+	if pick == nil || pick.ChannelLogin != "stalled_streamer" {
+		t.Fatalf("without skip, top viewer should win, got %v", pick)
+	}
+
+	// Skip "stalled_streamer" → fallback to "healthy_streamer"
+	skip := map[string]bool{"1": true}
+	pick, _ = sel.Select([]twitch.DropCampaign{camp}, skip)
+	if pick == nil || pick.ChannelLogin != "healthy_streamer" {
+		t.Fatalf("with skip, fallback should be healthy_streamer, got %v", pick)
+	}
+
+	// Skip both → empty pool
+	skipBoth := map[string]bool{"1": true, "2": true}
+	pick, _ = sel.Select([]twitch.DropCampaign{camp}, skipBoth)
+	if pick != nil {
+		t.Fatalf("skipping every channel should yield nil pick, got %v", pick)
 	}
 }
