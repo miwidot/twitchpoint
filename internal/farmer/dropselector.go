@@ -95,6 +95,102 @@ func (s *DropSelector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) 
 	return out
 }
 
-// keep imports used; sort/strings are used by later additions.
+// buildPool turns an eligible-campaign list into a deduped pool of candidate
+// channels. For campaigns with an allow list, it queries the drops-enabled
+// game directory and intersects with that list. For unrestricted campaigns,
+// the top drops-enabled streams for the game become candidates directly.
+//
+// Channels appearing in multiple campaigns are deduped — a single PoolEntry
+// carries all the campaigns it serves.
+func (s *DropSelector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
+	pinnedID := s.cfg.GetPinnedCampaign()
+
+	// Game-name → cached directory result, so we hit GQL at most once per game per cycle.
+	dirCache := make(map[string][]twitch.GameStream)
+	getDir := func(gameName string) []twitch.GameStream {
+		if cached, ok := dirCache[gameName]; ok {
+			return cached
+		}
+		streams, err := s.streams.GetGameStreamsDropsEnabled(gameName, 100)
+		if err != nil {
+			dirCache[gameName] = nil // negative cache for the cycle
+			return nil
+		}
+		dirCache[gameName] = streams
+		return streams
+	}
+
+	byChannel := make(map[string]*PoolEntry) // channelID → entry
+
+	for _, c := range eligible {
+		ref := CampaignRef{
+			ID:            c.ID,
+			Name:          c.Name,
+			GameName:      c.GameName,
+			EndAt:         c.EndAt,
+			RemainingTime: time.Until(c.EndAt),
+			IsPinned:      c.ID == pinnedID,
+		}
+		if c.GameName == "" {
+			continue // can't query directory without game name
+		}
+
+		streams := getDir(c.GameName)
+		if len(streams) == 0 {
+			continue
+		}
+
+		// Build allowed-channel lookup if campaign has restrictions
+		var allowedByID map[string]bool
+		var allowedByLogin map[string]bool
+		hasAllow := len(c.Channels) > 0
+		if hasAllow {
+			allowedByID = make(map[string]bool, len(c.Channels))
+			allowedByLogin = make(map[string]bool, len(c.Channels))
+			for _, ch := range c.Channels {
+				if ch.ID != "" {
+					allowedByID[ch.ID] = true
+				}
+				if ch.Name != "" {
+					allowedByLogin[strings.ToLower(ch.Name)] = true
+				}
+				if ch.DisplayName != "" {
+					allowedByLogin[strings.ToLower(ch.DisplayName)] = true
+				}
+			}
+		}
+
+		for _, st := range streams {
+			login := strings.ToLower(st.BroadcasterLogin)
+
+			if hasAllow {
+				// Skip if not in allow list
+				if !allowedByID[st.BroadcasterID] && !allowedByLogin[login] {
+					continue
+				}
+			}
+
+			entry, exists := byChannel[st.BroadcasterID]
+			if !exists {
+				entry = &PoolEntry{
+					ChannelID:    st.BroadcasterID,
+					ChannelLogin: login,
+					DisplayName:  st.DisplayName,
+					ViewerCount:  st.ViewerCount,
+				}
+				byChannel[st.BroadcasterID] = entry
+			}
+			entry.Campaigns = append(entry.Campaigns, ref)
+		}
+	}
+
+	// Convert to slice
+	pool := make([]*PoolEntry, 0, len(byChannel))
+	for _, e := range byChannel {
+		pool = append(pool, e)
+	}
+	return pool
+}
+
+// keep imports used; sort is used by later additions.
 var _ = sort.SliceStable
-var _ = strings.ToLower
