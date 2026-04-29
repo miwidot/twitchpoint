@@ -190,7 +190,7 @@ func (f *Farmer) Start() error {
 	}
 
 	// Start periodic balance refresh
-	go f.balanceRefreshLoop()
+	go f.points.BalanceRefreshLoop(f.stopCh)
 
 	// Start channel rotation (Twitch only credits points for 2 channels at a time)
 	go f.points.RotationLoop(f.stopCh)
@@ -715,41 +715,6 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 	case twitch.EventGameChange:
 		data := evt.Data.(twitch.GameChangeData)
 		f.drops.HandleGameChange(evt.ChannelID, data)
-	}
-}
-
-func (f *Farmer) balanceRefreshLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			f.refreshBalances()
-		case <-f.stopCh:
-			return
-		}
-	}
-}
-
-func (f *Farmer) refreshBalances() {
-	for _, ch := range f.channels.States() {
-		balance, err := f.gql.GetChannelPointsBalance(ch.Login)
-		if err == nil && balance > 0 {
-			ch.SetBalance(balance)
-		}
-
-		// Refresh stream info for online channels (game category, viewers, broadcast ID)
-		snap := ch.Snapshot()
-		if snap.IsOnline {
-			info, err := f.gql.GetChannelInfo(ch.Login)
-			if err == nil && info.IsLive {
-				ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
-			}
-		}
-
-		// Small delay between API calls
-		time.Sleep(500 * time.Millisecond)
 	}
 }
 

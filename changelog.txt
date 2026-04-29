@@ -1,3 +1,14 @@
+== 2026-04-30 01:46 == Refactor: Phase 4d — balance refresh moves to points.Service ==
+
+5-min channel-points balance refresh loop extracted to
+internal/points/balance.go. BalanceRefreshLoop is now a goroutine
+on points.Service and walks GetChannelPointsBalance + (for online
+channels) GetChannelInfo with the same 500ms inter-channel sleep.
+Farmer.Start launches it via f.points.BalanceRefreshLoop(f.stopCh)
+mirroring the rotation/check loop pattern.
+
+Files: internal/points/balance.go (new), internal/farmer/farmer.go.
+
 == 2026-04-30 01:42 == Refactor: Phase 4c — rotation moves to points.Service ==
 
 5-min Spade rotation extracted from Farmer into internal/points/rotation.go:
