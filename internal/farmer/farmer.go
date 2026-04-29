@@ -11,6 +11,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/channels"
 	"github.com/miwi/twitchpoint/internal/config"
 	"github.com/miwi/twitchpoint/internal/drops"
+	"github.com/miwi/twitchpoint/internal/points"
 	"github.com/miwi/twitchpoint/internal/twitch"
 )
 
@@ -63,6 +64,12 @@ type Farmer struct {
 
 	// Drops
 	drops *drops.Service
+
+	// Points / rotation / channel-points event domain.
+	// Phase 4 of the v2.0 split is in progress — Service is wired in but
+	// most of the rotation/event/balance logic still lives on Farmer
+	// until it gets moved across batch by batch.
+	points *points.Service
 
 	// Update checker
 	update updateState
@@ -159,6 +166,25 @@ func (f *Farmer) Start() error {
 	if f.cfg.IrcEnabled {
 		f.irc = twitch.NewIRCClient(f.cfg.AuthToken, user.Login, f.addLog)
 	}
+
+	// Initialize points Service AFTER IRC so we can hand it the (possibly
+	// nil) IRC client. Created after drops so it can hold a reference to
+	// drops.Service for cross-domain lookups (CampaignEndAt for rotation
+	// sort, IsCurrentPick for offline handling). Phase 4 will move methods
+	// one batch at a time; until then this Service holds state and
+	// dependencies but the logic still runs from Farmer methods.
+	f.points = points.NewService(points.ServiceDeps{
+		Cfg:       f.cfg,
+		GQL:       f.gql,
+		Spade:     f.spade,
+		Prober:    f.prober,
+		IRC:       f.irc,
+		Channels:  f.channels,
+		Drops:     f.drops,
+		DropWatch: f.dropWatch,
+		Log:       f.addLog,
+		DebugLog:  f.debugLog,
+	})
 
 	// Initialize channels first (stores all PubSub topics before connecting)
 	for _, entry := range f.cfg.GetChannelEntries() {

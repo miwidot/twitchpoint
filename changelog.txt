@@ -1,3 +1,22 @@
+== 2026-04-30 01:21 == Refactor: Phase 4a — points.Service skeleton ==
+
+Start of the v2.0 split's last domain extraction. internal/points/
+now exists with a Service skeleton holding the dependencies and the
+state Farmer.mu still owns (seenClaims, seenRaids, totalPointsEarned,
+totalClaimsMade, nameCache, rotationIndex). No methods moved yet —
+the Service is wired into Farmer.Start (after IRC init so f.irc is
+correctly populated) but rotateChannels / handleEvent / balance loop
+all still run from Farmer methods.
+
+Subsequent batches will move state, then methods one batch at a time
+mirroring how Phase 2 dismantled drops.go. drops.ServiceDeps.
+TriggerRotation still points at f.rotateChannels for now; it'll
+become f.points.Rotate at the end.
+
+Files: internal/points/service.go (new), internal/farmer/farmer.go
+(import + field + NewService call between IRC init and PubSub topic
+listen).
+
 == 2026-04-30 01:06 == Refactor: Phase 2i — encapsulate drops.Service state ==
 
 Final cleanup of the drops-domain split. The Service's state fields
