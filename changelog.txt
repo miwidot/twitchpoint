@@ -1,3 +1,50 @@
+== 2026-04-30 03:23 == Feature: web UI redesign — Operator Terminal aesthetic ==
+
+Full rewrite of internal/web/static/index.html (was Twitch-purple
+single-stack list, now a tabbed dashboard mirroring the TUI).
+
+Aesthetic — "Operator Terminal":
+- Dark warm base #0A0A0B with faint dot-grid overlay + atmospheric
+  chartreuse top wash for depth (no flat black).
+- Sole accent: chartreuse #D7FF00. Used on active tab indicator,
+  hero stat numbers, ACTIVE drop progress bar, hover row tint, all
+  primary buttons, [Auto] tag, P0 priority. Coral/mint reserved for
+  warnings/errors and live indicators.
+- Typography: JetBrains Mono throughout (300/400/500/700/800).
+  Weight 800 for hero numbers, uppercase + 0.08em tracking for labels.
+- Layout: hairline rules between sections (no card bubbles), tight
+  data-dense tables with hover backgrounds.
+
+Tabs (1/2/3 keyboard, Tab/Shift+Tab cycle, sliding chartreuse
+underline on switch):
+- 01 Channels — ACTIVE drop strip (chartreuse-glowing border with
+  progress bar), Streams table (filters out temp drop channels like
+  the TUI), Event Log (color-coded points/claims/errors), Stats
+  footer (Points Earned / Claims / Online / Watching / Drops with
+  count-up animation on first render).
+- 02 Drops — Drop Campaigns table (inline toggle switches, [Auto]
+  tag for non-wanted-games campaigns, status pills), Wanted Games
+  (drag-reorder + Twitch-catalog autocomplete via SearchGameCategories
+  with arrow-key navigation), Settings panel (placeholder pending
+  server-side toggle endpoints).
+- 03 Help — keyboard shortcuts reference, status glyph legend,
+  drops-vs-channel-points pipeline explainer.
+
+Interactions:
+- 5s polling (unchanged), parallel fetch of all 5 endpoints
+- Modal for add-channel (chartreuse top border), keyboard 'N'
+- Toast notifications for action feedback
+- Drag-reorder for wanted_games
+- Live status dot pulses (mint), counter animation on stats
+
+Security: ALL dynamic content reaches the DOM via createElement +
+textContent (no innerHTML for data). The few innerHTML uses are
+strictly for clearing previously-built nodes.
+
+Public APIs unchanged — same endpoints, same response shapes. Web
+UI now also reads is_auto_discovered (added in earlier commit) and
+renders the [Auto] tag.
+
 == 2026-04-30 03:01 == Cleanup: hide temp drop channels from Channels tab ==
 
 The drops Watcher's auto-picked temp channel (e.g. "skinnycheeks"

@@ -3,1212 +3,1471 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TwitchPoint Farmer</title>
+    <title>twitchpoint.farmer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
-            --twitch-purple: #9147ff;
-            --twitch-purple-dark: #772ce8;
-            --bg-dark: #0e0e10;
-            --bg-card: #18181b;
-            --bg-hover: #1f1f23;
-            --text-primary: #efeff1;
-            --text-secondary: #adadb8;
-            --text-muted: #848494;
-            --green: #00f593;
-            --yellow: #ffc000;
-            --red: #ff4d4d;
-            --border: #2f2f35;
+            --bg:           #0A0A0B;
+            --bg-elev:      #131316;
+            --bg-hover:     #1C1C21;
+            --rule:         #27272A;
+            --rule-soft:    #1F1F22;
+            --text:         #F4F4F5;
+            --text-muted:   #71717A;
+            --text-dim:     #52525B;
+            --accent:       #D7FF00;
+            --accent-glow:  rgba(215, 255, 0, 0.18);
+            --accent-soft:  rgba(215, 255, 0, 0.08);
+            --live:         #4ADE80;
+            --warn:         #FF8A4C;
+            --danger:       #FF5E5B;
+            --font-mono:    'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+            --pad-sm: 8px; --pad-md: 16px; --pad-lg: 24px; --pad-xl: 40px;
         }
+
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-dark);
-            color: var(--text-primary);
-            min-height: 100vh;
-            padding: 24px;
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
 
-        /* Header */
-        .header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border);
-        }
-        .header h1 {
-            font-size: 24px;
-            font-weight: 600;
-            color: var(--twitch-purple);
-        }
-        .version {
-            font-size: 12px;
+        html, body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 13px;
+            line-height: 1.55;
             font-weight: 400;
-            color: var(--text-muted);
+            -webkit-font-smoothing: antialiased;
+            text-rendering: geometricPrecision;
+            min-height: 100vh;
         }
-        .header .user {
-            color: var(--text-secondary);
-            font-size: 14px;
+        body {
+            background-image: radial-gradient(circle, rgba(255,255,255,0.025) 1px, transparent 1px);
+            background-size: 28px 28px;
+            background-attachment: fixed;
         }
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: radial-gradient(ellipse 70% 35% at 50% 0%, rgba(215, 255, 0, 0.025), transparent 70%);
+            pointer-events: none;
+            z-index: 0;
         }
-        .refresh-indicator {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--text-muted);
-            font-size: 12px;
+        ::selection { background: var(--accent); color: var(--bg); }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--rule); }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+        .canvas {
+            max-width: 1320px;
+            margin: 0 auto;
+            padding: var(--pad-xl) var(--pad-lg);
+            position: relative;
+            z-index: 1;
+            opacity: 0;
+            animation: page-in 600ms cubic-bezier(.16,.84,.36,1) forwards;
         }
-        .refresh-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--green);
-            opacity: 0.5;
-            transition: opacity 0.3s;
-        }
-        .refresh-dot.active {
-            opacity: 1;
-            animation: pulse 0.5s ease-out;
-        }
-        @keyframes pulse {
-            0% { transform: scale(1); }
-            50% { transform: scale(1.5); }
-            100% { transform: scale(1); }
+        @keyframes page-in {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
 
-        /* Stats Grid */
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }
-        .stat-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px;
-        }
-        .stat-card .label {
-            color: var(--text-muted);
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+        .masthead {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            padding-bottom: 12px;
             margin-bottom: 8px;
         }
-        .stat-card .value {
-            font-size: 28px;
-            font-weight: 600;
+        .brand {
+            font-weight: 800;
+            font-size: 16px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
         }
-        .stat-card .value.purple { color: var(--twitch-purple); }
-        .stat-card .value.green { color: var(--green); }
+        .brand .dot { color: var(--accent); }
+        .meta { font-size: 12px; color: var(--text-muted); letter-spacing: 0.03em; }
+        .meta .sep { color: var(--rule); margin: 0 8px; }
+        .meta strong { color: var(--text); font-weight: 500; }
 
-        /* Channels Section */
-        .section-header {
+        .update-banner {
+            display: none;
+            margin: 12px 0;
+            padding: 10px 14px;
+            border: 1px solid var(--accent);
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .update-banner.show { display: block; }
+        .update-banner a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; margin-left: 6px; }
+
+        .status-line {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            font-size: 11px;
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--rule);
+        }
+        .status-line strong { color: var(--text); font-weight: 500; }
+        .status-line .pulse {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 10px;
+        }
+        .pulse-dot {
+            width: 7px; height: 7px;
+            background: var(--live);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--live);
+            animation: pulse 1.6s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%,100% { opacity: 0.4; transform: scale(1); }
+            50%     { opacity: 1;   transform: scale(1.15); }
+        }
+
+        .tab-bar {
+            display: flex;
+            gap: 4px;
+            position: relative;
+            border-bottom: 1px solid var(--rule);
+            padding-top: 24px;
+            margin-bottom: 32px;
+        }
+        .tab {
+            background: none;
+            border: none;
+            padding: 14px 20px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: color 200ms;
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+        }
+        .tab:hover { color: var(--text); }
+        .tab.active { color: var(--text); font-weight: 500; }
+        .tab .tab-num { font-size: 10px; font-weight: 800; color: var(--accent); opacity: 0.7; }
+        .tab.active .tab-num { opacity: 1; }
+        .tab-indicator {
+            position: absolute;
+            bottom: -1px; left: 0;
+            height: 2px;
+            background: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
+            transition: transform 320ms cubic-bezier(.16,.84,.36,1),
+                        width 320ms cubic-bezier(.16,.84,.36,1);
+        }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; animation: panel-in 360ms cubic-bezier(.16,.84,.36,1); }
+        @keyframes panel-in {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .panel { margin-bottom: 32px; }
+        .panel-head {
             display: flex;
             align-items: center;
             justify-content: space-between;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--rule);
             margin-bottom: 16px;
         }
-        .section-header h2 {
-            font-size: 18px;
-            font-weight: 600;
-        }
-        .btn {
-            background: var(--twitch-purple);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background 0.15s;
-        }
-        .btn:hover { background: var(--twitch-purple-dark); }
-        .btn-small {
-            padding: 4px 10px;
-            font-size: 12px;
-        }
-        .btn-danger { background: var(--red); }
-        .btn-danger:hover { background: #cc3d3d; }
-
-        /* Channel Table */
-        .table-container {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-            margin-bottom: 24px;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            padding: 12px 16px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-        }
-        th {
-            background: var(--bg-hover);
-            color: var(--text-muted);
-            font-size: 12px;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        tr:last-child td { border-bottom: none; }
-        tr:hover td { background: var(--bg-hover); }
-
-        .status-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
+        .panel-title {
             font-size: 11px;
-            font-weight: 600;
+            letter-spacing: 0.12em;
             text-transform: uppercase;
+            font-weight: 700;
         }
-        .status-live { background: var(--red); color: white; }
-        .status-watching { background: var(--green); color: var(--bg-dark); }
-        .status-offline { background: var(--border); color: var(--text-muted); }
+        .panel-title .dim { color: var(--text-muted); font-weight: 400; margin-left: 12px; }
+        .panel-actions { display: flex; gap: 8px; }
 
-        .priority-btn {
-            background: none;
-            border: 1px solid var(--border);
-            color: var(--text-muted);
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
+        .btn {
+            background: transparent;
+            border: 1px solid var(--rule);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            padding: 7px 14px;
             cursor: pointer;
-            transition: all 0.15s;
+            transition: all 180ms;
         }
-        .priority-btn:hover { border-color: var(--twitch-purple); color: var(--twitch-purple); }
-        .priority-btn.p0 { border-color: var(--green); color: var(--green); background: rgba(0, 245, 147, 0.1); cursor: default; }
-        .priority-btn.p1 { border-color: var(--yellow); color: var(--yellow); background: rgba(255, 192, 0, 0.1); }
-        tr.drop-row td { background: rgba(0, 245, 147, 0.05); }
-        tr.drop-row:hover td { background: rgba(0, 245, 147, 0.1); }
-        tr.priority-row td { background: rgba(255, 192, 0, 0.05); }
-        tr.priority-row:hover td { background: rgba(255, 192, 0, 0.1); }
+        .btn:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-accent { border-color: var(--accent); color: var(--accent); }
+        .btn-accent:hover { background: var(--accent); color: var(--bg); }
+        .btn-icon { padding: 5px 9px; font-size: 11px; line-height: 1; }
+        .btn-danger:hover { border-color: var(--danger); color: var(--danger); }
 
-        /* Drop progress bar */
-        .drop-progress {
-            margin-top: 4px;
-        }
-        .drop-progress-bar {
-            height: 4px;
-            background: var(--border);
-            border-radius: 2px;
-            overflow: hidden;
-        }
-        .drop-progress-fill {
-            height: 100%;
-            background: var(--green);
-            border-radius: 2px;
-            transition: width 0.5s ease;
-        }
-        .drop-progress-text {
+        .table-wrap { overflow-x: auto; margin: 0 -2px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        thead th {
+            text-align: left;
             font-size: 10px;
-            color: var(--green);
-            margin-top: 2px;
+            font-weight: 500;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            padding: 8px 12px 8px 0;
+            border-bottom: 1px solid var(--rule);
+        }
+        thead th.r { text-align: right; }
+        tbody td {
+            padding: 10px 12px 10px 0;
+            border-bottom: 1px solid var(--rule-soft);
+            vertical-align: middle;
+        }
+        tbody td.r { text-align: right; }
+        tbody tr { transition: background 140ms; }
+        tbody tr:hover { background: var(--accent-soft); }
+        tbody tr:hover .row-actions { opacity: 1; }
+        .row-actions {
+            opacity: 0;
+            transition: opacity 140ms;
+            display: flex;
+            gap: 4px;
+            justify-content: flex-end;
         }
 
-        /* Priority Legend */
-        .priority-legend {
-            display: flex;
-            gap: 16px;
-            margin-bottom: 12px;
-            font-size: 12px;
+        .pri-tag {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            min-width: 24px;
+        }
+        .pri-tag.p0 { color: var(--accent); }
+        .pri-tag.p1 { color: var(--text); }
+        .pri-tag.p2 { color: var(--text-dim); }
+
+        .ch-name { font-weight: 500; color: var(--text); }
+        .ch-name.offline { color: var(--text-muted); font-weight: 400; }
+
+        .status-cell { display: flex; align-items: center; gap: 8px; }
+        .status-dot {
+            display: inline-block;
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .status-dot.live     { background: var(--live);   box-shadow: 0 0 6px var(--live); }
+        .status-dot.watching { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+        .status-dot.offline  { background: transparent; border: 1px solid var(--text-dim); }
+        .status-text { font-size: 10px; color: var(--text-muted); letter-spacing: 0.06em; }
+
+        .game-cell {
             color: var(--text-muted);
-        }
-        .priority-legend-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .priority-legend-badge {
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 10px;
-            font-weight: 600;
-        }
-        .priority-legend-badge.p0 { background: rgba(0, 245, 147, 0.2); color: var(--green); }
-        .priority-legend-badge.p1 { background: rgba(255, 192, 0, 0.2); color: var(--yellow); }
-        .priority-legend-badge.p2 { background: var(--border); color: var(--text-muted); }
-
-        td a[target="_blank"]:hover strong { color: var(--purple); }
-
-        .game-name {
-            color: var(--text-secondary);
-            font-size: 13px;
-            max-width: 200px;
+            font-size: 12px;
+            max-width: 240px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            display: inline-block;
+            vertical-align: middle;
         }
-        .viewers { color: var(--text-muted); font-size: 13px; }
-        .points { font-weight: 500; }
-        .earned { color: var(--green); }
+        .game-cell.has-drop { color: var(--accent); }
 
-        /* Logs Section */
-        .logs-container {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            max-height: 300px;
-            overflow-y: auto;
+        .num { font-variant-numeric: tabular-nums; color: var(--text); }
+        .num.pos { color: var(--live); }
+        .num.muted { color: var(--text-dim); }
+
+        .active-drop {
+            border: 1px solid var(--accent);
+            background: linear-gradient(90deg, var(--accent-soft), transparent 30%);
+            padding: 18px 20px;
+            margin-bottom: 32px;
+            position: relative;
+            overflow: hidden;
         }
-        .log-entry {
-            padding: 8px 16px;
-            border-bottom: 1px solid var(--border);
-            font-family: 'SF Mono', 'Consolas', monospace;
-            font-size: 12px;
+        .active-drop::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 0% 50%, var(--accent-glow), transparent 50%);
+            pointer-events: none;
+        }
+        .active-drop-head {
             display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 12px;
+            position: relative;
+            flex-wrap: wrap;
             gap: 12px;
         }
-        .log-entry:last-child { border-bottom: none; }
-        .log-time { color: var(--text-muted); flex-shrink: 0; }
-        .log-msg { color: var(--text-secondary); word-break: break-word; }
-
-        /* Modal */
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.7);
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
+        .active-drop-title { font-size: 14px; font-weight: 700; letter-spacing: 0.02em; }
+        .active-drop-title .arrow { color: var(--accent); margin: 0 8px; }
+        .active-drop-title .game { color: var(--text-muted); font-weight: 400; }
+        .active-drop-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
         }
-        .modal-overlay.active { display: flex; }
-        .modal {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 24px;
-            width: 100%;
-            max-width: 400px;
+        .active-drop-meta .ch {
+            color: var(--accent);
+            font-weight: 500;
+            text-transform: none;
+            letter-spacing: 0.02em;
         }
-        .modal h3 { margin-bottom: 16px; }
-        .modal input {
-            width: 100%;
-            padding: 10px 12px;
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            color: var(--text-primary);
-            font-size: 14px;
-            margin-bottom: 16px;
+        .progress-bar { position: relative; height: 6px; background: var(--rule); overflow: hidden; }
+        .progress-fill {
+            position: absolute;
+            top: 0; left: 0; bottom: 0;
+            background: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
+            transition: width 600ms cubic-bezier(.16,.84,.36,1);
         }
-        .modal input:focus { outline: none; border-color: var(--twitch-purple); }
-        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-        .btn-secondary {
-            background: var(--bg-hover);
-            border: 1px solid var(--border);
+        .progress-text {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 11px;
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            flex-wrap: wrap;
+            gap: 8px;
         }
-        .btn-secondary:hover { background: var(--border); }
-
-        /* Empty state */
-        .empty {
-            padding: 48px;
+        .progress-text strong { color: var(--accent); font-weight: 700; }
+        .active-drop-empty {
+            padding: 32px 20px;
             text-align: center;
+            color: var(--text-dim);
+            font-size: 12px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            border: 1px dashed var(--rule);
+            margin-bottom: 32px;
+        }
+
+        .log-list {
+            max-height: 320px;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        .log-entry { display: flex; gap: 14px; padding: 4px 0; }
+        .log-time { color: var(--text-dim); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+        .log-msg { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+        .log-msg.points { color: var(--live); }
+        .log-msg.claim  { color: var(--accent); }
+        .log-msg.error  { color: var(--danger); }
+        .log-msg.warn   { color: var(--warn); }
+
+        .stats-bar {
+            display: flex;
+            gap: 32px;
+            padding: 18px 0;
+            border-top: 1px solid var(--rule);
+            border-bottom: 1px solid var(--rule);
+            margin-top: 32px;
+            font-size: 11px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            overflow-x: auto;
+        }
+        .stats-bar .stat strong {
+            color: var(--accent);
+            font-size: 16px;
+            font-weight: 800;
+            letter-spacing: 0;
+            margin-right: 6px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .auto-tag {
+            display: inline-block;
+            padding: 1px 6px;
+            margin-left: 8px;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            text-transform: uppercase;
+            vertical-align: 1px;
+        }
+
+        .status-pill {
+            display: inline-block;
+            padding: 2px 8px;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+        .status-pill.active     { color: var(--accent); border: 1px solid var(--accent); }
+        .status-pill.queued     { color: var(--text); border: 1px solid var(--rule); }
+        .status-pill.idle       { color: var(--text-muted); border: 1px solid var(--rule-soft); }
+        .status-pill.disabled   { color: var(--text-dim); border: 1px solid var(--rule-soft); }
+        .status-pill.completed  { color: var(--text-dim); border: 1px solid transparent; opacity: 0.5; }
+
+        .toggle {
+            position: relative;
+            width: 32px; height: 16px;
+            background: var(--rule);
+            cursor: pointer;
+            transition: background 200ms;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        .toggle::after {
+            content: '';
+            position: absolute;
+            top: 2px; left: 2px;
+            width: 12px; height: 12px;
+            background: var(--text-muted);
+            transition: all 200ms;
+        }
+        .toggle.on { background: var(--accent); }
+        .toggle.on::after { left: 18px; background: var(--bg); }
+        .toggle.disabled-ui { cursor: not-allowed; opacity: 0.4; }
+
+        .games-list { list-style: none; padding: 0; margin: 0 0 16px 0; }
+        .games-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--rule-soft);
+            font-size: 13px;
+            cursor: grab;
+            transition: background 140ms;
+        }
+        .games-item:hover { background: var(--accent-soft); }
+        .games-item.dragging { opacity: 0.4; }
+        .games-item.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
+        .games-handle { color: var(--text-dim); font-size: 14px; user-select: none; }
+        .games-rank {
+            color: var(--accent);
+            font-weight: 700;
+            font-size: 11px;
+            min-width: 22px;
+            font-variant-numeric: tabular-nums;
+        }
+        .games-name { flex: 1; color: var(--text); }
+        .games-empty {
+            padding: 20px;
+            color: var(--text-dim);
+            font-size: 12px;
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            border: 1px dashed var(--rule);
+        }
+
+        .games-add { display: flex; gap: 8px; margin-top: 12px; position: relative; }
+        .games-add input {
+            flex: 1;
+            background: transparent;
+            border: 1px solid var(--rule);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 13px;
+            padding: 10px 14px;
+            outline: none;
+            transition: border-color 180ms;
+        }
+        .games-add input:focus { border-color: var(--accent); }
+        .games-add input::placeholder { color: var(--text-dim); font-size: 12px; }
+
+        .games-suggestions {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0; right: 100px;
+            background: var(--bg-elev);
+            border: 1px solid var(--rule);
+            max-height: 280px;
+            overflow-y: auto;
+            z-index: 50;
+            display: none;
+        }
+        .games-suggestions.show { display: block; }
+        .games-suggestions .sug-item {
+            padding: 9px 14px;
+            font-size: 12px;
+            color: var(--text);
+            cursor: pointer;
+            border-bottom: 1px solid var(--rule-soft);
+            transition: background 120ms;
+        }
+        .games-suggestions .sug-item:last-child { border-bottom: none; }
+        .games-suggestions .sug-item:hover,
+        .games-suggestions .sug-item.active { background: var(--accent); color: var(--bg); }
+        .games-suggestions .sug-empty {
+            padding: 14px;
+            font-size: 11px;
+            color: var(--text-dim);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            text-align: center;
+        }
+
+        .help-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 32px;
+        }
+        .help-section h3 {
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--accent);
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--rule);
+            margin-bottom: 14px;
+        }
+        .help-list { list-style: none; }
+        .help-list li {
+            display: flex;
+            gap: 16px;
+            padding: 8px 0;
+            font-size: 12px;
+            border-bottom: 1px solid var(--rule-soft);
+        }
+        .help-key {
+            color: var(--accent);
+            font-weight: 700;
+            min-width: 80px;
+            font-variant-numeric: tabular-nums;
+        }
+        .help-desc { color: var(--text-muted); }
+        .help-prose {
+            font-size: 12px;
+            line-height: 1.75;
             color: var(--text-muted);
         }
+        .help-prose strong { color: var(--text); font-weight: 500; }
+        .help-prose .accent { color: var(--accent); }
+        .help-prose code {
+            background: var(--bg-elev);
+            border: 1px solid var(--rule-soft);
+            padding: 1px 6px;
+            font-size: 11px;
+        }
+        .help-prose p { margin-bottom: 14px; }
 
-        /* Toast notifications */
-        .toast-container {
+        .modal-overlay {
             position: fixed;
-            top: 24px;
-            right: 24px;
-            z-index: 2000;
+            inset: 0;
+            background: rgba(10, 10, 11, 0.78);
+            backdrop-filter: blur(6px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            animation: fade-in 200ms;
+        }
+        .modal-overlay.show { display: flex; }
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        .modal {
+            background: var(--bg-elev);
+            border: 1px solid var(--rule);
+            border-top: 3px solid var(--accent);
+            min-width: 420px;
+            max-width: 540px;
+            padding: 24px 28px;
+            animation: modal-in 280ms cubic-bezier(.16,.84,.36,1);
+        }
+        @keyframes modal-in {
+            from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .modal-title {
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            font-weight: 700;
+            margin-bottom: 18px;
+        }
+        .modal input {
+            width: 100%;
+            background: transparent;
+            border: 1px solid var(--rule);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 14px;
+            padding: 12px 14px;
+            outline: none;
+            margin-bottom: 18px;
+            transition: border-color 180ms;
+        }
+        .modal input:focus { border-color: var(--accent); }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+        .toast-root {
+            position: fixed;
+            top: 24px; right: 24px;
+            z-index: 200;
             display: flex;
             flex-direction: column;
             gap: 8px;
-        }
-        .toast {
-            padding: 12px 20px;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 500;
-            animation: slideIn 0.3s ease-out, fadeOut 0.3s ease-in 3.7s forwards;
-            max-width: 350px;
-        }
-        .toast-success { background: var(--green); color: var(--bg-dark); }
-        .toast-error { background: var(--red); color: white; }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
-
-        /* Modal error */
-        .modal-error {
-            background: rgba(255, 77, 77, 0.15);
-            border: 1px solid var(--red);
-            color: var(--red);
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-size: 13px;
-            margin-bottom: 12px;
-            display: none;
-        }
-        .modal-error.visible { display: block; }
-
-        /* Loading button */
-        .btn.loading {
-            opacity: 0.7;
             pointer-events: none;
         }
-        .btn.loading::after {
-            content: '...';
-            animation: dots 1s steps(3, end) infinite;
-        }
-        @keyframes dots { 0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; } }
-
-        /* Badges */
-        .badge {
-            display: inline-block;
-            padding: 1px 6px;
-            border-radius: 3px;
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            margin-left: 6px;
-            vertical-align: middle;
-        }
-        .badge-temp { background: rgba(145, 71, 255, 0.2); color: var(--twitch-purple); }
-        .badge-auto { background: rgba(0, 245, 147, 0.2); color: var(--green); }
-
-        /* v1.7.0 status badges + pin button */
-        .status-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .status-active    { background: rgba(0, 245, 147, 0.2); color: var(--green); }
-        .status-queued    { background: rgba(255, 193, 7, 0.2);  color: #ffc107; }
-        .status-idle      { background: rgba(127, 127, 127, 0.2); color: #888; font-style: italic; }
-        .status-disabled  { background: rgba(127, 127, 127, 0.15); color: #777; text-decoration: line-through; }
-        .status-completed { background: rgba(74, 144, 226, 0.2); color: #4a90e2; }
-        .pin-btn {
-            background: none;
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            padding: 2px 6px;
-            cursor: pointer;
+        .toast {
+            background: var(--bg-elev);
+            border: 1px solid var(--rule);
+            border-left: 3px solid var(--accent);
+            padding: 12px 18px;
             font-size: 12px;
             color: var(--text);
+            min-width: 260px;
+            animation: toast-in 280ms cubic-bezier(.16,.84,.36,1);
+            pointer-events: auto;
         }
-        .pin-btn:hover { background: rgba(145, 71, 255, 0.1); }
+        .toast.success { border-left-color: var(--live); }
+        .toast.error   { border-left-color: var(--danger); }
+        .toast.fade    { animation: toast-out 200ms forwards; }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateX(20px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes toast-out { to { opacity: 0; transform: translateX(20px); } }
 
-        /* Drops Campaign Table */
-        .drops-toggle {
-            appearance: none;
-            width: 36px;
-            height: 20px;
-            background: var(--border);
-            border-radius: 10px;
-            position: relative;
-            cursor: pointer;
-            transition: background 0.2s;
-            border: none;
-        }
-        .drops-toggle::after {
-            content: '';
-            position: absolute;
-            top: 2px;
-            left: 2px;
-            width: 16px;
-            height: 16px;
-            background: var(--text-muted);
-            border-radius: 50%;
-            transition: all 0.2s;
-        }
-        .drops-toggle:checked { background: var(--green); }
-        .drops-toggle:checked::after { left: 18px; background: var(--bg-dark); }
-        /* Update Banner */
-        .update-banner {
-            display: none;
-            background: rgba(255, 192, 0, 0.1);
-            border: 1px solid var(--yellow);
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin-bottom: 24px;
-            color: var(--yellow);
-            font-size: 14px;
-            font-weight: 500;
-        }
-        .update-banner.visible { display: block; }
-        .update-banner a {
-            color: var(--yellow);
-            text-decoration: underline;
-            font-weight: 600;
-        }
-        .update-banner a:hover { color: var(--text-primary); }
-
-        tr.disabled-row td { opacity: 0.4; }
-        tr.disabled-row:hover td { opacity: 0.6; }
-        .campaign-progress {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .campaign-progress-bar {
-            flex: 1;
-            height: 6px;
-            background: var(--border);
-            border-radius: 3px;
-            overflow: hidden;
-            min-width: 60px;
-        }
-        .campaign-progress-fill {
-            height: 100%;
-            background: var(--green);
-            border-radius: 3px;
-            transition: width 0.5s ease;
-        }
-        .campaign-progress-text {
-            font-size: 12px;
-            color: var(--text-secondary);
-            white-space: nowrap;
-        }
-        .expires-text {
-            font-size: 12px;
-            color: var(--text-muted);
+        @media (max-width: 760px) {
+            .canvas { padding: 24px 16px; }
+            .help-grid { grid-template-columns: 1fr; }
+            .meta { display: none; }
+            .stats-bar { flex-wrap: wrap; gap: 16px; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header class="header">
-            <h1>TwitchPoint Farmer <span class="version" id="app-version"></span></h1>
-            <div class="header-right">
-                <div class="refresh-indicator">
-                    <span class="refresh-dot" id="refresh-dot"></span>
-                    <span id="last-update">--:--:--</span>
-                </div>
-                <span class="user" id="user-info">Loading...</span>
+    <div class="canvas">
+
+        <header class="masthead">
+            <div class="brand">twitchpoint<span class="dot">.</span>farmer</div>
+            <div class="meta">
+                <span id="user-info">— · —</span>
+                <span class="sep">·</span>
+                <span id="version">v—</span>
             </div>
         </header>
 
         <div class="update-banner" id="update-banner"></div>
 
-        <div class="stats">
-            <div class="stat-card">
-                <div class="label">Uptime</div>
-                <div class="value" id="stat-uptime">--:--:--</div>
-            </div>
-            <div class="stat-card">
-                <div class="label">Points Earned</div>
-                <div class="value purple" id="stat-points">0</div>
-            </div>
-            <div class="stat-card">
-                <div class="label">Claims</div>
-                <div class="value green" id="stat-claims">0</div>
-            </div>
-            <div class="stat-card">
-                <div class="label">Channels</div>
-                <div class="value" id="stat-channels">0/0/0</div>
-            </div>
-            <div class="stat-card">
-                <div class="label">Active Drops</div>
-                <div class="value green" id="stat-drops">0</div>
+        <div class="status-line">
+            <span>uptime <strong id="uptime">--:--:--</strong></span>
+            <span>last sync <strong id="last-sync">--:--:--</strong></span>
+            <div class="pulse">
+                <span class="pulse-dot"></span>
+                <span>live</span>
             </div>
         </div>
 
-        <div class="section-header">
-            <h2>Channels</h2>
-            <button class="btn" onclick="showAddModal()">+ Add Channel</button>
-        </div>
+        <nav class="tab-bar" id="tab-bar" role="tablist">
+            <button class="tab active" data-tab="channels">
+                <span class="tab-num">01</span>
+                <span class="tab-label">Channels</span>
+            </button>
+            <button class="tab" data-tab="drops">
+                <span class="tab-num">02</span>
+                <span class="tab-label">Drops</span>
+            </button>
+            <button class="tab" data-tab="help">
+                <span class="tab-num">03</span>
+                <span class="tab-label">Help</span>
+            </button>
+            <span class="tab-indicator" id="tab-indicator"></span>
+        </nav>
 
-        <div class="priority-legend">
-            <div class="priority-legend-item">
-                <span class="priority-legend-badge p0">P0</span>
-                <span>Drop active (auto)</span>
-            </div>
-            <div class="priority-legend-item">
-                <span class="priority-legend-badge p1">P1</span>
-                <span>Always watch (max 2 slots)</span>
-            </div>
-            <div class="priority-legend-item">
-                <span class="priority-legend-badge p2">P2</span>
-                <span>Rotate every 5 min</span>
-            </div>
-        </div>
+        <main class="content">
 
-        <div class="table-container">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Pri</th>
-                        <th>Channel</th>
-                        <th>Status</th>
-                        <th>Game</th>
-                        <th>Viewers</th>
-                        <th>Balance</th>
-                        <th>Earned</th>
-                        <th>Claims</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="channels-body">
-                    <tr><td colspan="9" class="empty">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
+            <section class="tab-panel active" id="panel-channels">
+                <div id="active-drop-host"></div>
 
-        <div class="section-header">
-            <h2>Wanted Games</h2>
-            <span class="section-help" style="font-size:0.85em;color:var(--text-muted)">priority list — top game wins</span>
-        </div>
-        <div class="table-container">
-            <ul id="wanted-games-list" style="list-style:none;padding:0;margin:0">
-                <li style="color:var(--text-muted);padding:8px">loading...</li>
-            </ul>
-            <div style="margin-top:8px;display:flex;gap:8px">
-                <input id="wanted-games-input" type="text" placeholder="Game name — autocomplete suggests current campaigns; type any name for forward-queue (e.g. Escape from Tarkov: Arena)"
-                       list="wanted-games-suggestions" autocomplete="off"
-                       style="flex:1;padding:6px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text)">
-                <datalist id="wanted-games-suggestions"></datalist>
-                <button onclick="addWantedGame()" class="btn">Add</button>
-            </div>
-            <div style="margin-top:4px;font-size:0.8em;color:var(--text-muted)">
-                Tipp: Add works even without an autocomplete match — useful to pre-queue games whose campaigns aren't live yet. Game name must match Twitch's <em>exact</em> game name (case-insensitive).
-            </div>
-        </div>
+                <div class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">Streams<span class="dim" id="streams-meta">—</span></div>
+                        <div class="panel-actions">
+                            <button class="btn btn-accent" id="btn-add-channel">+ Add Channel</button>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:40px">Pri</th>
+                                    <th>Channel</th>
+                                    <th style="width:100px">Status</th>
+                                    <th>Game</th>
+                                    <th class="r" style="width:90px">Balance</th>
+                                    <th class="r" style="width:80px">Earned</th>
+                                    <th class="r" style="width:60px">Claims</th>
+                                    <th class="r" style="width:90px"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="channels-body"></tbody>
+                        </table>
+                    </div>
+                </div>
 
-        <div class="section-header" id="drops-section">
-            <h2>Drop Campaigns</h2>
-        </div>
-        <div class="table-container" id="drops-table-container" style="display:none">
-            <table>
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Status</th>
-                        <th>On</th>
-                        <th>Campaign</th>
-                        <th>Game</th>
-                        <th>Drop</th>
-                        <th>Progress</th>
-                        <th>ETA</th>
-                        <th>Channel</th>
-                        <th>Expires</th>
-                    </tr>
-                </thead>
-                <tbody id="drops-body">
-                </tbody>
-            </table>
-        </div>
+                <div class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">Event Log<span class="dim">last 50</span></div>
+                    </div>
+                    <div class="log-list" id="log-list"></div>
+                </div>
 
-        <div class="section-header">
-            <h2>Event Log</h2>
-        </div>
-        <div class="logs-container" id="logs-container">
-            <div class="log-entry"><span class="log-msg">Loading...</span></div>
-        </div>
+                <div class="stats-bar">
+                    <div class="stat"><strong id="s-points">0</strong>Points Earned</div>
+                    <div class="stat"><strong id="s-claims">0</strong>Claims</div>
+                    <div class="stat"><strong id="s-online">0/0</strong>Online</div>
+                    <div class="stat"><strong id="s-watching">0/2</strong>Watching</div>
+                    <div class="stat"><strong id="s-drops">0</strong>Drops</div>
+                </div>
+            </section>
+
+            <section class="tab-panel" id="panel-drops">
+                <div class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">Drop Campaigns<span class="dim" id="drops-meta">—</span></div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Campaign</th>
+                                    <th>Game</th>
+                                    <th style="width:140px">Progress</th>
+                                    <th style="width:120px">Channel</th>
+                                    <th style="width:100px">Status</th>
+                                    <th class="r" style="width:90px">Enabled</th>
+                                </tr>
+                            </thead>
+                            <tbody id="drops-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">Wanted Games<span class="dim">drag to reorder · top wins</span></div>
+                    </div>
+                    <ul class="games-list" id="games-list"></ul>
+                    <div class="games-add">
+                        <input type="text" id="games-input" placeholder="Type to search Twitch catalog… (Enter saves selection or typed text)" autocomplete="off">
+                        <button class="btn btn-accent" id="games-add-btn">Add</button>
+                        <div class="games-suggestions" id="games-suggestions"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-panel" id="panel-help">
+                <div class="help-grid">
+                    <div class="help-section">
+                        <h3>Keyboard</h3>
+                        <ul class="help-list">
+                            <li><span class="help-key">1 / 2 / 3</span><span class="help-desc">Switch tab directly</span></li>
+                            <li><span class="help-key">Tab</span><span class="help-desc">Cycle tabs forward</span></li>
+                            <li><span class="help-key">Shift+Tab</span><span class="help-desc">Cycle tabs back</span></li>
+                            <li><span class="help-key">/</span><span class="help-desc">Focus games search</span></li>
+                            <li><span class="help-key">N</span><span class="help-desc">New channel modal</span></li>
+                            <li><span class="help-key">Esc</span><span class="help-desc">Close modal / cancel</span></li>
+                        </ul>
+                    </div>
+
+                    <div class="help-section">
+                        <h3>Status Glyphs</h3>
+                        <ul class="help-list">
+                            <li><span class="help-key" style="color:var(--accent)">●</span><span class="help-desc">Watching (drops Watcher active)</span></li>
+                            <li><span class="help-key" style="color:var(--live)">●</span><span class="help-desc">Live channel (online)</span></li>
+                            <li><span class="help-key" style="color:var(--text-dim)">○</span><span class="help-desc">Offline channel</span></li>
+                            <li><span class="help-key" style="color:var(--accent)">P0</span><span class="help-desc">Drop-active (auto-promoted)</span></li>
+                            <li><span class="help-key">P1</span><span class="help-desc">Always-watch priority</span></li>
+                            <li><span class="help-key" style="color:var(--text-dim)">P2</span><span class="help-desc">Rotation-eligible</span></li>
+                            <li><span class="help-key" style="color:var(--accent)">[Auto]</span><span class="help-desc">Account-linked, not in wanted_games</span></li>
+                        </ul>
+                    </div>
+
+                    <div class="help-section" style="grid-column:1/-1">
+                        <h3>How TwitchPoint farms</h3>
+                        <div class="help-prose">
+                            <p>Two independent credit pipelines run side by side:</p>
+                            <p><strong class="accent">Drops</strong> — the picked drop channel is owned exclusively by the drops Watcher, sending GraphQL <code>sendSpadeEvents</code> heartbeats every ~59 seconds and polling <code>DropCurrentSession</code> every minute. Auto-claim fires when a drop hits 100%.</p>
+                            <p><strong class="accent">Channel-Points</strong> — up to 2 rotation channels are watched at a time via the legacy <code>POST spade.twitch.tv/track</code> endpoint. Bonus claims (the chest icon) are auto-claimed via PubSub. Rotation cycles through online channels every 5 minutes.</p>
+                            <p>Priority: <strong>P0</strong> (auto, drop-active channels) → <strong>P1</strong> (always-watch) → <strong>P2</strong> (rotate). The drops Watcher's current channel is skipped by points rotation to avoid double-tracking.</p>
+                            <p>Drop campaigns marked <span class="accent">[Auto]</span> are farmed automatically because the account is linked — they're not in your wanted_games priority list. With an empty wanted_games list, every linked campaign is auto-discovered and the marker is hidden.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
     </div>
 
-    <!-- Toast Container -->
-    <div class="toast-container" id="toast-container"></div>
-
-    <!-- Add Channel Modal -->
-    <div class="modal-overlay" id="add-modal">
+    <div class="modal-overlay" id="modal-add-channel">
         <div class="modal">
-            <h3>Add Channel</h3>
-            <div class="modal-error" id="modal-error"></div>
-            <input type="text" id="channel-input" placeholder="Channel name (e.g., xqc)" autocomplete="off">
+            <div class="modal-title">Add Channel</div>
+            <input type="text" id="add-channel-input" placeholder="channel login (lowercase)" autocomplete="off">
             <div class="modal-actions">
-                <button class="btn btn-secondary" onclick="hideAddModal()">Cancel</button>
-                <button class="btn" id="add-btn" onclick="addChannel()">Add</button>
+                <button class="btn" data-modal-close>Cancel</button>
+                <button class="btn btn-accent" id="btn-add-channel-confirm">Add</button>
             </div>
         </div>
     </div>
+
+    <div class="toast-root" id="toast-root"></div>
 
     <script>
-        const API = '';
-        let refreshInterval;
+    /*
+       All dynamic content reaches the DOM via createElement + textContent
+       — we never parse HTML strings from data. The few innerHTML assignments
+       below are strictly to clear previously-built nodes (assigning '').
+    */
+    (function(){
+        const state = {
+            tab: 'channels',
+            channels: [],
+            drops: [],
+            stats: {},
+            logs: [],
+            wantedGames: [],
+            suggestions: [],
+            sugCursor: -1,
+            sugQuery: '',
+            counters: { 's-points': 0, 's-claims': 0, 's-drops': 0 },
+        };
 
-        async function fetchStats() {
-            try {
-                const res = await fetch(API + '/api/stats');
-                const data = await res.json();
-                document.getElementById('app-version').textContent = 'v' + data.version;
-                document.getElementById('user-info').textContent = data.user;
-                document.getElementById('stat-uptime').textContent = data.uptime;
-                document.getElementById('stat-points').textContent = data.total_points.toLocaleString();
-                document.getElementById('stat-claims').textContent = data.total_claims;
-                document.getElementById('stat-channels').textContent =
-                    `${data.channels_watching}/${data.channels_online}/${data.channels_total}`;
-                document.getElementById('stat-drops').textContent = data.active_drops || 0;
-                renderUpdateBanner(data);
-            } catch (e) {
-                console.error('Failed to fetch stats:', e);
-            }
-        }
+        const $ = (s, root=document) => root.querySelector(s);
+        const $$ = (s, root=document) => Array.from(root.querySelectorAll(s));
 
-        function renderUpdateBanner(data) {
-            const banner = document.getElementById('update-banner');
-            if (!data.has_stable_update && !data.has_beta_update) {
-                banner.classList.remove('visible');
-                return;
-            }
-
-            const parts = [];
-            if (data.has_stable_update) {
-                parts.push(`<a href="${escapeHtml(data.stable_url)}" target="_blank" rel="noopener">v${escapeHtml(data.latest_stable)}</a> (stable)`);
-            }
-            if (data.has_beta_update) {
-                parts.push(`<a href="${escapeHtml(data.beta_url)}" target="_blank" rel="noopener">v${escapeHtml(data.latest_beta)}</a> (beta)`);
-            }
-
-            banner.innerHTML = 'New version available: ' + parts.join(' and ');
-            banner.classList.add('visible');
-        }
-
-        async function fetchChannels() {
-            try {
-                const res = await fetch(API + '/api/channels');
-                const channels = await res.json();
-                renderChannels(channels);
-            } catch (e) {
-                console.error('Failed to fetch channels:', e);
-            }
-        }
-
-        function renderChannels(channels) {
-            const tbody = document.getElementById('channels-body');
-            if (!channels || channels.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9" class="empty">No channels configured</td></tr>';
-                return;
-            }
-
-            // Effective priority: P0 for active drops, else configured priority
-            function effectivePri(ch) {
-                return ch.has_active_drop ? 0 : ch.priority;
-            }
-
-            // Sort: effective priority first, then online, then by name
-            channels.sort((a, b) => {
-                const pa = effectivePri(a), pb = effectivePri(b);
-                if (pa !== pb) return pa - pb;
-                if (a.is_online !== b.is_online) return b.is_online - a.is_online;
-                return a.display_name.localeCompare(b.display_name);
-            });
-
-            tbody.innerHTML = channels.map(ch => {
-                let statusBadge = '<span class="status-badge status-offline">Offline</span>';
-                if (ch.is_watching) {
-                    statusBadge = '<span class="status-badge status-watching">Watching</span>';
-                } else if (ch.is_online) {
-                    statusBadge = '<span class="status-badge status-live">Live</span>';
-                }
-
-                let priClass, priLabel, rowClass;
-                if (ch.has_active_drop) {
-                    priClass = 'p0';
-                    priLabel = 'P0';
-                    rowClass = 'drop-row';
-                } else if (ch.priority === 1) {
-                    priClass = 'p1';
-                    priLabel = 'P1';
-                    rowClass = 'priority-row';
-                } else {
-                    priClass = '';
-                    priLabel = 'P2';
-                    rowClass = '';
-                }
-
-                // Drop progress bar (shown below channel name)
-                let dropHtml = '';
-                if (ch.has_active_drop && ch.drop_required > 0) {
-                    const pct = Math.min(100, Math.round((ch.drop_progress / ch.drop_required) * 100));
-                    dropHtml = `
-                        <div class="drop-progress">
-                            <div class="drop-progress-bar"><div class="drop-progress-fill" style="width:${pct}%"></div></div>
-                            <div class="drop-progress-text">${escapeHtml(ch.drop_name || 'Drop')} — ${ch.drop_progress}/${ch.drop_required} min (${pct}%)</div>
-                        </div>`;
-                }
-
-                // P0 button is not clickable (auto-assigned), P1/P2 toggle normally
-                const priOnClick = ch.has_active_drop ? '' : `onclick="togglePriority('${ch.login}', ${ch.priority})"`;
-
-                // TEMP badge for auto-added channels
-                const tempBadge = ch.is_temporary ? '<span class="badge badge-temp">TEMP</span>' : '';
-
-                // Action column: Auto label for temp channels, Remove for permanent
-                const actionCol = ch.is_temporary
-                    ? '<span class="badge badge-auto">Auto</span>'
-                    : `<button class="btn btn-small btn-danger" onclick="removeChannel('${ch.login}')">Remove</button>`;
-
-                return `
-                    <tr class="${rowClass}">
-                        <td>
-                            <button class="priority-btn ${priClass}" ${priOnClick}>
-                                ${priLabel}
-                            </button>
-                        </td>
-                        <td><a href="https://twitch.tv/${encodeURIComponent(ch.login)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none"><strong>${escapeHtml(ch.display_name)}</strong></a>${tempBadge}${dropHtml}</td>
-                        <td>${statusBadge}</td>
-                        <td class="game-name" title="${escapeHtml(ch.game_name || '')}">${escapeHtml(ch.game_name || '-')}</td>
-                        <td class="viewers">${ch.is_online ? ch.viewer_count.toLocaleString() : '-'}</td>
-                        <td class="points">${ch.balance.toLocaleString()}</td>
-                        <td class="earned">+${ch.earned.toLocaleString()}</td>
-                        <td>${ch.claims}</td>
-                        <td>${actionCol}</td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-        async function fetchDrops() {
-            try {
-                const res = await fetch(API + '/api/drops');
-                const drops = await res.json();
-                renderDrops(drops);
-            } catch (e) {
-                console.error('Failed to fetch drops:', e);
-            }
-        }
-
-        function renderDrops(drops) {
-            const section = document.getElementById('drops-section');
-            const container = document.getElementById('drops-table-container');
-            const tbody = document.getElementById('drops-body');
-
-            if (!drops || drops.length === 0) {
-                container.style.display = 'none';
-                return;
-            }
-
-            container.style.display = 'block';
-
-            tbody.innerHTML = drops.map(drop => {
-                const status = drop.status || '';
-                const statusClass = status.toLowerCase().replace(/[^a-z]/g, '');
-                const isCompleted = status === 'COMPLETED';
-                const isDisabled = status === 'DISABLED';
-                const rowClass = isDisabled ? 'disabled-row' : '';
-
-                const safeCampId = escapeHtml(drop.campaign_id);
-                // v1.8.0: pin column removed (superseded by Wanted Games priority list).
-
-                const queuePos = drop.queue_index > 0 ? drop.queue_index : '—';
-                const statusBadge = `<span class="status-badge status-${statusClass}">${escapeHtml(status)}</span>`;
-
-                const checked = drop.is_enabled && !isDisabled ? 'checked' : '';
-                const toggleCell = isCompleted ? '<span style="color:var(--text-muted)">✓</span>' :
-                    `<input type="checkbox" class="drops-toggle" ${checked} onchange="toggleCampaign('${safeCampId}', this.checked)">`;
-
-                // Progress bar
-                const pct = drop.required > 0 ? Math.min(100, Math.round((drop.progress / drop.required) * 100)) : 0;
-                const progressHtml = `
-                    <div class="campaign-progress">
-                        <div class="campaign-progress-bar">
-                            <div class="campaign-progress-fill" style="width:${pct}%"></div>
-                        </div>
-                        <span class="campaign-progress-text">${drop.progress}/${drop.required}min (${pct}%)</span>
-                    </div>`;
-
-                // ETA
-                const etaMin = drop.eta_minutes;
-                let etaStr = '—';
-                if (etaMin > 0) {
-                    etaStr = etaMin < 60 ? `${etaMin}m` : `~${(etaMin / 60).toFixed(1)}h`;
-                }
-
-                // Channel
-                let channelHtml = drop.channel_login
-                    ? escapeHtml(drop.channel_login)
-                    : '<span style="color:var(--text-muted)">—</span>';
-
-                // Expires
-                let expiresHtml = '-';
-                if (drop.end_at && drop.end_at !== '0001-01-01T00:00:00Z') {
-                    const endDate = new Date(drop.end_at);
-                    const now = new Date();
-                    const hoursLeft = Math.max(0, Math.round((endDate - now) / 3600000));
-                    if (hoursLeft < 24) {
-                        expiresHtml = `<span class="expires-text" style="color:var(--red)">${hoursLeft}h left</span>`;
+        // tiny DOM helper — element factory
+        function el(tag, props, ...children) {
+            const node = document.createElement(tag);
+            if (props) {
+                for (const [k, v] of Object.entries(props)) {
+                    if (k === 'class') node.className = v;
+                    else if (k === 'style') node.setAttribute('style', v);
+                    else if (k === 'text') node.textContent = v;
+                    else if (k === 'data') {
+                        for (const [dk, dv] of Object.entries(v)) node.dataset[dk] = dv;
+                    } else if (k.startsWith('on')) {
+                        node.addEventListener(k.slice(2).toLowerCase(), v);
                     } else {
-                        const daysLeft = Math.round(hoursLeft / 24);
-                        expiresHtml = `<span class="expires-text">${daysLeft}d left</span>`;
+                        node.setAttribute(k, v);
                     }
                 }
-
-                return `
-                    <tr class="${rowClass}">
-                        <td>${queuePos}</td>
-                        <td>${statusBadge}</td>
-                        <td>${toggleCell}</td>
-                        <td>${escapeHtml(drop.campaign_name)}</td>
-                        <td class="game-name">${escapeHtml(drop.game_name)}</td>
-                        <td>${escapeHtml(drop.drop_name)}</td>
-                        <td>${progressHtml}</td>
-                        <td>${etaStr}</td>
-                        <td>${channelHtml}</td>
-                        <td>${expiresHtml}</td>
-                    </tr>`;
-            }).join('');
-        }
-
-        async function togglePin(campaignId, pinned) {
-            try {
-                const res = await fetch(API + `/api/drops/${encodeURIComponent(campaignId)}/pin`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pinned })
-                });
-                const data = await res.json();
-                if (data.error) {
-                    showToast(data.error, 'error');
-                } else {
-                    showToast(pinned ? 'Campaign pinned' : 'Campaign unpinned', 'success');
-                }
-                fetchDrops();
-            } catch (e) {
-                showToast('Failed to toggle pin: ' + e.message, 'error');
             }
-        }
-
-        async function toggleCampaign(campaignId, enabled) {
-            try {
-                const res = await fetch(API + `/api/drops/${campaignId}/toggle`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled })
-                });
-                const data = await res.json();
-                if (data.error) {
-                    showToast(data.error, 'error');
-                } else {
-                    showToast(`Campaign ${enabled ? 'enabled' : 'disabled'}`, 'success');
-                }
-                fetchDrops();
-            } catch (e) {
-                showToast('Failed to toggle campaign: ' + e.message, 'error');
+            for (const c of children) {
+                if (c == null) continue;
+                if (typeof c === 'string') node.appendChild(document.createTextNode(c));
+                else node.appendChild(c);
             }
+            return node;
         }
+        function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
 
-        async function fetchLogs() {
-            try {
-                const res = await fetch(API + '/api/logs');
-                const logs = await res.json();
-                renderLogs(logs);
-            } catch (e) {
-                console.error('Failed to fetch logs:', e);
-            }
+        // ─── Tab switching ───────────────────────────────────────
+        function setTab(name) {
+            state.tab = name;
+            $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+            $$('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
+            updateTabIndicator();
         }
+        function updateTabIndicator() {
+            const active = $('.tab.active');
+            if (!active) return;
+            const ind = $('#tab-indicator');
+            ind.style.width = active.offsetWidth + 'px';
+            ind.style.transform = `translateX(${active.offsetLeft}px)`;
+        }
+        $$('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+        window.addEventListener('resize', updateTabIndicator);
 
-        function renderLogs(logs) {
-            const container = document.getElementById('logs-container');
-            if (!logs || logs.length === 0) {
-                container.innerHTML = '<div class="log-entry"><span class="log-msg">No events yet</span></div>';
+        // ─── Keyboard shortcuts ──────────────────────────────────
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                if (e.key === 'Escape') { closeAllModals(); e.target.blur(); }
                 return;
             }
-            container.innerHTML = logs.map(log => `
-                <div class="log-entry">
-                    <span class="log-time">${log.time}</span>
-                    <span class="log-msg">${escapeHtml(log.message)}</span>
-                </div>
-            `).join('');
+            if (e.key === '1') setTab('channels');
+            else if (e.key === '2') setTab('drops');
+            else if (e.key === '3') setTab('help');
+            else if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); cycleTab(1); }
+            else if (e.key === 'Tab' && e.shiftKey)  { e.preventDefault(); cycleTab(-1); }
+            else if (e.key === '/') { e.preventDefault(); setTab('drops'); $('#games-input').focus(); }
+            else if (e.key.toLowerCase() === 'n') { e.preventDefault(); openAddChannelModal(); }
+            else if (e.key === 'Escape') closeAllModals();
+        });
+        function cycleTab(dir) {
+            const order = ['channels', 'drops', 'help'];
+            const idx = order.indexOf(state.tab);
+            setTab(order[(idx + dir + order.length) % order.length]);
         }
 
-        async function togglePriority(login, currentPriority) {
-            const newPriority = currentPriority === 1 ? 2 : 1;
-            try {
-                const res = await fetch(API + `/api/channels/${login}/priority`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ priority: newPriority })
-                });
-                const data = await res.json();
-                if (data.error) {
-                    showToast(data.error, 'error');
-                } else {
-                    showToast(`${login} set to P${newPriority}`, 'success');
-                }
-                fetchChannels();
-            } catch (e) {
-                showToast('Failed to set priority: ' + e.message, 'error');
-            }
+        // ─── Toast ───────────────────────────────────────────────
+        function toast(msg, kind='info', duration=3200) {
+            const root = $('#toast-root');
+            const t = el('div', { class: 'toast ' + kind, text: msg });
+            root.appendChild(t);
+            setTimeout(() => {
+                t.classList.add('fade');
+                setTimeout(() => t.remove(), 200);
+            }, duration);
         }
 
-        async function removeChannel(login) {
-            if (!confirm(`Remove channel "${login}"?`)) return;
-            try {
-                const res = await fetch(API + `/api/channels/${login}`, { method: 'DELETE' });
-                const data = await res.json();
-                if (data.error) {
-                    showToast(data.error, 'error');
-                } else {
-                    showToast(`Channel "${login}" removed`, 'success');
-                }
-                fetchChannels();
-            } catch (e) {
-                showToast('Failed to remove channel: ' + e.message, 'error');
-            }
+        // ─── Modal ───────────────────────────────────────────────
+        function openAddChannelModal() {
+            $('#modal-add-channel').classList.add('show');
+            const inp = $('#add-channel-input');
+            inp.value = '';
+            setTimeout(() => inp.focus(), 50);
         }
-
-        function showToast(message, type) {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = `toast toast-${type}`;
-            toast.textContent = message;
-            container.appendChild(toast);
-            setTimeout(() => toast.remove(), 4000);
+        function closeAllModals() {
+            $$('.modal-overlay').forEach(m => m.classList.remove('show'));
         }
+        $$('.modal-overlay').forEach(m => {
+            m.addEventListener('click', (e) => { if (e.target === m) closeAllModals(); });
+        });
+        $$('[data-modal-close]').forEach(b => b.addEventListener('click', closeAllModals));
+        $('#btn-add-channel').addEventListener('click', openAddChannelModal);
+        $('#btn-add-channel-confirm').addEventListener('click', addChannelFromModal);
+        $('#add-channel-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') addChannelFromModal();
+        });
 
-        function showModalError(msg) {
-            const el = document.getElementById('modal-error');
-            el.textContent = msg;
-            el.classList.add('visible');
-        }
-
-        function hideModalError() {
-            document.getElementById('modal-error').classList.remove('visible');
-        }
-
-        function showAddModal() {
-            hideModalError();
-            document.getElementById('add-modal').classList.add('active');
-            document.getElementById('channel-input').focus();
-        }
-
-        function hideAddModal() {
-            document.getElementById('add-modal').classList.remove('active');
-            document.getElementById('channel-input').value = '';
-            hideModalError();
-            const btn = document.getElementById('add-btn');
-            btn.classList.remove('loading');
-            btn.textContent = 'Add';
-        }
-
-        async function addChannel() {
-            const input = document.getElementById('channel-input');
-            const login = input.value.trim().toLowerCase();
+        async function addChannelFromModal() {
+            const login = $('#add-channel-input').value.trim().toLowerCase();
             if (!login) return;
-
-            const btn = document.getElementById('add-btn');
-            btn.classList.add('loading');
-            btn.textContent = 'Adding';
-            hideModalError();
-
             try {
-                const res = await fetch(API + '/api/channels', {
+                const r = await fetch('/api/channels', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ login })
+                    body: JSON.stringify({ login }),
                 });
-                const data = await res.json();
-                if (data.error) {
-                    showModalError(data.error);
-                } else {
-                    hideAddModal();
-                    showToast(`Channel "${login}" added`, 'success');
-                    fetchChannels();
+                if (!r.ok) {
+                    const err = await r.json();
+                    toast(err.error || 'failed to add', 'error');
+                    return;
                 }
-            } catch (e) {
-                showModalError('Request failed: ' + e.message);
-            } finally {
-                btn.classList.remove('loading');
-                btn.textContent = 'Add';
-            }
+                toast('added ' + login, 'success');
+                closeAllModals();
+                refresh();
+            } catch (e) { toast('network: ' + e.message, 'error'); }
         }
 
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+        // ─── Format helpers ──────────────────────────────────────
+        function fmtNumber(n) {
+            if (n == null) return '—';
+            if (n < 1000) return String(n);
+            if (n < 1000000) return (n/1000).toFixed(1).replace(/\.0$/, '') + 'K';
+            return (n/1000000).toFixed(2).replace(/\.0+$/, '') + 'M';
         }
 
-        function refresh() {
-            // Flash the refresh indicator
-            const dot = document.getElementById('refresh-dot');
-            dot.classList.remove('active');
-            void dot.offsetWidth; // trigger reflow
-            dot.classList.add('active');
+        // ─── Render: channels table ──────────────────────────────
+        function renderChannels() {
+            const body = $('#channels-body');
+            clear(body);
+            const list = state.channels
+                .filter(c => !c.is_temporary)
+                .sort((a, b) => {
+                    const rank = c => c.is_watching ? 0 : c.is_online ? 1 : 2;
+                    const r = rank(a) - rank(b);
+                    if (r !== 0) return r;
+                    return a.display_name.localeCompare(b.display_name);
+                });
 
-            // Update timestamp
-            const now = new Date();
-            document.getElementById('last-update').textContent =
-                now.toTimeString().split(' ')[0];
-
-            fetchStats();
-            fetchChannels();
-            fetchDrops();
-            fetchWantedGames();
-            fetchLogs();
-        }
-
-        async function fetchWantedGames() {
-            try {
-                const res = await fetch(API + '/api/wanted_games');
-                const data = await res.json();
-                renderWantedGames(data.games || []);
-            } catch (e) {
-                console.error('Failed to fetch wanted games:', e);
-            }
-        }
-
-        // Live-search Twitch's full game directory via /api/games/search and
-        // populate the <datalist>. Debounced 250ms to avoid hammering the API
-        // on every keystroke. Falls back to current-inventory games if the
-        // search query is empty.
-        let _wantedGamesSearchTimer = null;
-        async function searchWantedGameSuggestions(query) {
-            const dl = document.getElementById('wanted-games-suggestions');
-            if (!dl) return;
-            if (!query || query.trim().length < 2) {
-                while (dl.firstChild) dl.removeChild(dl.firstChild);
+            if (list.length === 0) {
+                const tr = el('tr', null,
+                    el('td', { colspan: '8', style: 'padding:24px;text-align:center;color:var(--text-dim)', text: 'no channels — press N to add one' })
+                );
+                body.appendChild(tr);
+                $('#streams-meta').textContent = '0';
                 return;
             }
-            try {
-                const res = await fetch(API + '/api/games/search?q=' + encodeURIComponent(query));
-                const data = await res.json();
-                while (dl.firstChild) dl.removeChild(dl.firstChild);
-                for (const g of (data.games || [])) {
-                    const opt = document.createElement('option');
-                    opt.value = g;
-                    dl.appendChild(opt);
+
+            for (const c of list) {
+                const priClass = c.has_active_drop ? 'p0' : c.priority === 1 ? 'p1' : 'p2';
+                const priLabel = c.has_active_drop ? 'P0' : 'P' + c.priority;
+                const statusClass = c.is_watching ? 'watching' : c.is_online ? 'live' : 'offline';
+                const statusLabel = c.is_watching ? 'WATCH' : c.is_online ? 'LIVE' : 'OFF';
+
+                const gameTd = el('td');
+                if (c.game_name) {
+                    const span = el('span', { class: 'game-cell' + (c.has_active_drop ? ' has-drop' : '') });
+                    span.textContent = c.has_active_drop && c.drop_required > 0
+                        ? c.game_name + ' · ' + Math.floor(c.drop_progress * 100 / c.drop_required) + '%'
+                        : c.game_name;
+                    gameTd.appendChild(span);
+                } else {
+                    gameTd.appendChild(el('span', { class: 'game-cell', style: 'color:var(--text-dim)', text: '—' }));
                 }
-            } catch (e) {
-                console.error('Game search failed:', e);
+
+                const numCell = (val, posClass) => {
+                    if (!val || val <= 0) return el('span', { class: 'num muted', text: '—' });
+                    const s = el('span', { class: 'num' + (posClass ? ' pos' : ''), text: (posClass ? '+' : '') + fmtNumber(val) });
+                    return s;
+                };
+
+                const togglePri = c.priority === 1 ? 2 : 1;
+
+                const tr = el('tr', { data: { login: c.login } },
+                    el('td', null, el('span', { class: 'pri-tag ' + priClass, text: priLabel })),
+                    el('td', null, el('span', { class: 'ch-name' + (c.is_online ? '' : ' offline'), text: c.display_name })),
+                    el('td', null, el('span', { class: 'status-cell' },
+                        el('span', { class: 'status-dot ' + statusClass }),
+                        el('span', { class: 'status-text', text: statusLabel })
+                    )),
+                    gameTd,
+                    el('td', { class: 'r' }, numCell(c.balance, false)),
+                    el('td', { class: 'r' }, numCell(c.earned, true)),
+                    el('td', { class: 'r' }, c.claims > 0
+                        ? el('span', { class: 'num', text: String(c.claims) })
+                        : el('span', { class: 'num muted', text: '—' })),
+                    el('td', { class: 'r' },
+                        el('div', { class: 'row-actions' },
+                            el('button', {
+                                class: 'btn btn-icon',
+                                title: 'Toggle priority (P' + togglePri + ')',
+                                data: { act: 'pri', login: c.login, newpri: String(togglePri) },
+                                text: 'P' + togglePri,
+                            }),
+                            el('button', {
+                                class: 'btn btn-icon btn-danger',
+                                title: 'Remove',
+                                data: { act: 'del', login: c.login },
+                                text: '×',
+                            }),
+                        )
+                    ),
+                );
+                body.appendChild(tr);
             }
+            $('#streams-meta').textContent = list.length + ' channels · ' + list.filter(c => c.is_online).length + ' online';
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            const inp = document.getElementById('wanted-games-input');
-            if (inp) {
-                inp.addEventListener('input', (e) => {
-                    clearTimeout(_wantedGamesSearchTimer);
-                    _wantedGamesSearchTimer = setTimeout(
-                        () => searchWantedGameSuggestions(e.target.value),
-                        250
-                    );
-                });
+        $('#channels-body').addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]');
+            if (!btn) return;
+            const act = btn.dataset.act;
+            const login = btn.dataset.login;
+            if (act === 'del') {
+                if (!confirm('remove ' + login + '?')) return;
+                try {
+                    const r = await fetch('/api/channels/' + encodeURIComponent(login), { method: 'DELETE' });
+                    if (!r.ok) { const j = await r.json(); toast(j.error || 'failed', 'error'); return; }
+                    toast('removed ' + login, 'success');
+                    refresh();
+                } catch (e) { toast(e.message, 'error'); }
+            } else if (act === 'pri') {
+                const newpri = parseInt(btn.dataset.newpri, 10);
+                try {
+                    const r = await fetch('/api/channels/' + encodeURIComponent(login) + '/priority', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ priority: newpri }),
+                    });
+                    if (!r.ok) { const j = await r.json(); toast(j.error || 'failed', 'error'); return; }
+                    toast(login + ' → P' + newpri, 'success');
+                    refresh();
+                } catch (e) { toast(e.message, 'error'); }
             }
         });
 
-        // Build the wanted-games list with createElement + textContent so user-supplied
-        // game names can never inject markup. No template-string assignment to .innerHTML.
-        function renderWantedGames(games) {
-            const ul = document.getElementById('wanted-games-list');
-            while (ul.firstChild) ul.removeChild(ul.firstChild);
-
-            if (!games || games.length === 0) {
-                const li = document.createElement('li');
-                li.style.color = 'var(--text-muted)';
-                li.style.padding = '8px';
-                li.textContent = 'empty — add a game below';
-                ul.appendChild(li);
+        // ─── Render: active drop strip ───────────────────────────
+        function renderActiveDrop() {
+            const host = $('#active-drop-host');
+            clear(host);
+            const active = state.drops.find(d => d.status === 'ACTIVE');
+            if (!active) {
+                host.appendChild(el('div', { class: 'active-drop-empty', text: 'no active drop · waiting for next pick' }));
                 return;
             }
+            const pct = active.required > 0 ? Math.min(100, Math.floor(active.progress * 100 / active.required)) : 0;
+            const remaining = active.required > 0 ? Math.max(0, active.required - active.progress) : 0;
 
-            games.forEach((g, i) => {
-                const li = document.createElement('li');
-                li.dataset.idx = String(i);
-                li.style.cssText = 'display:flex;align-items:center;padding:6px 8px;background:var(--bg-secondary);margin-bottom:4px;border:1px solid var(--border)';
+            const titleNode = el('div', { class: 'active-drop-title' });
+            titleNode.appendChild(document.createTextNode(active.campaign_name));
+            if (active.is_auto_discovered) {
+                titleNode.appendChild(el('span', { class: 'auto-tag', text: 'Auto' }));
+            }
+            titleNode.appendChild(el('span', { class: 'arrow', text: '▸' }));
+            titleNode.appendChild(el('span', { class: 'game', text: active.game_name }));
 
-                const idxSpan = document.createElement('span');
-                idxSpan.style.cssText = 'width:24px;color:var(--text-muted)';
-                idxSpan.textContent = (i + 1) + '.';
-                li.appendChild(idxSpan);
+            const metaNode = el('div', { class: 'active-drop-meta' });
+            metaNode.appendChild(document.createTextNode('channel '));
+            metaNode.appendChild(el('span', { class: 'ch', text: active.channel_login || '—' }));
 
-                const nameSpan = document.createElement('span');
-                nameSpan.style.flex = '1';
-                nameSpan.textContent = g;
-                li.appendChild(nameSpan);
+            const progressLeft = el('span', null);
+            progressLeft.appendChild(el('strong', { text: String(active.progress) }));
+            progressLeft.appendChild(document.createTextNode('/' + active.required + ' min · ' + pct + '%'));
 
-                const upBtn = document.createElement('button');
-                upBtn.className = 'btn-small';
-                upBtn.textContent = '↑';
-                upBtn.disabled = (i === 0);
-                upBtn.onclick = () => moveWantedGame(i, -1);
-                li.appendChild(upBtn);
+            const wrap = el('div', { class: 'active-drop' },
+                el('div', { class: 'active-drop-head' }, titleNode, metaNode),
+                el('div', { class: 'progress-bar' },
+                    el('div', { class: 'progress-fill', style: 'width:' + pct + '%' })),
+                el('div', { class: 'progress-text' },
+                    progressLeft,
+                    el('span', { text: remaining + ' min remaining · ' + (active.drop_name || '—') }),
+                ),
+            );
+            host.appendChild(wrap);
+        }
 
-                const downBtn = document.createElement('button');
-                downBtn.className = 'btn-small';
-                downBtn.textContent = '↓';
-                downBtn.disabled = (i === games.length - 1);
-                downBtn.onclick = () => moveWantedGame(i, +1);
-                li.appendChild(downBtn);
+        // ─── Render: drops table ─────────────────────────────────
+        function renderDrops() {
+            const body = $('#drops-body');
+            clear(body);
+            if (state.drops.length === 0) {
+                body.appendChild(el('tr', null,
+                    el('td', { colspan: '6', style: 'padding:24px;text-align:center;color:var(--text-dim)', text: 'no campaigns' })
+                ));
+                $('#drops-meta').textContent = '0';
+                return;
+            }
+            for (const d of state.drops) {
+                const status = d.status || (d.is_enabled ? 'ACTIVE' : 'DISABLED');
+                const isCompleted = status === 'COMPLETED';
+                const isDisabled = status === 'DISABLED';
+                const toggleOn = !isDisabled && !isCompleted;
+                let toggleClass = 'toggle';
+                if (toggleOn) toggleClass += ' on';
+                if (isCompleted) toggleClass += ' disabled-ui';
 
-                const removeBtn = document.createElement('button');
-                removeBtn.className = 'btn-small';
-                removeBtn.textContent = '✕';
-                removeBtn.onclick = () => removeWantedGame(i);
-                li.appendChild(removeBtn);
+                const campaignTd = el('td');
+                campaignTd.appendChild(document.createTextNode(d.campaign_name));
+                if (d.is_auto_discovered) campaignTd.appendChild(el('span', { class: 'auto-tag', text: 'Auto' }));
 
+                const progress = d.required > 0
+                    ? d.progress + '/' + d.required + ' · ' + d.percent + '%'
+                    : '—';
+
+                const channel = d.channel_login || '—';
+                const tr = el('tr', null,
+                    campaignTd,
+                    el('td', null, el('span', { class: 'game-cell', text: d.game_name || '—' })),
+                    el('td', null, el('span', { class: 'num', text: progress })),
+                    el('td', null, el('span', { class: 'ch-name' + (channel === '—' ? ' offline' : ''), text: channel })),
+                    el('td', null, el('span', { class: 'status-pill ' + status.toLowerCase(), text: status })),
+                    el('td', { class: 'r' },
+                        el('span', {
+                            class: toggleClass,
+                            data: { toggle: '', cid: d.campaign_id, enabled: String(toggleOn) },
+                        })
+                    ),
+                );
+                body.appendChild(tr);
+            }
+            const activeCount = state.drops.filter(d => d.status === 'ACTIVE').length;
+            const queuedCount = state.drops.filter(d => d.status === 'QUEUED').length;
+            $('#drops-meta').textContent = activeCount + ' active · ' + queuedCount + ' queued · ' + state.drops.length + ' total';
+        }
+
+        $('#drops-body').addEventListener('click', async (e) => {
+            const t = e.target.closest('[data-toggle]');
+            if (!t || t.classList.contains('disabled-ui')) return;
+            const cid = t.dataset.cid;
+            const newEnabled = t.dataset.enabled !== 'true';
+            try {
+                const r = await fetch('/api/drops/' + encodeURIComponent(cid) + '/toggle', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: newEnabled }),
+                });
+                if (!r.ok) { const j = await r.json(); toast(j.error || 'failed', 'error'); return; }
+                toast('campaign ' + (newEnabled ? 'enabled' : 'disabled'), 'success');
+                refresh();
+            } catch (e) { toast(e.message, 'error'); }
+        });
+
+        // ─── Render: event log ───────────────────────────────────
+        function classifyLog(msg) {
+            if (/Failed|error/i.test(msg)) return 'error';
+            if (/warning/i.test(msg)) return 'warn';
+            if (/Claimed bonus/i.test(msg)) return 'claim';
+            if (/^\+\d+ points/.test(msg)) return 'points';
+            return '';
+        }
+        function renderLogs() {
+            const list = $('#log-list');
+            clear(list);
+            if (!state.logs.length) {
+                list.appendChild(el('div', { class: 'log-entry' },
+                    el('span', { class: 'log-msg', style: 'color:var(--text-dim)', text: 'no events yet' })
+                ));
+                return;
+            }
+            for (const l of state.logs) {
+                list.appendChild(el('div', { class: 'log-entry' },
+                    el('span', { class: 'log-time', text: l.time }),
+                    el('span', { class: 'log-msg ' + classifyLog(l.message), text: l.message }),
+                ));
+            }
+        }
+
+        // ─── Render: stats footer ────────────────────────────────
+        function tickCounter(el, from, to, duration=600) {
+            const start = performance.now();
+            function step(now) {
+                const t = Math.min(1, (now - start) / duration);
+                const eased = 1 - Math.pow(1 - t, 3);
+                el.textContent = String(Math.round(from + (to - from) * eased));
+                if (t < 1) requestAnimationFrame(step);
+            }
+            requestAnimationFrame(step);
+        }
+        function renderStats() {
+            const s = state.stats;
+            const numericStats = {
+                's-points': s.total_points || 0,
+                's-claims': s.total_claims || 0,
+                's-drops':  s.active_drops || 0,
+            };
+            for (const [id, val] of Object.entries(numericStats)) {
+                const node = $('#' + id);
+                const prev = state.counters[id] || 0;
+                if (prev !== val) tickCounter(node, prev, val);
+                state.counters[id] = val;
+            }
+            $('#s-online').textContent = (s.channels_online || 0) + '/' + (s.channels_total || 0);
+            $('#s-watching').textContent = (s.channels_watching || 0) + '/2';
+
+            $('#user-info').textContent = (s.user || '—') + ' · ' + (s.user_id || '—');
+            $('#version').textContent = s.version ? 'v' + s.version : 'v—';
+            $('#uptime').textContent = s.uptime || '--:--:--';
+            $('#last-sync').textContent = new Date().toLocaleTimeString('en-GB');
+
+            // update banner — built via DOM so URLs can't sneak HTML in
+            const banner = $('#update-banner');
+            clear(banner);
+            const hasAny = s.has_stable_update || s.has_beta_update;
+            if (hasAny) {
+                banner.appendChild(document.createTextNode('↑ Update available: '));
+                if (s.has_stable_update) {
+                    const a = el('a', { href: s.stable_url, target: '_blank', rel: 'noopener', text: 'v' + s.latest_stable + ' (stable)' });
+                    banner.appendChild(a);
+                }
+                if (s.has_beta_update) {
+                    if (s.has_stable_update) banner.appendChild(document.createTextNode(' · '));
+                    const a = el('a', { href: s.beta_url, target: '_blank', rel: 'noopener', text: 'v' + s.latest_beta + ' (beta)' });
+                    banner.appendChild(a);
+                }
+                banner.classList.add('show');
+            } else {
+                banner.classList.remove('show');
+            }
+        }
+
+        // ─── Render: wanted games ────────────────────────────────
+        let dragSrc = null;
+        function renderWantedGames() {
+            const ul = $('#games-list');
+            clear(ul);
+            if (state.wantedGames.length === 0) {
+                ul.appendChild(el('div', { class: 'games-empty', text: 'no games yet · type below to add' }));
+                return;
+            }
+            state.wantedGames.forEach((g, i) => {
+                const li = el('li', { class: 'games-item', draggable: 'true', data: { idx: String(i) } },
+                    el('span', { class: 'games-handle', text: '⋮⋮' }),
+                    el('span', { class: 'games-rank', text: String(i+1).padStart(2,'0') }),
+                    el('span', { class: 'games-name', text: g }),
+                    el('button', {
+                        class: 'btn btn-icon btn-danger',
+                        title: 'Remove',
+                        data: { removeGame: g },
+                        text: '×',
+                    }),
+                );
+                li.addEventListener('dragstart', (e) => {
+                    dragSrc = i;
+                    li.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                });
+                li.addEventListener('dragend', () => {
+                    $$('.games-item').forEach(el => el.classList.remove('dragging', 'drag-over'));
+                });
+                li.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    $$('.games-item').forEach(el => el.classList.remove('drag-over'));
+                    li.classList.add('drag-over');
+                });
+                li.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const dst = i;
+                    if (dragSrc == null || dragSrc === dst) return;
+                    const next = state.wantedGames.slice();
+                    const [moved] = next.splice(dragSrc, 1);
+                    next.splice(dst, 0, moved);
+                    saveWantedGames(next);
+                });
                 ul.appendChild(li);
             });
         }
+        $('#games-list').addEventListener('click', async (e) => {
+            const btn = e.target.closest('[data-remove-game]');
+            if (!btn) return;
+            const game = btn.dataset.removeGame;
+            const next = state.wantedGames.filter(g => g.toLowerCase() !== game.toLowerCase());
+            saveWantedGames(next);
+        });
 
-        function readCurrentWantedGames() {
-            return Array.from(document.querySelectorAll('#wanted-games-list li[data-idx] > span:nth-child(2)'))
-                .map(s => s.textContent);
+        async function saveWantedGames(games) {
+            try {
+                const r = await fetch('/api/wanted_games', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ games }),
+                });
+                if (!r.ok) { const j = await r.json(); toast(j.error || 'failed', 'error'); return; }
+                state.wantedGames = games;
+                renderWantedGames();
+                toast('wanted games updated', 'success');
+            } catch (e) { toast(e.message, 'error'); }
         }
 
-        async function putWantedGames(games) {
+        // ─── Wanted games autocomplete ───────────────────────────
+        let sugTimer = null;
+        $('#games-input').addEventListener('input', () => {
+            const q = $('#games-input').value.trim();
+            state.sugQuery = q;
+            state.sugCursor = -1;
+            if (sugTimer) clearTimeout(sugTimer);
+            if (q.length < 2) { hideSuggestions(); return; }
+            sugTimer = setTimeout(() => fetchSuggestions(q), 250);
+        });
+        $('#games-input').addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (state.suggestions.length === 0) return;
+                state.sugCursor = Math.min(state.suggestions.length - 1, state.sugCursor + 1);
+                renderSuggestions();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                state.sugCursor = Math.max(-1, state.sugCursor - 1);
+                renderSuggestions();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                addCurrentGame();
+            } else if (e.key === 'Escape') {
+                hideSuggestions();
+                $('#games-input').blur();
+            }
+        });
+        $('#games-add-btn').addEventListener('click', addCurrentGame);
+
+        async function fetchSuggestions(q) {
             try {
-                const res = await fetch(API + '/api/wanted_games', {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({games})
+                const r = await fetch('/api/games/search?q=' + encodeURIComponent(q));
+                if (!r.ok) return;
+                const j = await r.json();
+                if (q !== state.sugQuery) return;
+                state.suggestions = j.games || [];
+                state.sugCursor = -1;
+                renderSuggestions();
+            } catch (e) { /* silent */ }
+        }
+        function renderSuggestions() {
+            const box = $('#games-suggestions');
+            clear(box);
+            if (state.suggestions.length === 0) {
+                box.appendChild(el('div', { class: 'sug-empty', text: 'no matches' }));
+                box.classList.add('show');
+                return;
+            }
+            state.suggestions.forEach((g, i) => {
+                const item = el('div', {
+                    class: 'sug-item' + (i === state.sugCursor ? ' active' : ''),
+                    data: { game: g },
+                    text: g,
                 });
-                const data = await res.json();
-                renderWantedGames(data.games || []);
+                item.addEventListener('click', () => {
+                    const next = state.wantedGames.slice();
+                    if (!next.some(x => x.toLowerCase() === g.toLowerCase())) {
+                        next.push(g);
+                        saveWantedGames(next);
+                    } else {
+                        toast('already in list', 'error', 1800);
+                    }
+                    $('#games-input').value = '';
+                    hideSuggestions();
+                });
+                box.appendChild(item);
+            });
+            box.classList.add('show');
+        }
+        function hideSuggestions() {
+            $('#games-suggestions').classList.remove('show');
+            state.suggestions = [];
+            state.sugCursor = -1;
+        }
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.games-add')) hideSuggestions();
+        });
+
+        function addCurrentGame() {
+            let game;
+            if (state.sugCursor >= 0 && state.sugCursor < state.suggestions.length) {
+                game = state.suggestions[state.sugCursor];
+            } else {
+                game = $('#games-input').value.trim();
+            }
+            if (!game) return;
+            const next = state.wantedGames.slice();
+            if (next.some(g => g.toLowerCase() === game.toLowerCase())) {
+                toast('already in list', 'error', 1800);
+                return;
+            }
+            next.push(game);
+            saveWantedGames(next);
+            $('#games-input').value = '';
+            hideSuggestions();
+        }
+
+        // ─── Refresh loop ────────────────────────────────────────
+        async function refresh() {
+            try {
+                const [stats, channels, drops, logs, wanted] = await Promise.all([
+                    fetch('/api/stats').then(r => r.json()),
+                    fetch('/api/channels').then(r => r.json()),
+                    fetch('/api/drops').then(r => r.json()),
+                    fetch('/api/logs').then(r => r.json()),
+                    fetch('/api/wanted_games').then(r => r.json()),
+                ]);
+                state.stats = stats;
+                state.channels = channels;
+                state.drops = drops;
+                state.logs = logs;
+                state.wantedGames = wanted.games || [];
+
+                renderStats();
+                renderChannels();
+                renderActiveDrop();
+                renderDrops();
+                renderLogs();
+                renderWantedGames();
             } catch (e) {
-                showToast('Failed to update wanted games: ' + e.message, 'error');
+                console.error('refresh failed', e);
             }
         }
 
-        async function addWantedGame() {
-            const input = document.getElementById('wanted-games-input');
-            const name = input.value.trim();
-            if (!name) return;
-            const current = readCurrentWantedGames();
-            current.push(name);
-            input.value = '';
-            await putWantedGames(current);
-        }
-
-        async function removeWantedGame(idx) {
-            const current = readCurrentWantedGames();
-            current.splice(idx, 1);
-            await putWantedGames(current);
-        }
-
-        async function moveWantedGame(idx, dir) {
-            const current = readCurrentWantedGames();
-            const target = idx + dir;
-            if (target < 0 || target >= current.length) return;
-            [current[idx], current[target]] = [current[target], current[idx]];
-            await putWantedGames(current);
-        }
-
-        // Handle Enter key in add modal
-        document.getElementById('channel-input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') addChannel();
-        });
-
-        // Click outside modal to close
-        document.getElementById('add-modal').addEventListener('click', (e) => {
-            if (e.target.classList.contains('modal-overlay')) hideAddModal();
-        });
-
-        // Initial load
+        requestAnimationFrame(updateTabIndicator);
         refresh();
-
-        // Auto-refresh every 5 seconds
-        refreshInterval = setInterval(refresh, 5000);
+        setInterval(refresh, 5000);
+    })();
     </script>
 </body>
 </html>
