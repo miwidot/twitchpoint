@@ -822,30 +822,8 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 	go f.processDrops()
 }
 
-// scrubStaleCompleted removes campaign IDs from CompletedCampaigns whose drops
-// are again unclaimed in the new inventory. Twitch reuses the same campaign ID
-// for daily-rolling campaigns (e.g. "Marble Day 245") and resets the drops —
-// without this scrub the bot silently skips them forever.
-func (f *Farmer) scrubStaleCompleted(campaigns []twitch.DropCampaign) {
-	changed := false
-	for _, c := range campaigns {
-		if !f.cfg.IsCampaignCompleted(c.ID) {
-			continue
-		}
-		hasUnclaimed := false
-		for _, d := range c.Drops {
-			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
-				hasUnclaimed = true
-				break
-			}
-		}
-		if hasUnclaimed {
-			f.cfg.UnmarkCampaignCompleted(c.ID)
-			f.addLog("[Drops] Campaign %q has unclaimed drops again — un-marking completed", c.Name)
-			changed = true
-		}
-	}
-	if changed {
-		f.cfg.Save()
-	}
-}
+// (scrubStaleCompleted was removed — it conflicted with the
+// DropCurrentSession poll-based completion which is now authoritative.
+// Daily-rolling campaigns where Twitch reuses the same ID across days
+// will need manual un-disable via TUI 't' if they get stuck completed —
+// in practice Twitch tends to issue new campaign IDs per day.)
