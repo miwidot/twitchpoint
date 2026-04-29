@@ -49,13 +49,29 @@ func (s *Service) PollProgressOnce() {
 
 	session, err := s.gql.GetCurrentDropSession(pickedID)
 	if err != nil {
-		// Silent — this happens during stream offline/transition; not worth a log.
+		// Silent on the UI feed — this happens during stream
+		// offline/transition; file log is enough.
+		if s.writeLogFile != nil {
+			s.writeLogFile(fmt.Sprintf("[Drops/Poll] CurrentDrop fetch failed for pick=%s campaign=%s: %v",
+				pickedID, pickedCampID, err))
+		}
 		return
 	}
 	if session == nil {
-		// Twitch reports no active drop session for this channel. Could
-		// mean the streamer's drops aren't crediting us — let the stall
-		// cooldown handle it.
+		// Twitch reports no active drop session for this channel. Two
+		// common causes:
+		//   1. Drop just hit 100% — Twitch goes quiet on the session
+		//      info between completion and inventory advancing to the
+		//      next drop. The 15-min CheckLoop will catch this on the
+		//      next ProcessDrops cycle.
+		//   2. Streamer's drops aren't crediting us at all — the stall
+		//      tracker handles that path.
+		// Either way we want a file-only log so post-mortem can spot
+		// when the bot went into "blind heartbeat" mode.
+		if s.writeLogFile != nil {
+			s.writeLogFile(fmt.Sprintf("[Drops/Poll] no session for pick=%s campaign=%s — Twitch returned nil",
+				pickedID, pickedCampID))
+		}
 		return
 	}
 

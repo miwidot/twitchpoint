@@ -202,9 +202,17 @@ func (w *Watcher) runLoop(ctx context.Context, sess *watchSession) {
 		case perr != nil:
 			w.log("[Drops/Watch] %s CurrentDrop poll failed: %v", sess.channelLogin, perr)
 		case sessionInfo == nil:
-			// Twitch has not (yet) initialized a drop session for this user
-			// on this channel. Common for the first 1-2 cycles after a fresh
-			// pick — keep sending watch events and recheck next cycle.
+			// Twitch returned nil session. Three common causes:
+			//   1. First 1-2 cycles after a fresh pick — Twitch hasn't
+			//      initialized a session yet.
+			//   2. Drop just hit 100% — session goes nil between
+			//      completion and inventory advancing to the next drop.
+			//   3. Streamer's broadcast hiccupped — broadcast_id not
+			//      yet bound to the campaign, so no session.
+			// Watcher keeps heartbeating; the file log line lets the
+			// post-mortem see when we went blind.
+			w.log("[Drops/Watch] %s no session info (Twitch returned nil) — heartbeating blind",
+				sess.channelLogin)
 		default:
 			if w.progressC != nil {
 				select {
