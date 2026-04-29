@@ -211,6 +211,11 @@ func (p *PubSubClient) handleMessage(data *PubSubMsgData) {
 	case strings.HasPrefix(topic, "raid."):
 		channelID := strings.TrimPrefix(topic, "raid.")
 		p.handleRaid(channelID, data.Message)
+	case strings.HasPrefix(topic, "user-drop-events."):
+		p.handleDropEvent(data.Message)
+	case strings.HasPrefix(topic, "broadcast-settings-update."):
+		channelID := strings.TrimPrefix(topic, "broadcast-settings-update.")
+		p.handleBroadcastSettings(channelID, data.Message)
 	}
 }
 
@@ -412,4 +417,66 @@ func generateNonce() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// handleDropEvent parses user-drop-events messages.
+// Twitch sends two relevant types: drop-progress and drop-claim.
+func (p *PubSubClient) handleDropEvent(rawMessage string) {
+	var msg struct {
+		Type string `json:"type"`
+		Data struct {
+			DropID              string `json:"drop_id"`
+			CampaignID          string `json:"campaign_id"`
+			CurrentProgressMin  int    `json:"current_progress_min"`
+			RequiredProgressMin int    `json:"required_progress_min"`
+			DropInstanceID      string `json:"drop_instance_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(rawMessage), &msg); err != nil {
+		return
+	}
+
+	switch msg.Type {
+	case "drop-progress":
+		p.events <- FarmerEvent{
+			Type: EventDropProgress,
+			Data: DropProgressData{
+				CampaignID:             msg.Data.CampaignID,
+				DropID:                 msg.Data.DropID,
+				CurrentMinutesWatched:  msg.Data.CurrentProgressMin,
+				RequiredMinutesWatched: msg.Data.RequiredProgressMin,
+			},
+		}
+	case "drop-claim":
+		p.events <- FarmerEvent{
+			Type: EventDropClaim,
+			Data: DropClaimData{
+				CampaignID:     msg.Data.CampaignID,
+				DropID:         msg.Data.DropID,
+				DropInstanceID: msg.Data.DropInstanceID,
+			},
+		}
+	}
+}
+
+// handleBroadcastSettings parses broadcast-settings-update messages
+// (game/title changes mid-stream).
+func (p *PubSubClient) handleBroadcastSettings(channelID, rawMessage string) {
+	var msg struct {
+		OldGame string `json:"old_game"`
+		Game    string `json:"game"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(rawMessage), &msg); err != nil {
+		return
+	}
+	p.events <- FarmerEvent{
+		ChannelID: channelID,
+		Type:      EventGameChange,
+		Data: GameChangeData{
+			OldGameName: msg.OldGame,
+			NewGameName: msg.Game,
+			Title:       msg.Status,
+		},
+	}
 }
