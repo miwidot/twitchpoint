@@ -170,6 +170,10 @@ func (s *SpadeTracker) heartbeatLoop(ch *spadeChannel) {
 const heartbeatMaxRetries = 2
 
 func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
+	// Payload fields match TwitchDropsMiner exactly. Twitch's drop credit system
+	// appears to silently drop heartbeats missing any of hidden/location/logged_in/muted
+	// (community points still credit on the lighter payload, but drop minutes don't —
+	// observed on this bot's account vs TDM in identical conditions).
 	payload := []map[string]interface{}{
 		{
 			"event": "minute-watched",
@@ -178,8 +182,12 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 				"broadcast_id": ch.broadcastID,
 				"player":       "site",
 				"user_id":      s.userID,
-				"live":         true,
 				"channel":      ch.channelLogin,
+				"hidden":       false,
+				"live":         true,
+				"location":     "channel",
+				"logged_in":    true,
+				"muted":        false,
 			},
 		},
 	}
