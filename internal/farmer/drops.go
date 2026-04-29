@@ -108,17 +108,16 @@ func (f *Farmer) pollDropProgressOnce() {
 		RequiredMinutesWatched: session.RequiredMinutesWatched,
 	})
 
-	// If Twitch's session reports the drop is complete (currentMinutes >= requiredMinutes),
-	// the campaign is done — even if the dashboard query lies about claimed:false.
-	// Mark it completed and trigger an out-of-cycle re-pick so we move on.
+	// Per spec 6: poll never marks campaigns completed itself. When the current
+	// drop is at 100%, trigger an out-of-cycle processDrops so the inventory
+	// pull re-evaluates. autoClaimAndMarkCompleted (using the InInventory
+	// signal) decides whether the WHOLE campaign is done or there are more
+	// drops left to farm. This avoids the v1.8.0 bug where poll-completion
+	// of one drop in a multi-drop campaign falsely marked the entire campaign.
 	if session.RequiredMinutesWatched > 0 && session.CurrentMinutesWatched >= session.RequiredMinutesWatched {
-		if !f.cfg.IsCampaignCompleted(pickedCampID) {
-			f.cfg.MarkCampaignCompleted(pickedCampID)
-			_ = f.cfg.Save()
-			f.addLog("[Drops/Poll] campaign %s drop complete per Twitch session (%d/%d) — marking completed",
-				pickedCampID, session.CurrentMinutesWatched, session.RequiredMinutesWatched)
-			go f.processDrops()
-		}
+		f.writeLogFile(fmt.Sprintf("[Drops/Poll] drop complete on campaign %s (%d/%d) — triggering re-evaluation",
+			pickedCampID, session.CurrentMinutesWatched, session.RequiredMinutesWatched))
+		go f.processDrops()
 	}
 }
 
@@ -381,6 +380,19 @@ func (f *Farmer) autoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
 			f.cfg.MarkCampaignCompleted(c.ID)
 			f.cfg.Save()
 			f.addLog("[Drops] Campaign %q fully claimed — marked as completed", c.Name)
+			continue
+		}
+
+		// v1.8.0 source-of-truth fix: dashboard's claimed:false is unreliable
+		// (Marble Day 245 reported claimed:false yet poll showed 744/720). The
+		// authoritative signal is dropCampaignsInProgress (InInventory). If a
+		// campaign has watchable drops AND is NOT in the inventory progress
+		// list, the user has finished it externally — mark completed so we
+		// stop wasting cycles on it.
+		if hasWatchable && !c.InInventory {
+			f.cfg.MarkCampaignCompleted(c.ID)
+			f.cfg.Save()
+			f.addLog("[Drops] Campaign %q not in inventory progress list — marked completed (already finished externally)", c.Name)
 		}
 	}
 }
@@ -721,15 +733,46 @@ func (f *Farmer) SearchGameCategories(query string, limit int) ([]string, error)
 // the in-memory ActiveDrops slice (so the web/TUI sees the new value within
 // 1 second instead of waiting for the next 15-min poll). Also updates the
 // matching channel's HasActiveDrop progress for TUI rendering.
+//
+// Per-spec section 6.6: matches by (CampaignID, DropID). When the payload's
+// DropID differs from the cached ActiveDrop's drop, the cached row's
+// DropName + Required + Progress are all replaced from the payload (via a
+// lookup against campaignCache to find the human-readable drop name).
 func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
+	// Resolve the payload's drop name from the campaign cache so the UI can
+	// show "DROP 6" instead of stale "DROP 1" when Twitch's session has
+	// advanced to a later drop in a multi-drop campaign.
+	resolvedName := ""
+	resolvedRequired := data.RequiredMinutesWatched
+	f.drops.mu.RLock()
+	if c, ok := f.drops.campaignCache[data.CampaignID]; ok {
+		for _, d := range c.Drops {
+			if d.ID == data.DropID {
+				resolvedName = d.BenefitName
+				if resolvedName == "" {
+					resolvedName = d.Name
+				}
+				if resolvedRequired == 0 && d.RequiredMinutesWatched > 0 {
+					resolvedRequired = d.RequiredMinutesWatched
+				}
+				break
+			}
+		}
+	}
+	f.drops.mu.RUnlock()
+
 	f.drops.mu.Lock()
 	updated := false
 	for i := range f.drops.activeDrops {
 		if f.drops.activeDrops[i].CampaignID != data.CampaignID {
 			continue
 		}
-		if data.RequiredMinutesWatched > 0 && f.drops.activeDrops[i].Required != data.RequiredMinutesWatched {
-			f.drops.activeDrops[i].Required = data.RequiredMinutesWatched
+		// If the cached row already targets a different drop, swap to the new one.
+		if data.DropID != "" && resolvedName != "" {
+			f.drops.activeDrops[i].DropName = resolvedName
+		}
+		if resolvedRequired > 0 {
+			f.drops.activeDrops[i].Required = resolvedRequired
 		}
 		f.drops.activeDrops[i].Progress = data.CurrentMinutesWatched
 		if f.drops.activeDrops[i].Required > 0 {
@@ -746,9 +789,11 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 		updated = true
 		break
 	}
-	if updated && f.drops.lastPickCampaignID == data.CampaignID {
-		f.drops.lastPickProgress = data.CurrentMinutesWatched
-	}
+	// IMPORTANT: do NOT mutate lastPickProgress here. That field is the
+	// stall-detection baseline and must come exclusively from snapshotPickProgress
+	// at the end of each inventory cycle. Live WebSocket / poll updates
+	// rewriting it would shift the baseline forward between cycles, causing
+	// healthy channels to register as stalled at the next applyStallDetection.
 	f.drops.mu.Unlock()
 
 	if updated {

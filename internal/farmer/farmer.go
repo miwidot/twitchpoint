@@ -634,18 +634,24 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 		if ok {
 			snap := ch.Snapshot()
 			hasDropBefore := snap.HasActiveDrop
-			campaignID := snap.CampaignID
 
 			ch.SetOffline()
 			f.spade.StopWatching(ch.ChannelID)
 			f.addLog("%s went OFFLINE", ch.DisplayName)
 
-			// v1.7.0: drop replacement is handled by the next selector cycle (≤5 min).
-			// No more synchronous failover state machine — selector picks fresh from
-			// the live drops-enabled pool every cycle, so a dead channel just means
-			// "no drop assigned for up to one cycle" rather than orphaned state.
-			_ = hasDropBefore
-			_ = campaignID
+			// v1.8.0 (per spec section 2): if the picked drop channel just went
+			// offline, trigger an out-of-cycle processDrops so the selector
+			// picks a new drops-enabled channel within seconds instead of
+			// waiting up to 15 minutes for the next inventory cycle.
+			// Non-pick channels go through the normal slot-fill path only.
+			if hasDropBefore {
+				f.drops.mu.RLock()
+				isCurrentPick := f.drops.currentPickID == ch.ChannelID
+				f.drops.mu.RUnlock()
+				if isCurrentPick {
+					go f.processDrops()
+				}
+			}
 
 			// Try to fill freed Spade slot
 			f.fillSpadeSlots()
