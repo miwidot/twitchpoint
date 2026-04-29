@@ -1,3 +1,55 @@
+== 2026-04-29 21:55 == Refactor: Phase 2c — extract StallTracker into drops ==
+
+Cooldown / stall-detection logic moves out of farmer's dropState
+into a dedicated drops.StallTracker. The tracker owns its own mutex,
+its own baseline (lastPickChannelID/CampaignID/Progress), and the
+cooldown map; the cooldownReason enum + cooldownEntry leave farmer
+entirely.
+
+What changed:
+- New internal/drops/stall.go (~200 lines):
+  - Exported types: StallTracker, CooldownReason (with CooldownStall
+    and CooldownManual constants), StallCooldownDuration constant.
+  - Methods: NewStallTracker(log), SnapshotPick(pick, campaigns),
+    Apply(campaigns), SetManual(channelID, dur), ActiveSkipSet(),
+    LastPickCampaignID().
+  - Lock-isolated from farmer's dropState — never reaches into
+    farmer state, never holds f.drops.mu.
+- New internal/drops/stall_test.go: 7 unit tests covering the full
+  state machine — no-baseline → no cooldown, progress advance →
+  no cooldown, stall → cooldown, stall recovery clears stall but
+  not manual, expired entries pruned, baseline snapshot/clear.
+- farmer/drops.go shrinks by ~135 lines:
+  - Deleted: applyStallDetection, setManualCooldown,
+    activeStallSkipSet, snapshotPickProgress, plus the cooldown
+    enum + entry struct + stallCooldownDuration constant.
+  - dropState struct loses lastPickChannelID, lastPickCampaignID,
+    lastPickProgress, stallCooldown — gains stall *drops.StallTracker.
+  - 6 call sites migrated to the tracker:
+    - processDrops: Apply, ActiveSkipSet, SnapshotPick.
+    - applySelectorPick guards: SetManual (15min for game-mismatch,
+      30min for id-mismatch).
+    - handleChannelGameChange: SetManual (15min) + LastPickCampaignID
+      lookup for the expected-game check.
+    - pollDropProgressOnce: LastPickCampaignID lookup.
+- farmer.Start initializes the tracker alongside the Selector:
+    f.drops.stall = drops.NewStallTracker(f.addLog)
+- The "do NOT mutate lastPickProgress here" comment in
+  applyDropProgressUpdate updated to reference the new tracker
+  ownership instead of the now-deleted snapshotPickProgress.
+
+Why it lands now: cooldown logic is the largest self-contained piece
+of the drop-state machine — moving it before the bigger
+applySelectorPick/processDrops migrations means later sub-phases can
+treat the tracker as a stable dependency rather than untangling
+cooldowns from inventory flow at the same time.
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — channels (11), drops (selector+pick+
+  stall = 7 stall + earlier suites), config all green.
+
 == 2026-04-29 21:49 == Refactor: Phase 2b — move pick-helper functions to drops ==
 
 The two stateless helpers that decide whether a selector pick is
