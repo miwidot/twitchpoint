@@ -73,19 +73,26 @@ func padCell(content string, width int, alignRight bool) string {
 }
 
 // channelTableHeader returns the column header line for the channel table.
+//
+// Note: tableHeaderStyle has BorderBottom(true), so it must wrap the
+// WHOLE row, not individual cells — otherwise each cell becomes a
+// 2-line box (text + border) and they stack diagonally instead of in
+// one row. We pad first (cells use plain text labels, alignment via
+// padCell), then apply the bold/purple/border styling to the joined
+// row at the end.
 func channelTableHeader() string {
 	cells := []string{
-		padCell(tableHeaderStyle.Render("Pri"),       chColPri,       false),
-		padCell(tableHeaderStyle.Render("Channel"),   chColName,      false),
-		padCell(tableHeaderStyle.Render("Status"),    chColStatus,    false),
-		padCell(tableHeaderStyle.Render("Watching"),  chColWatch,     false),
-		padCell(tableHeaderStyle.Render("Game"),      chColGame,      false),
-		padCell(tableHeaderStyle.Render("Balance"),   chColBalance,   true),
-		padCell(tableHeaderStyle.Render("Earned"),    chColEarned,    true),
-		padCell(tableHeaderStyle.Render("Claims"),    chColClaims,    true),
-		padCell(tableHeaderStyle.Render("Last Claim"), chColLastClaim, false),
+		padCell("Pri",        chColPri,       false),
+		padCell("Channel",    chColName,      false),
+		padCell("Status",     chColStatus,    false),
+		padCell("Watching",   chColWatch,     false),
+		padCell("Game",       chColGame,      false),
+		padCell("Balance",    chColBalance,   true),
+		padCell("Earned",     chColEarned,    true),
+		padCell("Claims",     chColClaims,    true),
+		padCell("Last Claim", chColLastClaim, false),
 	}
-	return "  " + strings.Join(cells, " ")
+	return tableHeaderStyle.Render("  " + strings.Join(cells, " "))
 }
 
 // renderChannelRow renders a single channel row.
@@ -209,13 +216,13 @@ func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 	}
 
 	headerCells := []string{
-		padCell(tableHeaderStyle.Render("Campaign"), dColCampaign, false),
-		padCell(tableHeaderStyle.Render("Game"),     dColGame,     false),
-		padCell(tableHeaderStyle.Render("Progress"), dColProgress, false),
-		padCell(tableHeaderStyle.Render("Channel"),  dColChannel,  false),
-		padCell(tableHeaderStyle.Render("Status"),   dColStatus,   false),
+		padCell("Campaign", dColCampaign, false),
+		padCell("Game",     dColGame,     false),
+		padCell("Progress", dColProgress, false),
+		padCell("Channel",  dColChannel,  false),
+		padCell("Status",   dColStatus,   false),
 	}
-	headerLine := "  " + strings.Join(headerCells, " ")
+	headerLine := tableHeaderStyle.Render("  " + strings.Join(headerCells, " "))
 
 	var rows []string
 	for _, drop := range drops {
@@ -318,8 +325,14 @@ func renderEventLog(logs []farmer.LogEntry, height, width int) string {
 		msg := logMessageStyle.Render(entry.Message)
 		line := fmt.Sprintf(" %s  %s", timeStr, msg)
 
-		// Truncate if too wide
-		if len(line) > width-4 {
+		// Truncate if too wide. The width check uses byte-length on the
+		// styled line (which includes ANSI escapes) so it's a slight
+		// over-estimate — fine for "should we truncate?" but means the
+		// truncation cuts more than necessary. Crucially: guard against
+		// pathologically narrow terminals (width < 11) so [:width-7]
+		// doesn't go negative and panic. We've seen this fire when the
+		// hosting PTY reports a 6-column window during startup.
+		if width >= 11 && len(line) > width-4 {
 			line = line[:width-7] + "..."
 		}
 		lines = append(lines, line)
