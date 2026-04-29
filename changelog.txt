@@ -1,3 +1,109 @@
+== 2026-04-30 01:06 == Refactor: Phase 2i — encapsulate drops.Service state ==
+
+Final cleanup of the drops-domain split. The Service's state fields
+are now unexported and the Lock/Unlock/RLock/RUnlock pass-throughs
+are gone. Farmer reaches drops state through three accessor methods
+(IsCurrentPick, CampaignEndAt, ActiveDropsCount) plus the existing
+GetActiveDrops / GetEligibleGames.
+
+After this commit drops.go in farmer is 49 lines — ALL drops domain
+logic lives in internal/drops/. Phase 2 is complete.
+
+== 2026-04-30 01:03 == Test: regression guards for the AutoClaim → selector loop ==
+
+Three table-driven tests in internal/drops/inventory_test.go pin the
+post-fix invariants so the ABI Partner-Only loop can't be re-introduced
+by a careless refactor: claim mutates IsClaimed in-place, failed claim
+does NOT mutate, multi-stage chain advances correctly. Tooling: small
+dropClaimer interface + autoClaimWith inner so tests stub the GQL
+claim without spinning up a real client.
+
+== 2026-04-30 01:02 == Fix: synchronous AutoClaim + gameEventDrops fallback ==
+
+Two related root-cause bugs that combined to keep the bot looping on
+ABI Partner-Only after a successful claim:
+
+1. AutoClaim ran ClaimDrop in a fire-and-forget goroutine. By the
+   time ProcessDrops moved on to the Selector, the GQL claim was
+   still in flight and the local d.IsClaimed was still false →
+   selector saw the campaign as eligible, picked the next allow-
+   list channel, and the cycle restarted (~3.5 hours for ABI's 70+
+   channels before the silent threshold cycled through every one).
+
+2. Even after a successful claim, Twitch's dashboard often keeps
+   reporting self.isClaimed=false for the same drop for seconds to
+   minutes. gameEventDrops (the permanent benefit-award history) is
+   updated immediately and is the reliable signal — but v1.8.0 had
+   removed this fallback because the over-eager version broke
+   daily-rolling campaigns (Marble Day reuses the same benefit ID
+   across days).
+
+Fix:
+- AutoClaimAndMarkCompleted now claims synchronously, mutates the
+  in-flight campaigns slice via index loops, sets d.IsClaimed=true
+  on success. Downstream stages see the fresh claim without another
+  inventory round-trip. Matches TDM (src/models/drop.py:149).
+- GetDropsInventory restores the gameEventDrops merge step but
+  scopes it to the drop's [StartAt, EndAt) window. Yesterday's
+  Marble Day claim doesn't satisfy today's window, so the daily-
+  rolling false-positive that drove the v1.8.0 removal stays gone.
+
+Validation: live test confirmed bot switched directly from ABI to
+ESO Night Market after the claim, no more 3-min silent loop.
+gameEventDrops cross-check via the new debugdrops/abi tool showed
+the "Infinite Memory Skin" benefit was permanently recorded by
+Twitch at the expected time, confirming the claim was real.
+
+== 2026-04-30 00:54 == Fix: respect per-drop time window + precondition chain ==
+
+Selector was picking campaigns whose first-unclaimed drop was gated
+(startAt in the future, or a precondition drop in the chain not yet
+claimed). Twitch refuses to credit those, the bot heartbeats blind,
+silent threshold trips after 3 min — but the 3 min are avoidable:
+TDM filters at selector time because its drop model checks the same
+conditions.
+
+Missing fields on TimeBasedDrop now parsed from GQL:
+  StartAt, EndAt — per-drop time window
+  PreconditionDrops — IDs that must be claimed before this drop earns
+
+New helper TimeBasedDrop.IsEarnable(now, campaignDrops) bool — mirrors
+TDM's TimedDrop._base_can_earn. Selector's filterEligibleCampaigns
+now uses it instead of the bare "unclaimed-with-required-mins" check.
+Reference: TDM /tmp/tdm-research/.../src/models/drop.py
+_base_can_earn = preconditions_met AND not is_claimed AND
+starts_at <= now < ends_at.
+
+== 2026-04-30 00:38 == Fix: kick stuck picks within 3 min instead of 15 ==
+
+PollProgressOnce now manual-cooldowns a pick after 3 min of silent
+session info (no successful CurrentDrop response, no matching WS
+progress event). Was waiting for the next 15-min CheckLoop tick to
+catch it via Stall.Apply; that's a lot of wasted minutes when the
+remaining campaign window is short — TDM's DROP_VERIFICATION_INTERVAL
+is in the same 3-5 min range.
+
+LastProgressUpdate is now also reset at the end of ApplyPick so the
+3-min grace window starts at the moment of pick, not the last WS
+event from a previous pick. Existing behavior (ApplyProgressUpdate
+refreshes the timestamp on every successful credit) keeps healthy
+picks past the threshold indefinitely. Threshold is the
+SilentPickThreshold const in progress.go, tunable.
+
+== 2026-04-30 00:22 == Diagnostic: log nil-session paths in Watcher + Poll ==
+
+Two silent-return paths obscured a real diagnostic question: when a
+pick went silent, the Watcher's drops/Watch lines stopped and
+PollProgressOnce returned silently. Both paths now write a
+file-only debug log line so post-mortem can see the pattern:
+
+  [Drops/Watch] <ch> no session info (Twitch returned nil) — heartbeating blind
+  [Drops/Poll]  no session for pick=<id> campaign=<id> — Twitch returned nil
+  [Drops/Poll]  CurrentDrop fetch failed for pick=<id> campaign=<id>: <err>
+
+Behavior unchanged — same returns, same heartbeat cadence. Just
+breadcrumbs.
+
 == 2026-04-30 00:11 == Refactor: Phase 2h — processDrops + CheckLoop + getters to Service ==
 
 Inventory-loop orchestrator moves from farmer to drops.Service. After
