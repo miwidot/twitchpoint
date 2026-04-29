@@ -44,6 +44,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
 	s.mux.HandleFunc("/api/drops", s.handleDrops)
 	s.mux.HandleFunc("/api/drops/", s.handleDropAction)
+	s.mux.HandleFunc("/api/wanted_games", s.handleWantedGames)
 
 	// Static files (embedded)
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -373,4 +374,34 @@ func formatDuration(d time.Duration) string {
 	m := int(d.Minutes()) % 60
 	s := int(d.Seconds()) % 60
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+}
+
+// handleWantedGames serves GET (list) and PUT (atomic replace) for the
+// v1.8.0 wanted_games config field.
+func (s *Server) handleWantedGames(w http.ResponseWriter, r *http.Request) {
+	cfg := s.farmer.Config()
+	switch r.Method {
+	case http.MethodGet:
+		jsonResponse(w, map[string]interface{}{
+			"games": cfg.GetGamesToWatch(),
+		})
+	case http.MethodPut:
+		var req struct {
+			Games []string `json:"games"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.SetGamesToWatch(req.Games)
+		if err := cfg.Save(); err != nil {
+			jsonError(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{
+			"games": cfg.GetGamesToWatch(),
+		})
+	default:
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
