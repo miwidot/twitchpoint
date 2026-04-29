@@ -1,3 +1,28 @@
+== 2026-04-30 03:32 == Bump: v1.8.0 → v2.0.0-beta ==
+
+Major version bump reflecting the v2.0 architecture split + the
+new TUI tab system + the web UI redesign. -beta suffix signals
+"production-stable but new surface area, soak before promoting to
+stable".
+
+What's in 2.0.0-beta vs 1.8.0:
+- internal/channels — Registry + State + Snapshot extracted
+- internal/drops — Service / Selector / Watcher / StallTracker etc.
+  fully owned (1145-line farmer.drops.go is now 49 lines of API
+  delegates)
+- internal/points — rotation + balance + events + IRC lifecycle
+  + dedup/stats fully owned
+- Farmer.mu eliminated (atomic.Bool)
+- TUI tab system (Channels / Drops / Help)
+- TUI Twitch-catalog autocomplete with arrow-nav suggestions
+- TUI [Auto] tag for non-wanted_games campaigns
+- Web UI redesign (Geist Mono + chartreuse "Operator Terminal"
+  aesthetic, tabbed dashboard mirroring TUI)
+- Drop API new field: is_auto_discovered
+
+Single line change: cmd/twitchpoint/main.go appVersion const.
+Existing version parser already handles -beta suffix natively.
+
 == 2026-04-30 03:28 == Polish: web UI readability — Geist Mono + brighter greys ==
 
 User flagged that the redesign was visually striking but text was
