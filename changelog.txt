@@ -1,3 +1,75 @@
+== 2026-04-30 00:11 == Refactor: Phase 2h — processDrops + CheckLoop + getters to Service ==
+
+Inventory-loop orchestrator moves from farmer to drops.Service. After
+this commit, farmer/drops.go is 49 lines of thin public-API delegates
+(SetCampaignEnabled, GetActiveDrops, GetEligibleGames,
+SearchGameCategories) — everything else lives inside the drops
+package. End of the drops-domain extraction.
+
+What changed:
+- New internal/drops/process.go (~174 lines):
+  - Service.ProcessDrops — was farmer.processDrops. The 10-step
+    inventory-cycle orchestrator (auto-claim → stall apply → skip-set
+    → selector → BuildRows → cache → ApplyPick → commit → cleanup →
+    rotation trigger → snapshot baseline). All same step numbers
+    preserved, same behavior.
+  - Service.CheckLoop(stopCh) — was farmer.dropCheckLoop. 30s initial
+    + 15min ticker, drives ProcessDrops.
+  - Service.GetActiveDrops — encapsulated state read; replaces farmer's
+    inline f.drops.RLock + slice concat.
+  - Service.GetEligibleGames — encapsulated state read; replaces
+    farmer's inline f.drops.RLock + dedup loop.
+- drops/service.go:
+  - ServiceDeps gains TriggerRotation func() — points-side Spade
+    rotation lives in farmer (channel-points domain), Service can't
+    reach in.
+  - ServiceDeps loses TriggerProcessDrops — internal callers
+    (PollProgressOnce, HandleDropClaim, HandleGameChange) now invoke
+    s.ProcessDrops directly since it's a Service method.
+- farmer/farmer.go:
+  - NewService deps: TriggerProcessDrops removed, TriggerRotation:
+    f.rotateChannels added.
+  - Start: go f.dropCheckLoop() → go f.drops.CheckLoop(f.stopCh)
+  - The handleEvent EventStreamDown path's go f.processDrops() →
+    go f.drops.ProcessDrops()
+- farmer/drops.go rewritten to 49 lines of thin delegates:
+  - SetCampaignEnabled: f.cfg.SetCampaignEnabled + f.cfg.Save +
+    addLog + go f.drops.ProcessDrops()
+  - GetActiveDrops: return f.drops.GetActiveDrops()
+  - GetEligibleGames: return f.drops.GetEligibleGames()
+  - SearchGameCategories: unchanged thin GQL wrapper
+  - All imports trimmed (no more sort/strings/time/twitch in this file)
+
+drops.go shrinkage tracker (post-Phase-1 baseline 1221 lines):
+  Phase 2a:        1199
+  Phase 2b:        1153
+  Phase 2c:        1007
+  Phase 2d:         849
+  Phase 2e-prep:    825
+  Phase 2e (1/2):   738
+  Phase 2e (2/2):   695
+  Phase 2f:         433
+  Phase 2g:         200
+  Phase 2h:          49
+  Total:          −1172 / −96%
+
+What still lives in farmer that touches drops.Service state:
+- farmer/farmer.go has ~5 sites that do f.drops.RLock + read
+  CurrentPickID / CampaignCache / ActiveDrops directly (rotateChannels
+  P0 sort, GetStats counter, EventStreamDown current-pick check).
+  These are read-only crossings; encapsulating them into Service
+  getters + demoting the exported fields can land as a Phase 2i
+  cleanup later. For now Lock/Unlock pass-throughs on Service stay
+  in place to keep this commit focused on the function moves.
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — all packages pass.
+- Live verification still pending — same call paths preserved, but
+  ProcessDrops is the heart of the inventory cycle, so a fresh run
+  is the authoritative confirmation.
+
 == 2026-04-29 23:57 == Fix: SpadeTracker reverts to legacy POST for channel-points credit ==
 
 Twitch has TWO separate credit pipelines that verify differently:

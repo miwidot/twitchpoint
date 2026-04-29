@@ -144,7 +144,7 @@ func (f *Farmer) Start() error {
 		WriteLogFile:           f.writeLogFile,
 		RemoveTempChannel:      f.removeTemporaryChannel,
 		AddTempChannelFromInfo: f.addTemporaryChannelFromInfo,
-		TriggerProcessDrops:    f.processDrops,
+		TriggerRotation:        f.rotateChannels,
 	})
 
 	// Subscribe to user-level PubSub topics: community points + v1.8.0 drop events
@@ -187,7 +187,7 @@ func (f *Farmer) Start() error {
 	// Start drop mining if enabled
 	if f.cfg.DropsEnabled {
 		f.addLog("Drop mining enabled — checking inventory every 15 min + DropCurrentSession poll every 60s")
-		go f.dropCheckLoop()
+		go f.drops.CheckLoop(f.stopCh)
 		go f.drops.ProgressPollLoop(f.stopCh)
 	}
 
@@ -699,7 +699,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 					f.dropWatch.Stop()
 				}
 				if isCurrentPick {
-					go f.processDrops()
+					go f.drops.ProcessDrops()
 				}
 			}
 

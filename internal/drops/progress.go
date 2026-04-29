@@ -82,9 +82,7 @@ func (s *Service) PollProgressOnce() {
 		}
 		go func() {
 			s.MarkCompletedIfFinishedExternally(pickedCampID)
-			if s.triggerProcessDrops != nil {
-				s.triggerProcessDrops()
-			}
+			s.ProcessDrops()
 		}()
 	}
 }
@@ -130,9 +128,7 @@ func (s *Service) HandleDropClaim(data twitch.DropClaimData) {
 		}
 	}
 
-	if s.triggerProcessDrops != nil {
-		s.triggerProcessDrops()
-	}
+	s.ProcessDrops()
 }
 
 // ApplyProgressUpdate handles a WebSocket drop-progress event by

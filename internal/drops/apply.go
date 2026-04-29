@@ -271,8 +271,6 @@ func (s *Service) HandleGameChange(channelID string, data twitch.GameChangeData)
 		s.log("[Drops/WS] %s changed game (%s -> %s); still wrong after 30s — 15min cooldown, re-picking",
 			channelID, data.OldGameName, data.NewGameName)
 
-		if s.triggerProcessDrops != nil {
-			s.triggerProcessDrops()
-		}
+		s.ProcessDrops()
 	}()
 }

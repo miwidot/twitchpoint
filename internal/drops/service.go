@@ -31,9 +31,9 @@ type Service struct {
 	watcher                 *Watcher
 	log                     func(string, ...interface{}) // visible UI + file
 	writeLogFile            func(string)                 // file-only noise log
-	removeTempChannel       func(channelID string)
-	addTempChannelFromInfo  func(info *twitch.ChannelInfo, campaignID string) error
-	triggerProcessDrops     func()
+	removeTempChannel      func(channelID string)
+	addTempChannelFromInfo func(info *twitch.ChannelInfo, campaignID string) error
+	triggerRotation        func()
 
 	// Subordinate services (built by NewService).
 	Selector *Selector
@@ -75,11 +75,10 @@ type ServiceDeps struct {
 	// (channels.Add + PubSub Listen + IRC Join). ApplyPick calls it
 	// when the picked channel isn't tracked yet.
 	AddTempChannelFromInfo func(info *twitch.ChannelInfo, campaignID string) error
-	// TriggerProcessDrops re-runs the inventory cycle out-of-band. Used
-	// by HandleGameChange after the 30s debounce when the picked
-	// streamer settled on a wrong game and we need a fresh selector
-	// pass. processDrops still lives in farmer until Phase 2g.
-	TriggerProcessDrops func()
+	// TriggerRotation kicks the farmer's points-side Spade rotation so
+	// slot 1 reflects the freshly-applied drop pick. Rotation lives in
+	// farmer (it's part of the channel-points domain, not drops).
+	TriggerRotation func()
 }
 
 // NewService constructs a Service with its subordinate Selector and
@@ -97,7 +96,7 @@ func NewService(deps ServiceDeps) *Service {
 		writeLogFile:           deps.WriteLogFile,
 		removeTempChannel:      deps.RemoveTempChannel,
 		addTempChannelFromInfo: deps.AddTempChannelFromInfo,
-		triggerProcessDrops:    deps.TriggerProcessDrops,
+		triggerRotation:        deps.TriggerRotation,
 		Selector:               NewSelector(deps.Cfg, deps.GQL),
 		Stall:                  NewStallTracker(deps.Log),
 	}
