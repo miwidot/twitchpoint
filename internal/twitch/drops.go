@@ -211,62 +211,18 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 			}
 		}
 
-		// Step 4: Use gameEventDrops to detect already-completed campaigns.
-		// Only applies to campaigns NOT in inventory (fully claimed → removed by Twitch).
-		// IMPORTANT: Only mark as completed if ALL watchable drops' benefit IDs are found
-		// in gameEventDrops. This prevents false positives when multiple campaigns share
-		// the same benefit ID (e.g. GZW streamer-exclusive drops all share Tier 1 ID).
-		if !dashboardCampaigns[i].InInventory && len(claimedBenefits) > 0 {
-			campaign := dashboardCampaigns[i]
-			allBenefitsClaimed := true
-			hasWatchableDrops := false
-
-			for _, drop := range campaign.Drops {
-				if drop.RequiredMinutesWatched <= 0 {
-					continue // sub-only, skip
-				}
-				hasWatchableDrops = true
-				if drop.BenefitID == "" {
-					allBenefitsClaimed = false
-					break
-				}
-				lastAwarded, found := claimedBenefits[drop.BenefitID]
-				if !found || !isWithinCampaignWindow(lastAwarded, campaign.StartAt, campaign.EndAt) {
-					allBenefitsClaimed = false
-					break
-				}
-			}
-
-			if hasWatchableDrops && allBenefitsClaimed {
-				for j := range dashboardCampaigns[i].Drops {
-					drop := &dashboardCampaigns[i].Drops[j]
-					if drop.RequiredMinutesWatched > 0 {
-						drop.IsClaimed = true
-						drop.CurrentMinutesWatched = drop.RequiredMinutesWatched
-					}
-				}
-				log.Printf("[Drops/Merge] gameEventDrops: campaign %q fully claimed (all benefits found)", campaign.Name)
-			}
-		}
+		// v1.8.0: trust dashboard's self.isClaimed as authoritative.
+		// Previous Step 4 used gameEventDrops as override for "campaign not in
+		// inventory but benefit-IDs were awarded" — that broke daily-rolling
+		// campaigns (e.g. Marble Day) where Twitch reuses the same campaign+drop
+		// IDs and the user already claimed yesterday's instance. Per
+		// TwitchDropsMiner reference: gameEventDrops is fallback ONLY when
+		// dashboard's self field is missing. We always have self in our query,
+		// so the merge step here is removed.
+		_ = claimedBenefits
 	}
 
 	return dashboardCampaigns, nil
-}
-
-// isWithinCampaignWindow checks if an award timestamp falls within the campaign's time window.
-// Returns true if we can't determine the window (missing timestamps) — benefit of the doubt.
-func isWithinCampaignWindow(awarded, campaignStart, campaignEnd time.Time) bool {
-	if awarded.IsZero() {
-		// Benefit was claimed but no timestamp — assume it's valid
-		return true
-	}
-	if !campaignStart.IsZero() && awarded.Before(campaignStart) {
-		return false // claimed before this campaign started
-	}
-	if !campaignEnd.IsZero() && awarded.After(campaignEnd) {
-		return false // claimed after this campaign ended
-	}
-	return true
 }
 
 // getDropsDashboard fetches all campaigns via ViewerDropsDashboard.

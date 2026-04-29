@@ -2,6 +2,7 @@ package farmer
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -611,6 +612,30 @@ func (f *Farmer) GetActiveDrops() []ActiveDrop {
 	out = append(out, f.drops.activeDrops...)
 	out = append(out, f.drops.queuedDrops...)
 	out = append(out, f.drops.idleDrops...)
+	return out
+}
+
+// GetEligibleGames returns the unique sorted list of game names from the
+// current cycle's eligible drop campaigns. Used by web/TUI autocomplete when
+// the user is adding a game to wanted_games.
+func (f *Farmer) GetEligibleGames() []string {
+	f.drops.mu.RLock()
+	defer f.drops.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var out []string
+	for _, c := range f.drops.campaignCache {
+		if c.GameName == "" {
+			continue
+		}
+		key := strings.ToLower(c.GameName)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c.GameName)
+	}
+	sort.Strings(out)
 	return out
 }
 

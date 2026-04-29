@@ -495,7 +495,29 @@ func (m Model) renderInput() string {
 		Blink(true).
 		Render("_")
 
-	return "  " + input + helpStyle.Render(hint)
+	out := "  " + input + helpStyle.Render(hint)
+
+	// v1.8.0: when adding a wanted-game name, show fuzzy matches against
+	// the current cycle's eligible games so the user doesn't have to type
+	// the full name correctly.
+	if m.inputMode == inputAddGameName {
+		query := strings.ToLower(strings.TrimSpace(m.inputValue))
+		all := m.farmer.GetEligibleGames()
+		var matches []string
+		for _, g := range all {
+			if query == "" || strings.Contains(strings.ToLower(g), query) {
+				matches = append(matches, g)
+				if len(matches) >= 6 {
+					break
+				}
+			}
+		}
+		if len(matches) > 0 {
+			out += "\n  " + helpStyle.Render("matches: ") + helpKeyStyle.Render(strings.Join(matches, " | "))
+		}
+	}
+
+	return out
 }
 
 // Run starts the Bubbletea program.

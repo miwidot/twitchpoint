@@ -383,7 +383,8 @@ func (s *Server) handleWantedGames(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		jsonResponse(w, map[string]interface{}{
-			"games": cfg.GetGamesToWatch(),
+			"games":       cfg.GetGamesToWatch(),
+			"suggestions": s.farmer.GetEligibleGames(),
 		})
 	case http.MethodPut:
 		var req struct {

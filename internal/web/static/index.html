@@ -573,8 +573,10 @@
                 <li style="color:var(--text-muted);padding:8px">loading...</li>
             </ul>
             <div style="margin-top:8px;display:flex;gap:8px">
-                <input id="wanted-games-input" type="text" placeholder="Game name (e.g. Arena Breakout: Infinite)"
+                <input id="wanted-games-input" type="text" placeholder="Game name (start typing for autocomplete)"
+                       list="wanted-games-suggestions" autocomplete="off"
                        style="flex:1;padding:6px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text)">
+                <datalist id="wanted-games-suggestions"></datalist>
                 <button onclick="addWantedGame()" class="btn">Add</button>
             </div>
         </div>
@@ -1048,8 +1050,23 @@
                 const res = await fetch(API + '/api/wanted_games');
                 const data = await res.json();
                 renderWantedGames(data.games || []);
+                renderWantedGameSuggestions(data.suggestions || []);
             } catch (e) {
                 console.error('Failed to fetch wanted games:', e);
+            }
+        }
+
+        // Populate the <datalist> backing the input autocomplete with the
+        // current cycle's eligible games (built via createElement so any
+        // future Twitch-supplied weirdness is escaped automatically).
+        function renderWantedGameSuggestions(games) {
+            const dl = document.getElementById('wanted-games-suggestions');
+            if (!dl) return;
+            while (dl.firstChild) dl.removeChild(dl.firstChild);
+            for (const g of games) {
+                const opt = document.createElement('option');
+                opt.value = g;
+                dl.appendChild(opt);
             }
         }
 
