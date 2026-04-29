@@ -4,6 +4,14 @@ import (
 	"github.com/miwi/twitchpoint/internal/twitch"
 )
 
+// dropClaimer is the minimal GQL surface AutoClaim needs. Defined as
+// an interface so unit tests can stub the claim call without spinning
+// up a real Twitch GQL client. *twitch.GQLClient satisfies it via its
+// existing ClaimDrop method.
+type dropClaimer interface {
+	ClaimDrop(dropInstanceID string) error
+}
+
 // AutoClaimAndMarkCompleted walks an inventory campaigns list and claims
 // every complete-but-unclaimed drop instance synchronously, mutating
 // the local IsClaimed flag in-place on success. When every watchable
@@ -30,6 +38,12 @@ import (
 // "finished-while-watching" path; this method only marks completion
 // when every watchable drop is observably claimed.
 func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
+	s.autoClaimWith(campaigns, s.gql)
+}
+
+// autoClaimWith is the testable inner. Tests pass a stub claimer
+// (anything implementing dropClaimer) instead of the real GQL client.
+func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropClaimer) {
 	for ci := range campaigns {
 		c := &campaigns[ci]
 		if c.Status != "" && c.Status != "ACTIVE" {
@@ -58,7 +72,7 @@ func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
 				if name == "" {
 					name = d.Name
 				}
-				if err := s.gql.ClaimDrop(d.DropInstanceID); err != nil {
+				if err := claimer.ClaimDrop(d.DropInstanceID); err != nil {
 					s.log("[Drops] Failed to claim %s: %v", name, err)
 					allClaimed = false
 				} else {
