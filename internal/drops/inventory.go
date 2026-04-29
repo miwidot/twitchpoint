@@ -5,9 +5,24 @@ import (
 )
 
 // AutoClaimAndMarkCompleted walks an inventory campaigns list and claims
-// every complete-but-unclaimed drop instance asynchronously. When a
-// campaign's watchable drops are all claimed, the campaign is marked
-// completed in config and persisted.
+// every complete-but-unclaimed drop instance synchronously, mutating
+// the local IsClaimed flag in-place on success. When every watchable
+// drop is claimed the campaign is marked completed in config.
+//
+// Synchronous claim + in-place mutation is intentional. The earlier
+// goroutine-based version was fire-and-forget — by the time
+// ProcessDrops moved on to Selector, ClaimDrop was still in flight and
+// the local d.IsClaimed was still false, so the selector saw the
+// campaign as eligible and re-picked the same channel for a drop that
+// was already claimed (or about to be). Twitch's session API then
+// returned nil and the bot blind-heartbeated until the silent-pick
+// threshold tripped. TDM does the same in-place mutation
+// (src/models/drop.py:149 — self.is_claimed = result).
+//
+// The slice is mutated through a pointer index loop. Callers passing
+// the campaign list to subsequent stages (Selector, BuildRows,
+// SnapshotPick) see the updated IsClaimed state without a second
+// inventory fetch.
 //
 // !InInventory alone is NOT a completion signal here — that would
 // false-positive on never-started campaigns. Use
@@ -15,7 +30,8 @@ import (
 // "finished-while-watching" path; this method only marks completion
 // when every watchable drop is observably claimed.
 func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
-	for _, c := range campaigns {
+	for ci := range campaigns {
+		c := &campaigns[ci]
 		if c.Status != "" && c.Status != "ACTIVE" {
 			continue
 		}
@@ -28,7 +44,8 @@ func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
 
 		allClaimed := true
 		hasWatchable := false
-		for _, d := range c.Drops {
+		for di := range c.Drops {
+			d := &c.Drops[di]
 			if d.RequiredMinutesWatched <= 0 {
 				continue
 			}
@@ -36,22 +53,25 @@ func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
 			if d.IsClaimed {
 				continue
 			}
-			allClaimed = false
 			if d.IsComplete() && d.DropInstanceID != "" {
 				name := d.BenefitName
 				if name == "" {
 					name = d.Name
 				}
-				instanceID := d.DropInstanceID
-				dropName := name
-				campaignName := c.Name
-				go func() {
-					if err := s.gql.ClaimDrop(instanceID); err != nil {
-						s.log("[Drops] Failed to claim %s: %v", dropName, err)
-					} else {
-						s.log("[Drops] Claimed: %s (%s)", dropName, campaignName)
-					}
-				}()
+				if err := s.gql.ClaimDrop(d.DropInstanceID); err != nil {
+					s.log("[Drops] Failed to claim %s: %v", name, err)
+					allClaimed = false
+				} else {
+					s.log("[Drops] Claimed: %s (%s)", name, c.Name)
+					// Mutate the slice's drop in-place so downstream
+					// stages (Selector, SnapshotPick) see the fresh
+					// claim without another inventory round-trip.
+					d.IsClaimed = true
+				}
+			} else {
+				// Drop is unclaimed AND not complete (or no instance
+				// ID yet) — campaign isn't fully claimed.
+				allClaimed = false
 			}
 		}
 

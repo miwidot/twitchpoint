@@ -268,15 +268,52 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 			}
 		}
 
-		// v1.8.0: trust dashboard's self.isClaimed as authoritative.
-		// Previous Step 4 used gameEventDrops as override for "campaign not in
-		// inventory but benefit-IDs were awarded" — that broke daily-rolling
-		// campaigns (e.g. Marble Day) where Twitch reuses the same campaign+drop
-		// IDs and the user already claimed yesterday's instance. Per
-		// TwitchDropsMiner reference: gameEventDrops is fallback ONLY when
-		// dashboard's self field is missing. We always have self in our query,
-		// so the merge step here is removed.
-		_ = claimedBenefits
+		// Step 4: gameEventDrops claim-detection fallback, time-window
+		// scoped. After a recent claim Twitch's dashboard sometimes
+		// keeps reporting `self.isClaimed=false` for a few seconds to
+		// minutes (the same window where getCurrentDropSession returns
+		// nil), so the bot otherwise re-picks a campaign whose drop
+		// is actually already claimed. gameEventDrops is the
+		// permanent benefit-award history and reflects the claim
+		// immediately.
+		//
+		// The v1.8.0 regression we're avoiding: marking a daily-
+		// rolling drop (Marble Day, etc.) as already-claimed because
+		// yesterday's instance was awarded under the same benefit ID.
+		// Fix: only honour the fallback when lastAwardedAt is inside
+		// THIS drop's [StartAt, EndAt) window. That ties the claim
+		// signal to the actual instance, not the benefit ID alone —
+		// matches TDM's approach (src/models/drop.py:49 reads
+		// gameEventDrops timestamp and compares against the drop's
+		// own period).
+		for j := range dashboardCampaigns[i].Drops {
+			drop := &dashboardCampaigns[i].Drops[j]
+			if drop.IsClaimed || drop.BenefitID == "" {
+				continue
+			}
+			awarded, ok := claimedBenefits[drop.BenefitID]
+			if !ok {
+				continue
+			}
+			// If the drop has explicit per-drop windows, the award
+			// must fall inside [StartAt, EndAt). Without windows,
+			// fall back to the campaign window so daily-rolling
+			// campaigns don't false-positive.
+			start := drop.StartAt
+			end := drop.EndAt
+			if start.IsZero() {
+				start = dashboardCampaigns[i].StartAt
+			}
+			if end.IsZero() {
+				end = dashboardCampaigns[i].EndAt
+			}
+			if start.IsZero() || end.IsZero() {
+				continue // no window to check, keep dashboard truth
+			}
+			if (awarded.Equal(start) || awarded.After(start)) && awarded.Before(end) {
+				drop.IsClaimed = true
+			}
+		}
 	}
 
 	return dashboardCampaigns, nil
