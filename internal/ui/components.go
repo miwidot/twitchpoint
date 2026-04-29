@@ -258,7 +258,11 @@ func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 			channelW, channel,
 			statusW+9, status, // +9 for ANSI escape codes
 		)
-		rows = append(rows, tableCellStyle.Render(row))
+		rendered := tableCellStyle.Render(row)
+		if drop.IsAutoDiscovered {
+			rendered += "  " + autoTagStyle.Render("[AUTO]")
+		}
+		rows = append(rows, rendered)
 	}
 
 	title := titleStyle.Render(" Drop Campaigns ")

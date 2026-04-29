@@ -121,4 +121,13 @@ var (
 				BorderStyle(lipgloss.NormalBorder()).
 				BorderForeground(colorPurple).
 				Padding(0, 1)
+
+	// autoTagStyle marks campaigns whose game is NOT in the user's
+	// wanted_games priority list — i.e. the bot is farming them
+	// because the account is linked, not because the user requested
+	// the game. Cyan keeps it visually distinct from status colors
+	// (green/red/grey).
+	autoTagStyle = lipgloss.NewStyle().
+			Foreground(colorCyan).
+			Bold(true)
 )

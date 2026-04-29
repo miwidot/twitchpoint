@@ -1,3 +1,30 @@
+== 2026-04-30 02:55 == Feature: [AUTO] tag for auto-discovered campaigns ==
+
+Drop campaigns whose GameName is NOT in the user's wanted_games
+priority list now render with a cyan [AUTO] tag in both the
+Channels-tab mini-table and the Drops-tab full panel. This makes it
+visible at a glance which campaigns the bot is farming automatically
+because the account is linked vs which ones the user explicitly
+prioritized.
+
+The marker is suppressed when wanted_games is empty (in that case
+ALL eligible campaigns are auto-discovered and the marker would be
+noise).
+
+Mechanism:
+- internal/drops/rows.go: added IsAutoDiscovered bool to ActiveDrop
+  + extended RowsConfig interface with GetGamesToWatch().
+  BuildRows sets the flag based on case-insensitive lookup of
+  c.GameName against wanted_games.
+- internal/ui/styles.go: autoTagStyle (cyan + bold).
+- internal/ui/{drops_tab,components}.go: append "[AUTO]" suffix
+  after the row's status column when IsAutoDiscovered is true.
+- internal/ui/help_tab.go: explains the marker.
+
+Public API: /api/drops responses now carry "is_auto_discovered" in
+each row. Web UI ignores unknown fields, so this is non-breaking;
+the web side could later use it for the same visual treatment.
+
 == 2026-04-30 02:42 == Feature: Twitch-catalog autocomplete + Channels-tab drops filter ==
 
 Two TUI improvements that landed together:

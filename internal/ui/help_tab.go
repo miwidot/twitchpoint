@@ -64,6 +64,16 @@ func renderHelpScreen() string {
 	sections = append(sections, paragraph(
 		"Watcher's current channel is skipped by points rotation to avoid double-tracking.",
 	))
+	sections = append(sections, "")
+	sections = append(sections, paragraph(
+		"Drop campaigns marked "+autoTagStyle.Render("[AUTO]")+" are farmed automatically because",
+	))
+	sections = append(sections, paragraph(
+		"the account is linked — they're not in your wanted_games priority list. With an empty",
+	))
+	sections = append(sections, paragraph(
+		"wanted_games list, EVERY linked campaign is auto-discovered and the marker is hidden.",
+	))
 
 	return strings.Join(sections, "\n")
 }

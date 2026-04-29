@@ -121,11 +121,18 @@ func renderDropsCampaignsPanel(rows []drops.ActiveDrop, cursor int, focused bool
 			channelW, channel,
 			statusW+9, status,
 		)
+		var rendered string
 		if focused && i == cursor {
-			renderedRows = append(renderedRows, lipgloss.NewStyle().Foreground(colorWhite).Bold(true).Render(row))
+			rendered = lipgloss.NewStyle().Foreground(colorWhite).Bold(true).Render(row)
 		} else {
-			renderedRows = append(renderedRows, tableCellStyle.Render(row))
+			rendered = tableCellStyle.Render(row)
 		}
+		// Auto-discovered tag — campaign farmed because account is
+		// linked, not because the game is in wanted_games priority.
+		if d.IsAutoDiscovered {
+			rendered += "  " + autoTagStyle.Render("[AUTO]")
+		}
+		renderedRows = append(renderedRows, rendered)
 	}
 
 	return title + "\n" + headerLine + "\n" + strings.Join(renderedRows, "\n")

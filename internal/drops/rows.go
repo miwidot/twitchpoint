@@ -1,6 +1,7 @@
 package drops
 
 import (
+	"strings"
 	"time"
 
 	"github.com/miwi/twitchpoint/internal/twitch"
@@ -23,6 +24,13 @@ type ActiveDrop struct {
 	IsAutoSelected     bool      `json:"is_auto_selected"`     // channel was auto-discovered
 	IsEnabled          bool      `json:"is_enabled"`           // campaign not disabled
 	IsAccountConnected bool      `json:"is_account_connected"` // account linked for this game
+	// IsAutoDiscovered marks campaigns whose GameName is NOT in the
+	// user's wanted_games priority list — i.e. the bot is farming them
+	// automatically because the account is linked, not because the
+	// user explicitly requested the game. Only set when wanted_games
+	// is non-empty (with an empty list, ALL eligible campaigns are
+	// auto-discovered and the marker would be noise).
+	IsAutoDiscovered bool `json:"is_auto_discovered"`
 	Status             string    `json:"status"`               // ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED
 	IsPinned           bool      `json:"is_pinned"`
 	QueueIndex         int       `json:"queue_index"`          // 1-based for ACTIVE/QUEUED/IDLE; 0 otherwise
@@ -35,6 +43,7 @@ type RowsConfig interface {
 	GetPinnedCampaign() string
 	IsCampaignDisabled(campaignID string) bool
 	IsCampaignCompleted(campaignID string) bool
+	GetGamesToWatch() []string
 }
 
 // BuildRows produces the per-campaign UI rows for the web API. It
@@ -52,6 +61,17 @@ func BuildRows(
 	pool []*PoolEntry,
 ) (active, queued, idle []ActiveDrop) {
 	pinnedID := cfg.GetPinnedCampaign()
+
+	// Build a lower-cased lookup of wanted-games. Auto-discovered marker
+	// is meaningful ONLY when this list is non-empty — when it's empty,
+	// EVERY eligible campaign is auto-discovered and tagging them all
+	// would be noise.
+	wanted := cfg.GetGamesToWatch()
+	wantedSet := make(map[string]bool, len(wanted))
+	for _, g := range wanted {
+		wantedSet[strings.ToLower(strings.TrimSpace(g))] = true
+	}
+	useAutoMarker := len(wantedSet) > 0
 
 	campaignsInPool := make(map[string]*PoolEntry)
 	for _, e := range pool {
@@ -106,6 +126,9 @@ func BuildRows(
 		seenWatchableNames[c.Name] = true
 
 		row := campaignToRow(c, pinnedID)
+		if useAutoMarker && !wantedSet[strings.ToLower(strings.TrimSpace(c.GameName))] {
+			row.IsAutoDiscovered = true
+		}
 
 		switch {
 		case cfg.IsCampaignDisabled(c.ID):
