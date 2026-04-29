@@ -584,6 +584,111 @@ func (f *Farmer) GetActiveDrops() []ActiveDrop {
 	return out
 }
 
+// applyDropProgressUpdate handles a WebSocket drop-progress event by updating
+// the in-memory ActiveDrops slice (so the web/TUI sees the new value within
+// 1 second instead of waiting for the next 15-min poll). Also updates the
+// matching channel's HasActiveDrop progress for TUI rendering.
+func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
+	f.drops.mu.Lock()
+	updated := false
+	for i := range f.drops.activeDrops {
+		if f.drops.activeDrops[i].CampaignID != data.CampaignID {
+			continue
+		}
+		if data.RequiredMinutesWatched > 0 && f.drops.activeDrops[i].Required != data.RequiredMinutesWatched {
+			f.drops.activeDrops[i].Required = data.RequiredMinutesWatched
+		}
+		f.drops.activeDrops[i].Progress = data.CurrentMinutesWatched
+		if f.drops.activeDrops[i].Required > 0 {
+			pct := (data.CurrentMinutesWatched * 100) / f.drops.activeDrops[i].Required
+			if pct > 100 {
+				pct = 100
+			}
+			f.drops.activeDrops[i].Percent = pct
+			f.drops.activeDrops[i].EtaMinutes = f.drops.activeDrops[i].Required - data.CurrentMinutesWatched
+			if f.drops.activeDrops[i].EtaMinutes < 0 {
+				f.drops.activeDrops[i].EtaMinutes = 0
+			}
+		}
+		updated = true
+		break
+	}
+	if updated && f.drops.lastPickCampaignID == data.CampaignID {
+		f.drops.lastPickProgress = data.CurrentMinutesWatched
+	}
+	f.drops.mu.Unlock()
+
+	if updated {
+		f.writeLogFile(fmt.Sprintf("[Drops/WS] progress: campaign=%s drop=%s %d minutes",
+			data.CampaignID, data.DropID, data.CurrentMinutesWatched))
+
+		// Mirror to picked channel's drop info so TUI shows the live value.
+		f.drops.mu.RLock()
+		pickedCh := f.drops.currentPickID
+		f.drops.mu.RUnlock()
+		if pickedCh != "" {
+			f.mu.RLock()
+			ch, ok := f.channels[pickedCh]
+			f.mu.RUnlock()
+			if ok {
+				snap := ch.Snapshot()
+				if snap.HasActiveDrop {
+					ch.SetDropInfo(snap.DropName, data.CurrentMinutesWatched, snap.DropRequired)
+				}
+			}
+		}
+	}
+}
+
+// handleChannelGameChange reacts to a broadcast-settings-update PubSub event.
+// If the channel was the current drop pick AND the new game does not match
+// the picked campaign's game, the channel is added to stallCooldown for
+// 15 min and an out-of-cycle selector re-run is triggered.
+func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChangeData) {
+	if data.OldGameName == data.NewGameName {
+		return
+	}
+
+	f.drops.mu.RLock()
+	currentPick := f.drops.currentPickID
+	pickCampaign := f.drops.lastPickCampaignID
+	f.drops.mu.RUnlock()
+
+	if channelID != currentPick {
+		f.writeLogFile(fmt.Sprintf("[Drops/WS] non-pick channel %s game changed: %s -> %s",
+			channelID, data.OldGameName, data.NewGameName))
+		return
+	}
+
+	f.drops.mu.RLock()
+	expectedGame := ""
+	if c, ok := f.drops.campaignCache[pickCampaign]; ok {
+		expectedGame = c.GameName
+	}
+	f.drops.mu.RUnlock()
+
+	if expectedGame == "" {
+		return
+	}
+
+	if strings.EqualFold(data.NewGameName, expectedGame) {
+		f.addLog("[Drops/WS] %s switched back to %q — keeping pick", channelID, expectedGame)
+		return
+	}
+
+	f.drops.mu.Lock()
+	if f.drops.stallCooldown == nil {
+		f.drops.stallCooldown = make(map[string]time.Time)
+	}
+	f.drops.stallCooldown[channelID] = time.Now().Add(15 * time.Minute)
+	f.drops.mu.Unlock()
+
+	f.addLog("[Drops/WS] %s changed game (%s -> %s); expected %s — 15min cooldown, re-picking",
+		channelID, data.OldGameName, data.NewGameName, expectedGame)
+
+	go f.processDrops()
+}
+
 // scrubStaleCompleted removes campaign IDs from CompletedCampaigns whose drops
 // are again unclaimed in the new inventory. Twitch reuses the same campaign ID
 // for daily-rolling campaigns (e.g. "Marble Day 245") and resets the drops —

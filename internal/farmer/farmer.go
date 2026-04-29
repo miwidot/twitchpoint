@@ -698,6 +698,29 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 		if err, ok := evt.Data.(error); ok {
 			f.addLog("[PubSub] %v", err)
 		}
+
+	case twitch.EventDropProgress:
+		data := evt.Data.(twitch.DropProgressData)
+		f.applyDropProgressUpdate(data)
+
+	case twitch.EventDropClaim:
+		data := evt.Data.(twitch.DropClaimData)
+		if data.DropInstanceID != "" {
+			instanceID := data.DropInstanceID
+			go func() {
+				if err := f.gql.ClaimDrop(instanceID); err != nil {
+					f.addLog("[Drops/WS] Failed to claim drop: %v", err)
+				} else {
+					f.addLog("[Drops/WS] Claimed drop instance %s", instanceID)
+				}
+			}()
+		}
+		// Out-of-cycle re-run so completion + queue advance happen instantly.
+		go f.processDrops()
+
+	case twitch.EventGameChange:
+		data := evt.Data.(twitch.GameChangeData)
+		f.handleChannelGameChange(evt.ChannelID, data)
 	}
 }
 
