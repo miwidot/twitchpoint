@@ -96,7 +96,21 @@ const (
 
 	// Persisted query hash for JoinRaid (used as fallback if raw mutation fails)
 	joinRaidHash = "c6a332a86d1087fbbb1a8623aa01bd1313d2386e7c63be60fdb2d1901f01a4ae"
+
+	// Persisted query hash for DropCurrentSessionContext — returns the
+	// (dropID, currentMinutesWatched) pair for the channel currently being
+	// watched. Used as the v1.8.0 polling fallback because user-drop-events
+	// PubSub doesn't always fire reliably (TDM has the same issue and uses
+	// this query as the bridge after each Spade heartbeat).
+	dropCurrentSessionHash = "4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b"
 )
+
+// CurrentDropSession is the lean response from DropCurrentSessionContext.
+// Either field may be empty if no drop session is active for the channel.
+type CurrentDropSession struct {
+	DropID                string
+	CurrentMinutesWatched int
+}
 
 // GQLClient handles all Twitch GQL API calls.
 type GQLClient struct {
@@ -477,6 +491,57 @@ func (g *GQLClient) GetGameStreams(gameName string, limit int) ([]GameStream, er
 // game category but not participating in drops.
 func (g *GQLClient) GetGameStreamsDropsEnabled(gameName string, limit int) ([]GameStream, error) {
 	return g.fetchGameStreams(gameName, limit, queryGetGameStreamsDropsEnabled)
+}
+
+// GetCurrentDropSession queries Twitch's DropCurrentSessionContext for the
+// channel currently being watched. Returns the active drop's ID +
+// currentMinutesWatched as Twitch sees them, or nil if no session exists yet.
+// Used by the bot's heartbeat-loop polling — TwitchDropsMiner uses this same
+// query as the bridge when user-drop-events PubSub is silent (which is often).
+func (g *GQLClient) GetCurrentDropSession(channelID string) (*CurrentDropSession, error) {
+	req := &GQLRequest{
+		OperationName: "DropCurrentSessionContext",
+		Variables: map[string]interface{}{
+			"channelID":    channelID,
+			"channelLogin": "",
+		},
+		Extensions: &GQLExtensions{
+			PersistedQuery: &PersistedQuery{
+				Version:    1,
+				SHA256Hash: dropCurrentSessionHash,
+			},
+		},
+	}
+
+	resp, err := g.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("drop current session: %w", err)
+	}
+
+	cu, ok := resp.Data["currentUser"].(map[string]interface{})
+	if !ok || cu == nil {
+		return nil, nil
+	}
+	dcs, ok := cu["dropCurrentSession"].(map[string]interface{})
+	if !ok || dcs == nil {
+		return nil, nil
+	}
+	out := &CurrentDropSession{}
+	if v, ok := dcs["dropID"].(string); ok {
+		out.DropID = v
+	}
+	if v, ok := dcs["currentMinutesWatched"]; ok && v != nil {
+		switch n := v.(type) {
+		case float64:
+			out.CurrentMinutesWatched = int(n)
+		case int:
+			out.CurrentMinutesWatched = n
+		}
+	}
+	if out.DropID == "" {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // SearchGameCategories proxies Twitch's searchCategories GQL — used for

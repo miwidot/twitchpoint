@@ -59,6 +59,55 @@ type dropState struct {
 	selector *DropSelector
 }
 
+// dropProgressPollLoop polls Twitch's DropCurrentSessionContext GQL every
+// 60 seconds for the currently picked drop channel. This is the bridge that
+// keeps progress in sync when user-drop-events PubSub is silent (which is
+// most of the time per TwitchDropsMiner research). When a session is found,
+// the in-memory ActiveDrops slice is updated via applyDropProgressUpdate.
+func (f *Farmer) dropProgressPollLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			f.pollDropProgressOnce()
+		case <-f.stopCh:
+			return
+		}
+	}
+}
+
+// pollDropProgressOnce queries DropCurrentSession for the current pick and
+// applies the result. Idempotent — safe to call frequently.
+func (f *Farmer) pollDropProgressOnce() {
+	f.drops.mu.RLock()
+	pickedID := f.drops.currentPickID
+	pickedCampID := f.drops.lastPickCampaignID
+	f.drops.mu.RUnlock()
+
+	if pickedID == "" || pickedCampID == "" {
+		return
+	}
+
+	session, err := f.gql.GetCurrentDropSession(pickedID)
+	if err != nil {
+		// Silent — this happens during stream offline/transition; not worth a log.
+		return
+	}
+	if session == nil {
+		// Twitch reports no active drop session for this channel. Could mean
+		// the streamer's drops aren't crediting us — let stallCooldown handle it.
+		return
+	}
+
+	f.applyDropProgressUpdate(twitch.DropProgressData{
+		CampaignID:            pickedCampID,
+		DropID:                session.DropID,
+		CurrentMinutesWatched: session.CurrentMinutesWatched,
+	})
+}
+
 // dropCheckLoop polls the drops inventory periodically as a safety net for
 // missed WebSocket events. v1.8.0 reduced the cadence from 5 to 15 min because
 // user-drop-events PubSub now delivers progress in real-time.

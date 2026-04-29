@@ -158,8 +158,9 @@ func (f *Farmer) Start() error {
 
 	// Start drop mining if enabled
 	if f.cfg.DropsEnabled {
-		f.addLog("Drop mining enabled — checking inventory every 5 min")
+		f.addLog("Drop mining enabled — checking inventory every 15 min + DropCurrentSession poll every 60s")
 		go f.dropCheckLoop()
+		go f.dropProgressPollLoop()
 	}
 
 	// Start background update checker
