@@ -185,6 +185,10 @@ const (
 	EventRaid
 	EventViewCount
 	EventError
+	// v1.8.0 WebSocket-driven events
+	EventDropProgress // user-drop-events: a drop's currentMinutesWatched changed
+	EventDropClaim    // user-drop-events: a drop instance is ready to claim
+	EventGameChange   // broadcast-settings-update: a watched channel changed game/title
 )
 
 // ClaimData holds data for a claim-available event.
@@ -217,4 +221,26 @@ type GameStream struct {
 	BroadcasterLogin string
 	DisplayName     string
 	ViewerCount     int
+}
+
+// DropProgressData is the payload for EventDropProgress (v1.8.0 WebSocket).
+type DropProgressData struct {
+	CampaignID             string
+	DropID                 string
+	CurrentMinutesWatched  int
+	RequiredMinutesWatched int
+}
+
+// DropClaimData is the payload for EventDropClaim (v1.8.0 WebSocket).
+type DropClaimData struct {
+	CampaignID     string
+	DropID         string
+	DropInstanceID string // empty if Twitch is just notifying that a drop is now claimable
+}
+
+// GameChangeData is the payload for EventGameChange (v1.8.0 WebSocket).
+type GameChangeData struct {
+	OldGameName string
+	NewGameName string
+	Title       string
 }
