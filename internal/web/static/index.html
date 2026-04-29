@@ -564,6 +564,21 @@
             </table>
         </div>
 
+        <div class="section-header">
+            <h2>Wanted Games</h2>
+            <span class="section-help" style="font-size:0.85em;color:var(--text-muted)">priority list — top game wins</span>
+        </div>
+        <div class="table-container">
+            <ul id="wanted-games-list" style="list-style:none;padding:0;margin:0">
+                <li style="color:var(--text-muted);padding:8px">loading...</li>
+            </ul>
+            <div style="margin-top:8px;display:flex;gap:8px">
+                <input id="wanted-games-input" type="text" placeholder="Game name (e.g. Arena Breakout: Infinite)"
+                       style="flex:1;padding:6px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text)">
+                <button onclick="addWantedGame()" class="btn">Add</button>
+            </div>
+        </div>
+
         <div class="section-header" id="drops-section">
             <h2>Drop Campaigns</h2>
         </div>
@@ -571,7 +586,6 @@
             <table>
                 <thead>
                     <tr>
-                        <th>📌</th>
                         <th>#</th>
                         <th>Status</th>
                         <th>On</th>
@@ -779,8 +793,7 @@
                 const rowClass = isDisabled ? 'disabled-row' : '';
 
                 const safeCampId = escapeHtml(drop.campaign_id);
-                const pinBtn = isCompleted ? '' :
-                    `<button class="pin-btn" title="${drop.is_pinned ? 'Unpin' : 'Pin'}" onclick="togglePin('${safeCampId}', ${!drop.is_pinned})">${drop.is_pinned ? '📌✓' : '📌'}</button>`;
+                // v1.8.0: pin column removed (superseded by Wanted Games priority list).
 
                 const queuePos = drop.queue_index > 0 ? drop.queue_index : '—';
                 const statusBadge = `<span class="status-badge status-${statusClass}">${escapeHtml(status)}</span>`;
@@ -827,7 +840,6 @@
 
                 return `
                     <tr class="${rowClass}">
-                        <td>${pinBtn}</td>
                         <td>${queuePos}</td>
                         <td>${statusBadge}</td>
                         <td>${toggleCell}</td>
@@ -1027,7 +1039,115 @@
             fetchStats();
             fetchChannels();
             fetchDrops();
+            fetchWantedGames();
             fetchLogs();
+        }
+
+        async function fetchWantedGames() {
+            try {
+                const res = await fetch(API + '/api/wanted_games');
+                const data = await res.json();
+                renderWantedGames(data.games || []);
+            } catch (e) {
+                console.error('Failed to fetch wanted games:', e);
+            }
+        }
+
+        // Build the wanted-games list with createElement + textContent so user-supplied
+        // game names can never inject markup. No template-string assignment to .innerHTML.
+        function renderWantedGames(games) {
+            const ul = document.getElementById('wanted-games-list');
+            while (ul.firstChild) ul.removeChild(ul.firstChild);
+
+            if (!games || games.length === 0) {
+                const li = document.createElement('li');
+                li.style.color = 'var(--text-muted)';
+                li.style.padding = '8px';
+                li.textContent = 'empty — add a game below';
+                ul.appendChild(li);
+                return;
+            }
+
+            games.forEach((g, i) => {
+                const li = document.createElement('li');
+                li.dataset.idx = String(i);
+                li.style.cssText = 'display:flex;align-items:center;padding:6px 8px;background:var(--bg-secondary);margin-bottom:4px;border:1px solid var(--border)';
+
+                const idxSpan = document.createElement('span');
+                idxSpan.style.cssText = 'width:24px;color:var(--text-muted)';
+                idxSpan.textContent = (i + 1) + '.';
+                li.appendChild(idxSpan);
+
+                const nameSpan = document.createElement('span');
+                nameSpan.style.flex = '1';
+                nameSpan.textContent = g;
+                li.appendChild(nameSpan);
+
+                const upBtn = document.createElement('button');
+                upBtn.className = 'btn-small';
+                upBtn.textContent = '↑';
+                upBtn.disabled = (i === 0);
+                upBtn.onclick = () => moveWantedGame(i, -1);
+                li.appendChild(upBtn);
+
+                const downBtn = document.createElement('button');
+                downBtn.className = 'btn-small';
+                downBtn.textContent = '↓';
+                downBtn.disabled = (i === games.length - 1);
+                downBtn.onclick = () => moveWantedGame(i, +1);
+                li.appendChild(downBtn);
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'btn-small';
+                removeBtn.textContent = '✕';
+                removeBtn.onclick = () => removeWantedGame(i);
+                li.appendChild(removeBtn);
+
+                ul.appendChild(li);
+            });
+        }
+
+        function readCurrentWantedGames() {
+            return Array.from(document.querySelectorAll('#wanted-games-list li[data-idx] > span:nth-child(2)'))
+                .map(s => s.textContent);
+        }
+
+        async function putWantedGames(games) {
+            try {
+                const res = await fetch(API + '/api/wanted_games', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({games})
+                });
+                const data = await res.json();
+                renderWantedGames(data.games || []);
+            } catch (e) {
+                showToast('Failed to update wanted games: ' + e.message, 'error');
+            }
+        }
+
+        async function addWantedGame() {
+            const input = document.getElementById('wanted-games-input');
+            const name = input.value.trim();
+            if (!name) return;
+            const current = readCurrentWantedGames();
+            current.push(name);
+            input.value = '';
+            await putWantedGames(current);
+        }
+
+        async function removeWantedGame(idx) {
+            const current = readCurrentWantedGames();
+            current.splice(idx, 1);
+            await putWantedGames(current);
+        }
+
+        async function moveWantedGame(idx, dir) {
+            const current = readCurrentWantedGames();
+            const target = idx + dir;
+            if (target < 0 || target >= current.length) return;
+            [current[idx], current[target]] = [current[target], current[idx]];
+            await putWantedGames(current);
         }
 
         // Handle Enter key in add modal
