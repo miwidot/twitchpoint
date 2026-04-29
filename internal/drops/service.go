@@ -22,13 +22,14 @@ import (
 // unexported.
 type Service struct {
 	// Dependencies (set at construction).
-	cfg      *config.Config
-	gql      *twitch.GQLClient
-	pubsub   *twitch.PubSubClient
-	spade    *twitch.SpadeTracker
-	channels *channels.Registry
-	watcher  *Watcher
-	log      func(string, ...interface{})
+	cfg               *config.Config
+	gql               *twitch.GQLClient
+	pubsub            *twitch.PubSubClient
+	spade             *twitch.SpadeTracker
+	channels          *channels.Registry
+	watcher           *Watcher
+	log               func(string, ...interface{})
+	removeTempChannel func(channelID string) // farmer callback: full temp-channel teardown (channels + spade + prober + pubsub + irc)
 
 	// Subordinate services (built by NewService).
 	Selector *Selector
@@ -55,21 +56,28 @@ type ServiceDeps struct {
 	Channels *channels.Registry
 	Watcher  *Watcher
 	Log      func(string, ...interface{})
+	// RemoveTempChannel is the farmer's full temp-channel teardown
+	// (channels.Remove + Spade.StopWatching + prober.Stop + PubSub
+	// Unlisten + IRC Part). Service calls it from CleanupNonPickedTemps;
+	// owning prober/irc inside Service just for this one path would
+	// expand its dep surface for no benefit.
+	RemoveTempChannel func(channelID string)
 }
 
 // NewService constructs a Service with its subordinate Selector and
 // StallTracker pre-built.
 func NewService(deps ServiceDeps) *Service {
 	return &Service{
-		cfg:      deps.Cfg,
-		gql:      deps.GQL,
-		pubsub:   deps.PubSub,
-		spade:    deps.Spade,
-		channels: deps.Channels,
-		watcher:  deps.Watcher,
-		log:      deps.Log,
-		Selector: NewSelector(deps.Cfg, deps.GQL),
-		Stall:    NewStallTracker(deps.Log),
+		cfg:               deps.Cfg,
+		gql:               deps.GQL,
+		pubsub:            deps.PubSub,
+		spade:             deps.Spade,
+		channels:          deps.Channels,
+		watcher:           deps.Watcher,
+		log:               deps.Log,
+		removeTempChannel: deps.RemoveTempChannel,
+		Selector:          NewSelector(deps.Cfg, deps.GQL),
+		Stall:             NewStallTracker(deps.Log),
 	}
 }
 

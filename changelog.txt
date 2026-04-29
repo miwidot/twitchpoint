@@ -1,3 +1,59 @@
+== 2026-04-29 22:19 == Refactor: Phase 2e (2/2) — broadcast helpers + cleanup to Service ==
+
+Three more drops helpers move into drops.Service. The broadcast-
+settings PubSub plumbing is fully in drops now; temp-channel cleanup
+calls back into farmer for the actual teardown via a callback in
+ServiceDeps (prober + IRC live in farmer, no need to widen drops's
+dep surface for one path).
+
+What changed:
+- New internal/drops/broadcast.go (~54 lines):
+  - Service.SubscribeBroadcastSettings(channelID) — per-channel
+    broadcast-settings-update topic Listen.
+  - Service.UnsubscribeBroadcastSettings(channelID) — same topic
+    Unlisten when releasing a previous pick.
+  - Service.CleanupNonPickedTemps(pick) — walks the channel
+    registry, collects temp-channel IDs that aren't the current
+    pick, then calls the RemoveTempChannel callback for each one.
+- drops/service.go:
+  - ServiceDeps gains RemoveTempChannel func(channelID string).
+  - Service stores it in unexported removeTempChannel — used only
+    by CleanupNonPickedTemps.
+- farmer/farmer.go: NewService call now passes
+  RemoveTempChannel: f.removeTemporaryChannel — the existing
+  full-teardown helper that handles channels.Remove + Spade.Stop +
+  prober.Stop + PubSub Unlisten + IRC Part.
+- farmer/drops.go:
+  - subscribeBroadcastSettings / unsubscribeBroadcastSettings /
+    cleanupNonPickedTempChannels deleted (~43 lines).
+  - 3 call sites in applySelectorPick + processDrops migrated to
+    f.drops.SubscribeBroadcastSettings / UnsubscribeBroadcastSettings
+    / CleanupNonPickedTemps.
+
+Why callbacks for cleanup instead of pulling prober/irc into
+Service: prober and IRC clients only show up in farmer-shaped flows
+(rotation start, channel add/remove, viewer presence). Routing them
+through drops.Service just so CleanupNonPickedTemps can call into
+them would be widening the dep surface for a single path. The
+callback pattern matches what drops.Watcher already does (it gets
+its progress channel from farmer instead of trying to own the
+event loop).
+
+drops.go shrinkage tracker (post-Phase-1 baseline 1221 lines):
+  Phase 2a:        1199
+  Phase 2b:        1153
+  Phase 2c:        1007
+  Phase 2d:         849
+  Phase 2e-prep:    825
+  Phase 2e (1/2):   738
+  Phase 2e (2/2):   695
+  Total:          −526 / −43%
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — channels, drops, config all pass.
+
 == 2026-04-29 22:16 == Refactor: Phase 2e (1/2) — inventory helpers to Service ==
 
 Two self-contained inventory-side helpers move from farmer to

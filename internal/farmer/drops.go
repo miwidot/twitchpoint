@@ -180,7 +180,7 @@ func (f *Farmer) processDrops() {
 	f.drops.Unlock()
 
 	// 8. Drop existing temp channels that are no longer the pick.
-	f.cleanupNonPickedTempChannels(pick)
+	f.drops.CleanupNonPickedTemps(pick)
 
 	// 9. Trigger rotation so Spade slot 1 reflects the new pick.
 	f.rotateChannels()
@@ -265,7 +265,7 @@ func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.Dro
 				// again as a normal Spade slot.
 				ch.SetWatching(false)
 			}
-			f.unsubscribeBroadcastSettings(prevPickID)
+			f.drops.UnsubscribeBroadcastSettings(prevPickID)
 		}
 		if f.dropWatch != nil {
 			f.dropWatch.Stop()
@@ -375,11 +375,11 @@ func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.Dro
 			prevCh.ClearDropInfo()
 			prevCh.SetWatching(false)
 		}
-		f.unsubscribeBroadcastSettings(prevPickID)
+		f.drops.UnsubscribeBroadcastSettings(prevPickID)
 	}
 
 	// 5. Subscribe broadcast-settings-update for the new pick.
-	f.subscribeBroadcastSettings(pick.ChannelID)
+	f.drops.SubscribeBroadcastSettings(pick.ChannelID)
 
 	// 6. Hand the channel to the drops Watcher.
 	if f.dropWatch != nil {
@@ -390,49 +390,6 @@ func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.Dro
 		f.addLog("[Drops/Watch] handing %s to drops Watcher (exclusive)", snap.DisplayName)
 	}
 	return true
-}
-
-// subscribeBroadcastSettings subscribes to broadcast-settings-update for one channel.
-func (f *Farmer) subscribeBroadcastSettings(channelID string) {
-	if f.pubsub == nil {
-		return
-	}
-	topic := fmt.Sprintf("broadcast-settings-update.%s", channelID)
-	if err := f.pubsub.Listen([]string{topic}); err != nil {
-		f.addLog("[PubSub] subscribe %s failed: %v", topic, err)
-	}
-}
-
-// unsubscribeBroadcastSettings drops the broadcast-settings-update topic for one channel.
-func (f *Farmer) unsubscribeBroadcastSettings(channelID string) {
-	if f.pubsub == nil {
-		return
-	}
-	topic := fmt.Sprintf("broadcast-settings-update.%s", channelID)
-	if err := f.pubsub.Unlisten([]string{topic}); err != nil {
-		f.addLog("[PubSub] unsubscribe %s failed: %v", topic, err)
-	}
-}
-
-// cleanupNonPickedTempChannels removes every temporary channel that is NOT
-// the current pick.
-func (f *Farmer) cleanupNonPickedTempChannels(pick *drops.PoolEntry) {
-	pickID := ""
-	if pick != nil {
-		pickID = pick.ChannelID
-	}
-
-	var stale []string
-	for _, ch := range f.channels.States() {
-		snap := ch.Snapshot()
-		if snap.IsTemporary && snap.ChannelID != pickID {
-			stale = append(stale, snap.ChannelID)
-		}
-	}
-
-	for _, chID := range stale {
-		f.removeTemporaryChannel(chID)
-	}
 }
 
 // SetCampaignEnabled enables or disables a drop campaign.

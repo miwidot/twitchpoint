@@ -133,13 +133,14 @@ func (f *Farmer) Start() error {
 	// Initialize drops Service now that all of its deps exist (gql, spade,
 	// pubsub, watcher, channels registry already populated, log).
 	f.drops = drops.NewService(drops.ServiceDeps{
-		Cfg:      f.cfg,
-		GQL:      f.gql,
-		PubSub:   f.pubsub,
-		Spade:    f.spade,
-		Channels: f.channels,
-		Watcher:  f.dropWatch,
-		Log:      f.addLog,
+		Cfg:               f.cfg,
+		GQL:               f.gql,
+		PubSub:            f.pubsub,
+		Spade:             f.spade,
+		Channels:          f.channels,
+		Watcher:           f.dropWatch,
+		Log:               f.addLog,
+		RemoveTempChannel: f.removeTemporaryChannel,
 	})
 
 	// Subscribe to user-level PubSub topics: community points + v1.8.0 drop events
