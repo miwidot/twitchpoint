@@ -43,36 +43,53 @@ func renderHeader(username string, uptime time.Duration) string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", user, "  ", uptimeStr)
 }
 
+// Channel-table column widths. Used by both the header and row renderers.
+const (
+	chColPri       = 4
+	chColName      = 16
+	chColStatus    = 10
+	chColWatch     = 10
+	chColGame      = 18
+	chColBalance   = 12
+	chColEarned    = 10
+	chColClaims    = 7
+	chColLastClaim = 12
+)
+
+// padCell wraps content in a fixed-width box. Uses lipgloss for the width
+// computation, which counts visible chars (strips ANSI escapes) — this
+// is what makes columns align properly when some cells are styled and
+// some aren't. The pre-Phase-4 code used `fmt.Sprintf("%-*s", w+9, …)`
+// with +9 as a pauschal ANSI-overhead estimate; that's wrong because
+// lipgloss styles emit different escape-byte counts depending on which
+// attributes are set (Bold + Foreground = more bytes than just
+// Foreground), so the +9 was right for some cells and wrong for others.
+func padCell(content string, width int, alignRight bool) string {
+	align := lipgloss.Left
+	if alignRight {
+		align = lipgloss.Right
+	}
+	return lipgloss.NewStyle().Width(width).Align(align).Render(content)
+}
+
 // channelTableHeader returns the column header line for the channel table.
 func channelTableHeader() string {
-	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %*s %*s %*s %-*s",
-		4, "Pri",
-		16, "Channel",
-		10, "Status",
-		10, "Watching",
-		18, "Game",
-		12, "Balance",
-		10, "Earned",
-		7, "Claims",
-		12, "Last Claim",
-	)
-	return tableHeaderStyle.Render(header)
+	cells := []string{
+		padCell(tableHeaderStyle.Render("Pri"),       chColPri,       false),
+		padCell(tableHeaderStyle.Render("Channel"),   chColName,      false),
+		padCell(tableHeaderStyle.Render("Status"),    chColStatus,    false),
+		padCell(tableHeaderStyle.Render("Watching"),  chColWatch,     false),
+		padCell(tableHeaderStyle.Render("Game"),      chColGame,      false),
+		padCell(tableHeaderStyle.Render("Balance"),   chColBalance,   true),
+		padCell(tableHeaderStyle.Render("Earned"),    chColEarned,    true),
+		padCell(tableHeaderStyle.Render("Claims"),    chColClaims,    true),
+		padCell(tableHeaderStyle.Render("Last Claim"), chColLastClaim, false),
+	}
+	return "  " + strings.Join(cells, " ")
 }
 
 // renderChannelRow renders a single channel row.
 func renderChannelRow(ch channels.Snapshot) string {
-	const (
-		priW       = 4
-		nameW      = 16
-		statusW    = 10
-		watchW     = 10
-		gameW      = 18
-		balanceW   = 12
-		earnedW    = 10
-		claimsW    = 7
-		lastClaimW = 12
-	)
-
 	pri := subtitleStyle.Render("P2")
 	if ch.HasActiveDrop {
 		pri = dropStyle.Render("P0")
@@ -95,8 +112,8 @@ func renderChannelRow(ch channels.Snapshot) string {
 		pct := (ch.DropProgress * 100) / ch.DropRequired
 		game = fmt.Sprintf("%s %d%%", ch.GameName, pct)
 	}
-	if len(game) > gameW {
-		game = game[:gameW-2] + ".."
+	if len(game) > chColGame {
+		game = game[:chColGame-2] + ".."
 	}
 	if game == "" {
 		game = "-"
@@ -106,8 +123,8 @@ func renderChannelRow(ch channels.Snapshot) string {
 	if ch.IsTemporary {
 		name = ch.DisplayName + " [TEMP]"
 	}
-	if len(name) > nameW {
-		name = name[:nameW-2] + ".."
+	if len(name) > chColName {
+		name = name[:chColName-2] + ".."
 	}
 
 	balance := "-"
@@ -130,18 +147,18 @@ func renderChannelRow(ch channels.Snapshot) string {
 		lastClaim = formatTimeAgo(ch.LastClaimTime)
 	}
 
-	row := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %*s %*s %*s %-*s",
-		priW+9, pri,
-		nameW, name,
-		statusW+9, status,
-		watchW+9, watching,
-		gameW, game,
-		balanceW, balance,
-		earnedW, earned,
-		claimsW, claims,
-		lastClaimW, lastClaim,
-	)
-	return tableCellStyle.Render(row)
+	cells := []string{
+		padCell(pri,       chColPri,       false),
+		padCell(name,      chColName,      false),
+		padCell(status,    chColStatus,    false),
+		padCell(watching,  chColWatch,     false),
+		padCell(game,      chColGame,      false),
+		padCell(balance,   chColBalance,   true),
+		padCell(earned,    chColEarned,    true),
+		padCell(claims,    chColClaims,    true),
+		padCell(lastClaim, chColLastClaim, false),
+	}
+	return "  " + strings.Join(cells, " ")
 }
 
 // renderChannelTableScrollable renders the channel table with scroll support.
@@ -176,48 +193,48 @@ func renderChannelTableScrollable(channels []channels.Snapshot, width, maxRows, 
 	return strings.Join(parts, "\n")
 }
 
+// Drops mini-table column widths (Channels-tab ACTIVE-only mini-view).
+const (
+	dColCampaign = 24
+	dColGame     = 18
+	dColProgress = 16
+	dColChannel  = 16
+	dColStatus   = 10
+)
+
 // renderDropsTable renders the active drop campaigns table.
 func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 	if len(drops) == 0 {
 		return ""
 	}
 
-	// Column widths
-	campaignW := 24
-	gameW := 18
-	progressW := 16
-	channelW := 16
-	statusW := 10
+	headerCells := []string{
+		padCell(tableHeaderStyle.Render("Campaign"), dColCampaign, false),
+		padCell(tableHeaderStyle.Render("Game"),     dColGame,     false),
+		padCell(tableHeaderStyle.Render("Progress"), dColProgress, false),
+		padCell(tableHeaderStyle.Render("Channel"),  dColChannel,  false),
+		padCell(tableHeaderStyle.Render("Status"),   dColStatus,   false),
+	}
+	headerLine := "  " + strings.Join(headerCells, " ")
 
-	// Header
-	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s",
-		campaignW, "Campaign",
-		gameW, "Game",
-		progressW, "Progress",
-		channelW, "Channel",
-		statusW, "Status",
-	)
-	headerLine := tableHeaderStyle.Render(header)
-
-	// Rows
 	var rows []string
 	for _, drop := range drops {
 		campaign := drop.CampaignName
-		if len(campaign) > campaignW {
-			campaign = campaign[:campaignW-2] + ".."
+		if len(campaign) > dColCampaign {
+			campaign = campaign[:dColCampaign-2] + ".."
 		}
 
 		game := drop.GameName
-		if len(game) > gameW {
-			game = game[:gameW-2] + ".."
+		if len(game) > dColGame {
+			game = game[:dColGame-2] + ".."
 		}
 
 		progress := "-"
 		if drop.Required > 0 {
 			progress = fmt.Sprintf("%d/%dmin (%d%%)", drop.Progress, drop.Required, drop.Percent)
 		}
-		if len(progress) > progressW {
-			progress = progress[:progressW-2] + ".."
+		if len(progress) > dColProgress {
+			progress = progress[:dColProgress-2] + ".."
 		}
 
 		channel := drop.ChannelLogin
@@ -227,12 +244,10 @@ func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 		if drop.IsAutoSelected && channel != "-" {
 			channel += " [AUTO]"
 		}
-		if len(channel) > channelW {
-			channel = channel[:channelW-2] + ".."
+		if len(channel) > dColChannel {
+			channel = channel[:dColChannel-2] + ".."
 		}
 
-		// Use the v1.7.0 Status field directly (ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED).
-		// Falls back to legacy ACTIVE/DISABLED labels for any older payload that didn't set Status.
 		statusLabel := drop.Status
 		if statusLabel == "" {
 			if !drop.IsEnabled {
@@ -245,20 +260,18 @@ func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 		switch statusLabel {
 		case "ACTIVE":
 			status = dropStyle.Render(statusLabel)
-		case "DISABLED", "COMPLETED":
-			status = subtitleStyle.Render(statusLabel)
-		default: // QUEUED, IDLE, anything else
+		default:
 			status = subtitleStyle.Render(statusLabel)
 		}
 
-		row := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s",
-			campaignW, campaign,
-			gameW, game,
-			progressW, progress,
-			channelW, channel,
-			statusW+9, status, // +9 for ANSI escape codes
-		)
-		rendered := tableCellStyle.Render(row)
+		cells := []string{
+			padCell(campaign, dColCampaign, false),
+			padCell(game,     dColGame,     false),
+			padCell(progress, dColProgress, false),
+			padCell(channel,  dColChannel,  false),
+			padCell(status,   dColStatus,   false),
+		}
+		rendered := "  " + strings.Join(cells, " ")
 		if drop.IsAutoDiscovered {
 			rendered += "  " + autoTagStyle.Render("[AUTO]")
 		}

@@ -66,14 +66,14 @@ func renderDropsCampaignsPanel(rows []drops.ActiveDrop, cursor int, focused bool
 		channelW  = 16
 		statusW   = 10
 	)
-	header := fmt.Sprintf("    %-*s %-*s %-*s %-*s %-*s",
-		campaignW, "Campaign",
-		gameW, "Game",
-		progressW, "Progress",
-		channelW, "Channel",
-		statusW, "Status",
-	)
-	headerLine := tableHeaderStyle.Render(header)
+	headerCells := []string{
+		padCell(tableHeaderStyle.Render("Campaign"), campaignW, false),
+		padCell(tableHeaderStyle.Render("Game"),     gameW,     false),
+		padCell(tableHeaderStyle.Render("Progress"), progressW, false),
+		padCell(tableHeaderStyle.Render("Channel"),  channelW,  false),
+		padCell(tableHeaderStyle.Render("Status"),   statusW,   false),
+	}
+	headerLine := "    " + strings.Join(headerCells, " ")
 
 	var renderedRows []string
 	for i, d := range rows {
@@ -113,22 +113,21 @@ func renderDropsCampaignsPanel(rows []drops.ActiveDrop, cursor int, focused bool
 			status = subtitleStyle.Render(statusLabel)
 		}
 
-		row := fmt.Sprintf("%s %-*s %-*s %-*s %-*s %-*s",
-			marker,
-			campaignW, campaign,
-			gameW, game,
-			progressW, progress,
-			channelW, channel,
-			statusW+9, status,
-		)
+		cells := []string{
+			padCell(campaign, campaignW, false),
+			padCell(game,     gameW,     false),
+			padCell(progress, progressW, false),
+			padCell(channel,  channelW,  false),
+			padCell(status,   statusW,   false),
+		}
+		row := marker + " " + strings.Join(cells, " ")
+
 		var rendered string
 		if focused && i == cursor {
 			rendered = lipgloss.NewStyle().Foreground(colorWhite).Bold(true).Render(row)
 		} else {
-			rendered = tableCellStyle.Render(row)
+			rendered = row
 		}
-		// Auto-discovered tag — campaign farmed because account is
-		// linked, not because the game is in wanted_games priority.
 		if d.IsAutoDiscovered {
 			rendered += "  " + autoTagStyle.Render("[AUTO]")
 		}
