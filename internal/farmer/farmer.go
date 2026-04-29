@@ -62,7 +62,7 @@ type Farmer struct {
 	rotationIndex int // which pair of channels is currently being watched
 
 	// Drops
-	drops dropState
+	drops *drops.Service
 
 	// Update checker
 	update updateState
@@ -102,10 +102,6 @@ func (f *Farmer) Start() error {
 	// Initialize GQL client
 	f.gql = twitch.NewGQLClient(f.cfg.AuthToken)
 
-	// Initialize drop selector + stall tracker now that gql + log are ready.
-	f.drops.selector = drops.NewSelector(f.cfg, f.gql)
-	f.drops.stall = drops.NewStallTracker(f.addLog)
-
 	// Validate auth token by getting user info
 	user, err := f.gql.GetUserInfo()
 	if err != nil {
@@ -133,6 +129,18 @@ func (f *Farmer) Start() error {
 
 	// Initialize PubSub
 	f.pubsub = twitch.NewPubSubClient(f.cfg.AuthToken, f.events)
+
+	// Initialize drops Service now that all of its deps exist (gql, spade,
+	// pubsub, watcher, channels registry already populated, log).
+	f.drops = drops.NewService(drops.ServiceDeps{
+		Cfg:      f.cfg,
+		GQL:      f.gql,
+		PubSub:   f.pubsub,
+		Spade:    f.spade,
+		Channels: f.channels,
+		Watcher:  f.dropWatch,
+		Log:      f.addLog,
+	})
 
 	// Subscribe to user-level PubSub topics: community points + v1.8.0 drop events
 	if err := f.pubsub.Listen([]string{
@@ -526,9 +534,9 @@ func (f *Farmer) dropProgressLoop() {
 // lookupCampaignByDropID searches the cached campaigns for the drop and
 // returns its campaign ID. Empty string if unknown.
 func (f *Farmer) lookupCampaignByDropID(dropID string) string {
-	f.drops.mu.RLock()
-	defer f.drops.mu.RUnlock()
-	for _, c := range f.drops.campaignCache {
+	f.drops.RLock()
+	defer f.drops.RUnlock()
+	for _, c := range f.drops.CampaignCache {
 		for _, d := range c.Drops {
 			if d.ID == dropID {
 				return c.ID
@@ -687,9 +695,9 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 			// waiting up to 15 minutes for the next inventory cycle.
 			// Non-pick channels go through the normal slot-fill path only.
 			if hasDropBefore {
-				f.drops.mu.RLock()
-				isCurrentPick := f.drops.currentPickID == ch.ChannelID
-				f.drops.mu.RUnlock()
+				f.drops.RLock()
+				isCurrentPick := f.drops.CurrentPickID == ch.ChannelID
+				f.drops.RUnlock()
 				// FIX: stop the drops Watcher RIGHT NOW for the pick — don't wait
 				// for processDrops to finish (which may hang on a slow Inventory
 				// fetch). Otherwise the Watcher keeps sending sendSpadeEvents
@@ -882,12 +890,12 @@ func (f *Farmer) rotateChannels() {
 	}
 
 	// Sort P0 by campaign end time (soonest expiring first gets the Spade slot)
-	f.drops.mu.RLock()
+	f.drops.RLock()
 	sort.Slice(priority0, func(i, j int) bool {
 		ci := priority0[i].Snapshot().CampaignID
 		cj := priority0[j].Snapshot().CampaignID
-		ei := f.drops.campaignCache[ci].EndAt
-		ej := f.drops.campaignCache[cj].EndAt
+		ei := f.drops.CampaignCache[ci].EndAt
+		ej := f.drops.CampaignCache[cj].EndAt
 		if ei.IsZero() {
 			return false
 		}
@@ -899,7 +907,7 @@ func (f *Farmer) rotateChannels() {
 		}
 		return ei.Before(ej)
 	})
-	f.drops.mu.RUnlock()
+	f.drops.RUnlock()
 	sort.Slice(priority1, func(i, j int) bool {
 		return priority1[i].ChannelID < priority1[j].ChannelID
 	})
@@ -1145,9 +1153,9 @@ func (f *Farmer) GetStats() Stats {
 		}
 	}
 
-	f.drops.mu.RLock()
-	stats.ActiveDrops = len(f.drops.activeDrops)
-	f.drops.mu.RUnlock()
+	f.drops.RLock()
+	stats.ActiveDrops = len(f.drops.ActiveDrops)
+	f.drops.RUnlock()
 
 	return stats
 }

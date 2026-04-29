@@ -1,3 +1,61 @@
+== 2026-04-29 22:14 == Refactor: Phase 2e-prep — drops.Service skeleton ==
+
+Container for the drops domain orchestrator. Phase 2e proper will
+migrate the four state-machine methods (markCompletedIfFinishedExternally,
+handleDropClaim, autoClaimAndMarkCompleted, processDrops) into this
+service one at a time; this commit is the no-behavior-change setup
+that makes those moves cheap.
+
+What changed:
+- New internal/drops/service.go (~84 lines):
+  - drops.Service holds the dependencies (cfg, gql, pubsub, spade,
+    channels.Registry, watcher, log) plus the state that used to
+    live in farmer's dropState (selector, stall, mu, ActiveDrops,
+    QueuedDrops, IdleDrops, CampaignCache, CurrentPickID,
+    LastProgressUpdate).
+  - drops.ServiceDeps + drops.NewService constructor — Selector
+    and StallTracker are built inside NewService so callers don't
+    need to wire them up themselves.
+  - State fields are exported (transitional). Lock/Unlock/RLock/
+    RUnlock pass-throughs on Service expose the mutex so farmer
+    can keep its existing access patterns. Both will be eliminated
+    as later phases encapsulate each access behind a Service
+    method.
+- farmer/drops.go: dropState struct deleted (~24 lines), `sync`
+  import removed.
+- farmer/farmer.go:
+  - Farmer.drops is now *drops.Service instead of dropState.
+  - The two-line "init selector + stall" block in Start() is gone.
+    Replaced with one drops.NewService(ServiceDeps{…}) call after
+    PubSub is up — the latest dep chain point where every input
+    is ready.
+  - All field/lock access patterns renamed:
+    f.drops.mu.RLock()         → f.drops.RLock()
+    f.drops.mu.RUnlock()       → f.drops.RUnlock()
+    f.drops.currentPickID      → f.drops.CurrentPickID
+    f.drops.campaignCache      → f.drops.CampaignCache
+    f.drops.activeDrops        → f.drops.ActiveDrops
+    f.drops.queuedDrops        → f.drops.QueuedDrops
+    f.drops.idleDrops          → f.drops.IdleDrops
+    f.drops.lastProgressUpdate → f.drops.LastProgressUpdate
+    f.drops.selector           → f.drops.Selector
+    f.drops.stall              → f.drops.Stall
+    (~50 sites total across farmer.go and drops.go.)
+
+Why "transitional": exposing field names and Lock pass-throughs is
+not the end state. They exist so the upcoming method-by-method
+migrations don't also need to re-shape the access surface at the
+same time. Once processDrops & friends move into Service, the
+exported fields collapse into encapsulated state and Lock/Unlock
+disappear.
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — channels, drops, config all pass;
+  no behavior-touching changes were made (the dropState type just
+  changed packages and got renamed).
+
 == 2026-04-29 22:05 == Refactor: Phase 2d — move ActiveDrop + BuildRows into drops ==
 
 The web-API row builder and its data type leave farmer for the

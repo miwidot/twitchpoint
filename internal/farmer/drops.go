@@ -4,35 +4,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/twitch"
 )
-
-// dropState holds internal state for the drop tracker. The stall-detection
-// and cooldown machinery lives in drops.StallTracker (pluggable, separately
-// tested); this struct only holds the orchestration state that doesn't fit
-// there yet.
-type dropState struct {
-	mu            sync.RWMutex
-	activeDrops   []drops.ActiveDrop                   // for /api/drops, status=ACTIVE/DISABLED/COMPLETED
-	queuedDrops   []drops.ActiveDrop                   // for /api/drops, status=QUEUED
-	idleDrops     []drops.ActiveDrop                   // for /api/drops, status=IDLE
-	campaignCache map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
-	currentPickID string                         // ChannelID currently assigned the drop slot, "" if none
-
-	// lastProgressUpdate tracks when applyDropProgressUpdate last fired
-	// (from either WebSocket or poll). pollDropProgressOnce skips its GQL
-	// call if a fresh update arrived in the last ~30s — that's TDM's
-	// "minute_almost_done" pattern: only query CurrentDrop when our local
-	// timer says progress is overdue.
-	lastProgressUpdate time.Time
-
-	selector *drops.Selector
-	stall    *drops.StallTracker
-}
 
 // dropProgressPollLoop polls Twitch's DropCurrentSessionContext GQL every
 // 60 seconds for the currently picked drop channel. This is the bridge that
@@ -61,11 +37,11 @@ func (f *Farmer) dropProgressPollLoop() {
 // just got pushed. Cuts our DropCurrentSession query rate roughly in half
 // when WebSocket is healthy.
 func (f *Farmer) pollDropProgressOnce() {
-	f.drops.mu.RLock()
-	pickedID := f.drops.currentPickID
-	recentUpdate := !f.drops.lastProgressUpdate.IsZero() && time.Since(f.drops.lastProgressUpdate) < 30*time.Second
-	f.drops.mu.RUnlock()
-	pickedCampID := f.drops.stall.LastPickCampaignID()
+	f.drops.RLock()
+	pickedID := f.drops.CurrentPickID
+	recentUpdate := !f.drops.LastProgressUpdate.IsZero() && time.Since(f.drops.LastProgressUpdate) < 30*time.Second
+	f.drops.RUnlock()
+	pickedCampID := f.drops.Stall.LastPickCampaignID()
 
 	if pickedID == "" || pickedCampID == "" {
 		return
@@ -161,13 +137,13 @@ func (f *Farmer) processDrops() {
 	// 2a. Compare the previous pick's drop progress against this cycle's
 	//     inventory. If Twitch did not credit any new minutes, put the channel
 	//     into stallCooldown so the selector skips it next time.
-	f.drops.stall.Apply(campaigns)
+	f.drops.Stall.Apply(campaigns)
 
 	// 2b. Build the active skip-set from stallCooldown (filtering expired entries).
-	skipChannels := f.drops.stall.ActiveSkipSet()
+	skipChannels := f.drops.Stall.ActiveSkipSet()
 
 	// 2c. Run the selector on the (now-updated) inventory, with stalled channels skipped.
-	pick, pool := f.drops.selector.Select(campaigns, skipChannels)
+	pick, pool := f.drops.Selector.Select(campaigns, skipChannels)
 
 	// 3. Build per-campaign UI rows.
 	active, queued, idle := drops.BuildRows(f.cfg, campaigns, pick, pool)
@@ -191,17 +167,17 @@ func (f *Farmer) processDrops() {
 	}
 
 	// 7. Pick applied successfully — commit the new state atomically.
-	f.drops.mu.Lock()
-	f.drops.activeDrops = active
-	f.drops.queuedDrops = queued
-	f.drops.idleDrops = idle
-	f.drops.campaignCache = newCache
+	f.drops.Lock()
+	f.drops.ActiveDrops = active
+	f.drops.QueuedDrops = queued
+	f.drops.IdleDrops = idle
+	f.drops.CampaignCache = newCache
 	if pick != nil {
-		f.drops.currentPickID = pick.ChannelID
+		f.drops.CurrentPickID = pick.ChannelID
 	} else {
-		f.drops.currentPickID = ""
+		f.drops.CurrentPickID = ""
 	}
-	f.drops.mu.Unlock()
+	f.drops.Unlock()
 
 	// 8. Drop existing temp channels that are no longer the pick.
 	f.cleanupNonPickedTempChannels(pick)
@@ -221,7 +197,7 @@ func (f *Farmer) processDrops() {
 
 	// 10. Snapshot the picked channel's current drop progress so the next cycle
 	//     can detect whether Twitch credited any minutes.
-	f.drops.stall.SnapshotPick(pick, campaigns)
+	f.drops.Stall.SnapshotPick(pick, campaigns)
 }
 
 // autoClaimAndMarkCompleted handles drop claims and marks fully-claimed
@@ -303,9 +279,9 @@ func (f *Farmer) handleDropClaim(data twitch.DropClaimData) {
 	// Wait for Twitch to advance the session.
 	time.Sleep(4 * time.Second)
 
-	f.drops.mu.RLock()
-	pickedID := f.drops.currentPickID
-	f.drops.mu.RUnlock()
+	f.drops.RLock()
+	pickedID := f.drops.CurrentPickID
+	f.drops.RUnlock()
 
 	if pickedID != "" && data.DropID != "" {
 		for i := 0; i < 8; i++ {
@@ -364,9 +340,9 @@ func (f *Farmer) markCompletedIfFinishedExternally(campaignID string) {
 // pick — callers must NOT commit currentPickID in that case, otherwise we
 // end up with state believing "drop is running" while no Watcher is active.
 func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.DropCampaign) bool {
-	f.drops.mu.RLock()
-	prevPickID := f.drops.currentPickID
-	f.drops.mu.RUnlock()
+	f.drops.RLock()
+	prevPickID := f.drops.CurrentPickID
+	f.drops.RUnlock()
 
 	if pick == nil {
 		if prevPickID != "" {
@@ -413,7 +389,7 @@ func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.Dro
 		f.addLog("[Drops/Watch] skip %s — game changed to %q (expected one of %s)",
 			pick.ChannelLogin, info.GameName, drops.PickCampaignGames(pick))
 		// Manual-reason cooldown so the selector doesn't immediately re-pick.
-		f.drops.stall.SetManual(pick.ChannelID, 15*time.Minute)
+		f.drops.Stall.SetManual(pick.ChannelID, 15*time.Minute)
 		return false
 	}
 
@@ -428,7 +404,7 @@ func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.Dro
 			pick.ChannelLogin, pick.ChannelID, info.ID)
 		// Cooldown the broken pool ID so the selector doesn't immediately
 		// re-pick the same wrong entry next cycle.
-		f.drops.stall.SetManual(pick.ChannelID, 30*time.Minute)
+		f.drops.Stall.SetManual(pick.ChannelID, 30*time.Minute)
 		return false
 	}
 
@@ -565,17 +541,17 @@ func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
 }
 // Order: ACTIVE / DISABLED / COMPLETED first, then QUEUED, then IDLE.
 func (f *Farmer) GetActiveDrops() []drops.ActiveDrop {
-	f.drops.mu.RLock()
-	defer f.drops.mu.RUnlock()
+	f.drops.RLock()
+	defer f.drops.RUnlock()
 
-	total := len(f.drops.activeDrops) + len(f.drops.queuedDrops) + len(f.drops.idleDrops)
+	total := len(f.drops.ActiveDrops) + len(f.drops.QueuedDrops) + len(f.drops.IdleDrops)
 	if total == 0 {
 		return nil
 	}
 	out := make([]drops.ActiveDrop, 0, total)
-	out = append(out, f.drops.activeDrops...)
-	out = append(out, f.drops.queuedDrops...)
-	out = append(out, f.drops.idleDrops...)
+	out = append(out, f.drops.ActiveDrops...)
+	out = append(out, f.drops.QueuedDrops...)
+	out = append(out, f.drops.IdleDrops...)
 	return out
 }
 
@@ -585,12 +561,12 @@ func (f *Farmer) GetActiveDrops() []drops.ActiveDrop {
 // categories (e.g. "tarkov" before any EFT campaign appears in inventory),
 // callers should additionally hit /api/games/search backed by SearchGameCategories.
 func (f *Farmer) GetEligibleGames() []string {
-	f.drops.mu.RLock()
-	defer f.drops.mu.RUnlock()
+	f.drops.RLock()
+	defer f.drops.RUnlock()
 
 	seen := make(map[string]bool)
 	var out []string
-	for _, c := range f.drops.campaignCache {
+	for _, c := range f.drops.CampaignCache {
 		if c.GameName == "" {
 			continue
 		}
@@ -639,8 +615,8 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 	// advanced to a later drop in a multi-drop campaign.
 	resolvedName := ""
 	resolvedRequired := data.RequiredMinutesWatched
-	f.drops.mu.RLock()
-	if c, ok := f.drops.campaignCache[data.CampaignID]; ok {
+	f.drops.RLock()
+	if c, ok := f.drops.CampaignCache[data.CampaignID]; ok {
 		for _, d := range c.Drops {
 			if d.ID == data.DropID {
 				resolvedName = d.BenefitName
@@ -654,31 +630,31 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 			}
 		}
 	}
-	f.drops.mu.RUnlock()
+	f.drops.RUnlock()
 
-	f.drops.mu.Lock()
+	f.drops.Lock()
 	updated := false
-	for i := range f.drops.activeDrops {
-		if f.drops.activeDrops[i].CampaignID != data.CampaignID {
+	for i := range f.drops.ActiveDrops {
+		if f.drops.ActiveDrops[i].CampaignID != data.CampaignID {
 			continue
 		}
 		// If the cached row already targets a different drop, swap to the new one.
 		if data.DropID != "" && resolvedName != "" {
-			f.drops.activeDrops[i].DropName = resolvedName
+			f.drops.ActiveDrops[i].DropName = resolvedName
 		}
 		if resolvedRequired > 0 {
-			f.drops.activeDrops[i].Required = resolvedRequired
+			f.drops.ActiveDrops[i].Required = resolvedRequired
 		}
-		f.drops.activeDrops[i].Progress = data.CurrentMinutesWatched
-		if f.drops.activeDrops[i].Required > 0 {
-			pct := (data.CurrentMinutesWatched * 100) / f.drops.activeDrops[i].Required
+		f.drops.ActiveDrops[i].Progress = data.CurrentMinutesWatched
+		if f.drops.ActiveDrops[i].Required > 0 {
+			pct := (data.CurrentMinutesWatched * 100) / f.drops.ActiveDrops[i].Required
 			if pct > 100 {
 				pct = 100
 			}
-			f.drops.activeDrops[i].Percent = pct
-			f.drops.activeDrops[i].EtaMinutes = f.drops.activeDrops[i].Required - data.CurrentMinutesWatched
-			if f.drops.activeDrops[i].EtaMinutes < 0 {
-				f.drops.activeDrops[i].EtaMinutes = 0
+			f.drops.ActiveDrops[i].Percent = pct
+			f.drops.ActiveDrops[i].EtaMinutes = f.drops.ActiveDrops[i].Required - data.CurrentMinutesWatched
+			if f.drops.ActiveDrops[i].EtaMinutes < 0 {
+				f.drops.ActiveDrops[i].EtaMinutes = 0
 			}
 		}
 		updated = true
@@ -692,9 +668,9 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 	// Mark the timestamp so pollDropProgressOnce can skip its GQL call if a
 	// fresh WS event already updated the same data (TDM minute_almost_done).
 	if updated {
-		f.drops.lastProgressUpdate = time.Now()
+		f.drops.LastProgressUpdate = time.Now()
 	}
-	f.drops.mu.Unlock()
+	f.drops.Unlock()
 
 	if updated {
 		f.writeLogFile(fmt.Sprintf("[Drops/WS] progress: campaign=%s drop=%s %d minutes",
@@ -708,9 +684,9 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 		// channel view stays in sync with the activeDrops table.
 		nextName := resolvedName
 		nextRequired := resolvedRequired
-		f.drops.mu.RLock()
-		pickedCh := f.drops.currentPickID
-		f.drops.mu.RUnlock()
+		f.drops.RLock()
+		pickedCh := f.drops.CurrentPickID
+		f.drops.RUnlock()
 		if pickedCh != "" {
 			if ch, ok := f.channels.Get(pickedCh); ok {
 				snap := ch.Snapshot()
@@ -740,10 +716,10 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 // channel's actual current game; if the streamer has switched back to the
 // expected game by then, no action.
 func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChangeData) {
-	f.drops.mu.RLock()
-	currentPick := f.drops.currentPickID
-	f.drops.mu.RUnlock()
-	pickCampaign := f.drops.stall.LastPickCampaignID()
+	f.drops.RLock()
+	currentPick := f.drops.CurrentPickID
+	f.drops.RUnlock()
+	pickCampaign := f.drops.Stall.LastPickCampaignID()
 
 	if channelID != currentPick {
 		if data.OldGameName != data.NewGameName {
@@ -753,16 +729,16 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 		return
 	}
 
-	f.drops.mu.RLock()
+	f.drops.RLock()
 	expectedGame := ""
 	pickedChannelLogin := ""
-	if c, ok := f.drops.campaignCache[pickCampaign]; ok {
+	if c, ok := f.drops.CampaignCache[pickCampaign]; ok {
 		expectedGame = c.GameName
 	}
 	if ch, ok := f.channels.Get(channelID); ok {
 		pickedChannelLogin = ch.Login
 	}
-	f.drops.mu.RUnlock()
+	f.drops.RUnlock()
 
 	if expectedGame == "" || pickedChannelLogin == "" {
 		return
@@ -792,9 +768,9 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 
 		// Re-check whether this is still the picked channel (selector may have
 		// moved on while we slept).
-		f.drops.mu.RLock()
-		stillPicked := f.drops.currentPickID == channelID
-		f.drops.mu.RUnlock()
+		f.drops.RLock()
+		stillPicked := f.drops.CurrentPickID == channelID
+		f.drops.RUnlock()
 		if !stillPicked {
 			return
 		}
@@ -806,7 +782,7 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 			return
 		}
 
-		f.drops.stall.SetManual(channelID, 15*time.Minute)
+		f.drops.Stall.SetManual(channelID, 15*time.Minute)
 
 		f.addLog("[Drops/WS] %s changed game (%s -> %s); still wrong after 30s — 15min cooldown, re-picking",
 			channelID, data.OldGameName, data.NewGameName)
