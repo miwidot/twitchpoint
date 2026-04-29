@@ -220,7 +220,11 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
-		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		// Per TDM (channel.py:483): only 204 means accepted. Twitch returns 200
+		// with an error body when the heartbeat is technically valid but the
+		// drop-credit subsystem rejected it (e.g. anti-cheat). Treating that as
+		// success would mask drop-credit failures.
+		if resp.StatusCode == http.StatusNoContent {
 			return
 		}
 		if attempt < heartbeatMaxRetries {

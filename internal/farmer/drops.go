@@ -56,6 +56,13 @@ type dropState struct {
 	lastPickProgress   int
 	stallCooldown      map[string]time.Time // channelID → cooldown end
 
+	// lastProgressUpdate tracks when applyDropProgressUpdate last fired
+	// (from either WebSocket or poll). pollDropProgressOnce skips its GQL
+	// call if a fresh update arrived in the last ~30s — that's TDM's
+	// "minute_almost_done" pattern: only query CurrentDrop when our local
+	// timer says progress is overdue.
+	lastProgressUpdate time.Time
+
 	selector *DropSelector
 }
 
@@ -80,13 +87,22 @@ func (f *Farmer) dropProgressPollLoop() {
 
 // pollDropProgressOnce queries DropCurrentSession for the current pick and
 // applies the result. Idempotent — safe to call frequently.
+//
+// Per TDM watch_service.py:205 (minute_almost_done): skip the GQL call if a
+// WebSocket update arrived in the last 30s — no point re-fetching what we
+// just got pushed. Cuts our DropCurrentSession query rate roughly in half
+// when WebSocket is healthy.
 func (f *Farmer) pollDropProgressOnce() {
 	f.drops.mu.RLock()
 	pickedID := f.drops.currentPickID
 	pickedCampID := f.drops.lastPickCampaignID
+	recentUpdate := !f.drops.lastProgressUpdate.IsZero() && time.Since(f.drops.lastProgressUpdate) < 30*time.Second
 	f.drops.mu.RUnlock()
 
 	if pickedID == "" || pickedCampID == "" {
+		return
+	}
+	if recentUpdate {
 		return
 	}
 
@@ -393,6 +409,50 @@ func (f *Farmer) autoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
 		// AND poll says current >= required AND inventory shows !InInventory,
 		// THAT combination is reliable. See markCompletedIfFinishedExternally.
 	}
+}
+
+// handleDropClaim is the sequential, TDM-aligned drop-claim flow. It:
+//  1. Claims the drop (synchronous — must succeed before we re-evaluate state)
+//  2. Sleeps 4s (Twitch's backend takes a moment to advance the drop session)
+//  3. Polls DropCurrentSession up to 8× (with 2s sleep) waiting for the
+//     dropID to change — i.e. Twitch has advanced to the next drop in the
+//     campaign or the campaign is now done
+//  4. Triggers processDrops to re-pick / mark completed
+//
+// This sequencing prevents the v1.8.0 race where parallel claim + processDrops
+// goroutines saw stale unclaimed state.
+func (f *Farmer) handleDropClaim(data twitch.DropClaimData) {
+	if data.DropInstanceID != "" {
+		if err := f.gql.ClaimDrop(data.DropInstanceID); err != nil {
+			f.addLog("[Drops/WS] Failed to claim drop: %v", err)
+		} else {
+			f.addLog("[Drops/WS] Claimed drop instance %s", data.DropInstanceID)
+		}
+	}
+
+	// Wait for Twitch to advance the session.
+	time.Sleep(4 * time.Second)
+
+	f.drops.mu.RLock()
+	pickedID := f.drops.currentPickID
+	f.drops.mu.RUnlock()
+
+	if pickedID != "" && data.DropID != "" {
+		for i := 0; i < 8; i++ {
+			session, err := f.gql.GetCurrentDropSession(pickedID)
+			if err != nil {
+				break
+			}
+			if session == nil || session.DropID != data.DropID {
+				// Either no more session for this channel (campaign done)
+				// or session has advanced to the next drop.
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	f.processDrops()
 }
 
 // markCompletedIfFinishedExternally is called by pollDropProgressOnce when the
@@ -766,7 +826,16 @@ func (f *Farmer) SearchGameCategories(query string, limit int) ([]string, error)
 // DropID differs from the cached ActiveDrop's drop, the cached row's
 // DropName + Required + Progress are all replaced from the payload (via a
 // lookup against campaignCache to find the human-readable drop name).
+//
+// Per TDM message_handlers.py:251 (drop.can_earn before update_minutes):
+// skip the update entirely if the campaign is currently disabled or completed
+// — the payload is for a drop we shouldn't be earning, displaying it would
+// mislead the user.
 func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
+	// can_earn equivalent: skip if campaign isn't currently farmable.
+	if f.cfg.IsCampaignDisabled(data.CampaignID) || f.cfg.IsCampaignCompleted(data.CampaignID) {
+		return
+	}
 	// Resolve the payload's drop name from the campaign cache so the UI can
 	// show "DROP 6" instead of stale "DROP 1" when Twitch's session has
 	// advanced to a later drop in a multi-drop campaign.
@@ -822,6 +891,12 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 	// at the end of each inventory cycle. Live WebSocket / poll updates
 	// rewriting it would shift the baseline forward between cycles, causing
 	// healthy channels to register as stalled at the next applyStallDetection.
+
+	// Mark the timestamp so pollDropProgressOnce can skip its GQL call if a
+	// fresh WS event already updated the same data (TDM minute_almost_done).
+	if updated {
+		f.drops.lastProgressUpdate = time.Now()
+	}
 	f.drops.mu.Unlock()
 
 	if updated {
@@ -850,6 +925,13 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 // If the channel was the current drop pick AND the new game does not match
 // the picked campaign's game, the channel is added to stallCooldown for
 // 15 min and an out-of-cycle selector re-run is triggered.
+//
+// Per TDM message_handlers.py:121 (check_online → ONLINE_DELAY 120s): we
+// debounce 30s before reacting. Streamers often flap game/title rapidly
+// (especially during stream-start or category transitions), and reacting
+// instantly causes unnecessary channel switches. After 30s, re-fetch the
+// channel's actual current game; if the streamer has switched back to the
+// expected game by then, no action.
 func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChangeData) {
 	if data.OldGameName == data.NewGameName {
 		return
@@ -868,31 +950,60 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 
 	f.drops.mu.RLock()
 	expectedGame := ""
+	pickedChannelLogin := ""
 	if c, ok := f.drops.campaignCache[pickCampaign]; ok {
 		expectedGame = c.GameName
 	}
+	f.mu.RLock()
+	if ch, ok := f.channels[channelID]; ok {
+		pickedChannelLogin = ch.Login
+	}
+	f.mu.RUnlock()
 	f.drops.mu.RUnlock()
 
-	if expectedGame == "" {
+	if expectedGame == "" || pickedChannelLogin == "" {
 		return
 	}
 
+	// Optimistic early-out: payload already shows we're back on the right game.
 	if strings.EqualFold(data.NewGameName, expectedGame) {
 		f.addLog("[Drops/WS] %s switched back to %q — keeping pick", channelID, expectedGame)
 		return
 	}
 
-	f.drops.mu.Lock()
-	if f.drops.stallCooldown == nil {
-		f.drops.stallCooldown = make(map[string]time.Time)
-	}
-	f.drops.stallCooldown[channelID] = time.Now().Add(15 * time.Minute)
-	f.drops.mu.Unlock()
+	// Debounce 30s, then re-verify via fresh GetChannelInfo before applying
+	// the cooldown. Absorbs streamer flapping.
+	go func() {
+		time.Sleep(30 * time.Second)
 
-	f.addLog("[Drops/WS] %s changed game (%s -> %s); expected %s — 15min cooldown, re-picking",
-		channelID, data.OldGameName, data.NewGameName, expectedGame)
+		// Re-check whether this is still the picked channel (selector may have
+		// moved on while we slept).
+		f.drops.mu.RLock()
+		stillPicked := f.drops.currentPickID == channelID
+		f.drops.mu.RUnlock()
+		if !stillPicked {
+			return
+		}
 
-	go f.processDrops()
+		info, err := f.gql.GetChannelInfo(pickedChannelLogin)
+		if err == nil && strings.EqualFold(info.GameName, expectedGame) {
+			f.addLog("[Drops/WS] %s flapped back to %q during 30s debounce — keeping pick",
+				channelID, expectedGame)
+			return
+		}
+
+		f.drops.mu.Lock()
+		if f.drops.stallCooldown == nil {
+			f.drops.stallCooldown = make(map[string]time.Time)
+		}
+		f.drops.stallCooldown[channelID] = time.Now().Add(15 * time.Minute)
+		f.drops.mu.Unlock()
+
+		f.addLog("[Drops/WS] %s changed game (%s -> %s); still wrong after 30s — 15min cooldown, re-picking",
+			channelID, data.OldGameName, data.NewGameName)
+
+		f.processDrops()
+	}()
 }
 
 // (scrubStaleCompleted was removed — it conflicted with the

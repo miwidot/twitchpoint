@@ -712,19 +712,14 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 		f.applyDropProgressUpdate(data)
 
 	case twitch.EventDropClaim:
+		// Per TDM message_handlers.py:201-237: drop-claim is sequential, not
+		// fire-and-forget. Steps: claim → wait 4s → poll CurrentDrop until
+		// drop_id changes (max 8 retries × 2s) → re-evaluate. Doing claim and
+		// processDrops as parallel goroutines (the v1.8.0-as-shipped behavior)
+		// races: processDrops can pull inventory before the claim is
+		// recorded, then sees the drop as still unclaimed.
 		data := evt.Data.(twitch.DropClaimData)
-		if data.DropInstanceID != "" {
-			instanceID := data.DropInstanceID
-			go func() {
-				if err := f.gql.ClaimDrop(instanceID); err != nil {
-					f.addLog("[Drops/WS] Failed to claim drop: %v", err)
-				} else {
-					f.addLog("[Drops/WS] Claimed drop instance %s", instanceID)
-				}
-			}()
-		}
-		// Out-of-cycle re-run so completion + queue advance happen instantly.
-		go f.processDrops()
+		go f.handleDropClaim(data)
 
 	case twitch.EventGameChange:
 		data := evt.Data.(twitch.GameChangeData)
