@@ -1,3 +1,68 @@
+== 2026-04-29 12:57 == Major: WebSocket-driven drops + wanted_games priority (v1.8.0) ==
+
+Replaces 5-min inventory polling with Twitch PubSub WebSocket for
+real-time drop progress + game-change detection. Replaces the v1.7.0
+remaining_time + pin sort with a user-ordered wanted_games priority
+list. Inspired by TwitchDropsMiner.
+
+What changed:
+- WebSocket: subscribe user-drop-events.<userID> at startup. drop-progress
+  events update activeDrops in-memory (UI shows new progress within ~1s
+  instead of waiting for the next 15-min poll). drop-claim events trigger
+  ClaimDrop async + an out-of-cycle inventory refresh.
+- WebSocket: subscribe broadcast-settings-update.<channelID> for the
+  currently picked channel. Game-change events trigger a 15-min
+  stallCooldown for that channel and an immediate selector re-pick —
+  fixes the case where a streamer switches mid-stream from ABI to
+  Just Chatting and we keep watching the wrong game.
+- New PubSub handlers (handleDropEvent, handleBroadcastSettings) +
+  per-channel subscribe/unsubscribe helpers in farmer.
+- New config field GamesToWatch (ordered priority list) with helpers
+  Add/Remove/Move/Set/GetGamesToWatch (case-insensitive). Backward
+  compat — empty list falls back to v1.7.0 remaining_time-only sort.
+- Selector sortPool primary key changed from (pinned, endAt, viewers)
+  to (wanted_games_rank, endAt, viewers). When a channel serves
+  multiple campaigns from different games, the BEST (lowest) game-rank
+  wins.
+- TUI: new modal game-list editor on 'g' keybind. ↑↓ navigate, + add
+  (text-input prompt), - remove, u/d move up/down, enter/esc close
+  (autosaves on close). 'i' pin keybind removed.
+- Web UI: new Wanted Games section above Drop Campaigns with
+  add/up/down/remove plain-JS controls (DOM constructed via
+  createElement + textContent — XSS-safe). Pin column removed from
+  drops table.
+- New scrubStaleCompleted: at the start of each cycle, removes
+  campaign IDs from CompletedCampaigns whose drops are again unclaimed
+  in the new inventory. Fixes the v1.7.0 bug where Marble Day 245
+  (daily-rolling) got marked completed forever.
+- Polling cadence reduced from 5 min to 15 min — WebSocket carries the
+  real-time load, polling is just a safety net.
+
+What we KEEP from v1.7.0 (TDM doesn't have, we are ahead):
+- Channel-pool architecture
+- Stall-cooldown (demote-on-no-credit, 30 min)
+- Benefit-ID dedup via pool
+
+Backward compat:
+- PinnedCampaignID field stays in Config schema (silently ignored).
+- Empty GamesToWatch behaves exactly like v1.7.0 — opt-in to new sort
+  by adding games via TUI 'g' or web "Wanted Games" section.
+
+Files: internal/config/config.go (+helpers), internal/config/config_test.go
+(+4 tests), internal/twitch/types.go (+3 events +3 payloads),
+internal/twitch/pubsub.go (+2 topic handlers; Unlisten existed),
+internal/farmer/farmer.go (+3 event handlers + user-drop-events sub +
+poll cadence), internal/farmer/drops.go (+scrubStaleCompleted +
+applyDropProgressUpdate + handleChannelGameChange +
+subscribe/unsubscribe broadcast-settings),
+internal/farmer/dropselector.go (sortPool rewrite),
+internal/farmer/dropselector_test.go (4 new tests, 1 replaced),
+internal/ui/app.go (+inputGameList +inputAddGameName + handleGameListKey
++ submit handling), internal/ui/components.go (+renderGameListEditor +
+help bar g), internal/web/server.go (+handleWantedGames),
+internal/web/static/index.html (+Wanted Games section, -pin column),
+cmd/twitchpoint/main.go (1.7.0 -> 1.8.0).
+
 == 2026-04-28 23:23 == Major: Drop subsystem rewrite — channel-pool selector (v1.7.0) ==
 
 Replaces ~1500 LoC of parallel-multi-drop coordination (drops.go +
