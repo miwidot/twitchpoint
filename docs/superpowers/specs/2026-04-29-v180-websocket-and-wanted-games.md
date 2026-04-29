@@ -44,7 +44,7 @@ This collapses the gap between "Twitch credited a minute" and "we know about it"
 When the selector picks a channel and `applySelectorPick` registers it as a temp channel, we also subscribe to:
 
 - `broadcast-settings-update.<channelID>` — fires when streamer changes game/title. **Reaction:** if new game ≠ campaign's expected game, mark the channel as game-mismatched in `stallCooldown` (15 min, shorter than no-credit cooldown) and trigger out-of-cycle selector re-run.
-- `video-playback-by-id.<channelID>` — we already subscribe; behavior unchanged. The `stream-down` event already exists in our event handler; we just stop suppressing the immediate selector re-run that v1.7.0 removed (re-introduce it because now we know precisely when the channel went offline, no need to wait 5 min).
+- `video-playback-by-id.<channelID>` — we already subscribe; behavior unchanged. The `stream-down` event already exists in our event handler. **Implementation:** when the picked drop channel goes offline (`EventStreamDown` fires AND channelID == currentPickID), trigger an out-of-cycle `processDrops` so the selector picks a new drops-enabled channel within seconds instead of waiting up to 15 minutes for the next inventory cycle. v1.7.0 removed this immediate re-run; v1.8.0 must re-introduce it for the picked channel only (keep the v1.7.0 silence for non-pick channels to avoid flooding processDrops).
 
 When the selector picks a different channel next cycle, the previous channel's per-channel topics are unsubscribed. PubSub topic delta is computed in `applySelectorPick`.
 
@@ -112,11 +112,51 @@ The drops table on the main screen does NOT change layout — it just sorts by t
 - `GET /api/wanted_games` → returns the ordered list
 - `PUT /api/wanted_games` → body: `{"games": ["a", "b", "c"]}` — replaces the whole list atomically
 
-### 6. Daily-rolling campaign fix
+### 6. Source-of-truth: `dropCampaignsInProgress`
 
-In `processDrops`, before running the selector, scrub `CompletedCampaigns`:
+**Key insight from live testing:** Twitch's dashboard query (`dropCampaigns`)
+cannot be trusted to report claim status truthfully. Marble Day 245 showed
+`isClaimed: false` for all 6 drops in dashboard, but `DropCurrentSession`
+reported `currentMinutesWatched: 744 / requiredMinutesWatched: 720` —
+the user had already claimed everything externally.
+
+The reliable signal is `InInventory` (`dropCampaignsInProgress`):
+- **In progress AND drops have current < required** → still farmable
+- **Not in progress** (only in dashboard) → already complete, mark and skip
+- **In progress but currentMinutes >= required for any drop** → that drop done, claim it, keep farming the others
+
+Earlier drafts of this spec called for `scrubStaleCompleted` to un-mark
+campaigns based on dashboard's `claimed: false`. That was abandoned —
+dashboard lies, scrub fights the poll, infinite loop. Replaced by the
+`InInventory` check below.
+
+**`autoClaimAndMarkCompleted` rule** (replaces both old logic + the dropped scrub):
 
 ```go
+for _, c := range campaigns {
+    // ... eligibility checks ...
+    // Auto-claim ready drops (existing logic).
+    // Then:
+    if !c.InInventory {
+        // Not in dropCampaignsInProgress → user has fully claimed it
+        // (or never had progress). Either way: skip from now on.
+        f.cfg.MarkCampaignCompleted(c.ID)
+        f.cfg.Save()
+    }
+}
+```
+
+**`pollDropProgressOnce` rule** (poll handler): when poll says
+`current >= required`, do NOT mark the campaign completed. Instead trigger
+an out-of-cycle `processDrops` so the inventory pull runs and the
+`InInventory` check evaluates correctly. Multi-drop campaigns where one
+drop is done but others remain stay un-completed.
+
+(Original "scrubStaleCompleted before selector" content kept below for
+historical reference; do not implement it):
+
+```go
+// (HISTORICAL — replaced by InInventory check above)
 for _, c := range campaigns {
     if !f.cfg.IsCampaignCompleted(c.ID) {
         continue
@@ -136,6 +176,34 @@ for _, c := range campaigns {
 ```
 
 Needs new `Config.UnmarkCampaignCompleted(id)` helper.
+
+### 6.5 Stall-detection baseline must come from inventory cycles only
+
+`applyStallDetection` compares the new cycle's drop progress against
+`lastPickProgress` to decide if the picked channel is stalled. Therefore
+`lastPickProgress` MUST be the snapshot from the previous inventory cycle —
+not the latest live value from WebSocket / poll.
+
+`applyDropProgressUpdate` (called from PubSub drop-progress events AND from
+`pollDropProgressOnce`) updates the in-memory `activeDrops` for UI freshness.
+It MUST NOT mutate `lastPickProgress`. Only `snapshotPickProgress` (called at
+the end of each `processDrops`) writes to `lastPickProgress`.
+
+If we let live updates rewrite the baseline, a healthy channel that earns
+5 min between cycles will appear stalled at the next 15-min check (because
+inventory might still report the stale value, or the same value).
+
+### 6.6 Multi-drop progress matching uses (CampaignID, DropID)
+
+`applyDropProgressUpdate` receives both `CampaignID` and `DropID` in the
+`DropProgressData` payload. To avoid showing one drop's progress against
+another drop's required-minutes (e.g. Marble Day's DROP 1 = 30 min vs
+DROP 6 = 720 min), match the in-memory `activeDrops` entry by **both**
+fields. CampaignID-only match is a v1.8.0 implementation bug.
+
+When the matched ActiveDrop's required differs from the payload's required,
+trust the payload (Twitch's session reports the currently-earning drop,
+which may have advanced past the one we cached at last inventory cycle).
 
 ### 7. Polling cadence
 
