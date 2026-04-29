@@ -82,3 +82,73 @@ func TestPinnedCampaignBackwardCompatibleConfig(t *testing.T) {
 		t.Fatalf("missing pin field should default to empty, got %q", got)
 	}
 }
+
+func TestGamesToWatchAddRemoveCaseInsensitive(t *testing.T) {
+	c := &Config{}
+	c.AddGameToWatch("Arena Breakout: Infinite")
+	c.AddGameToWatch("Marvel Rivals")
+	c.AddGameToWatch("arena breakout: infinite") // dup, different case
+	if got := c.GetGamesToWatch(); len(got) != 2 {
+		t.Fatalf("dup add should be no-op, got %d entries: %v", len(got), got)
+	}
+
+	c.RemoveGameFromWatch("MARVEL rivals")
+	if got := c.GetGamesToWatch(); len(got) != 1 || got[0] != "Arena Breakout: Infinite" {
+		t.Fatalf("case-insensitive remove failed, got %v", got)
+	}
+
+	c.RemoveGameFromWatch("not present")
+	if got := c.GetGamesToWatch(); len(got) != 1 {
+		t.Fatalf("removing absent game should be no-op, got %d entries", len(got))
+	}
+}
+
+func TestMoveGameToWatchUpDownAndBoundaries(t *testing.T) {
+	c := &Config{GamesToWatch: []string{"a", "b", "c"}}
+
+	c.MoveGameToWatch("c", -1)
+	if got := c.GamesToWatch; got[0] != "a" || got[1] != "c" || got[2] != "b" {
+		t.Fatalf("after move c up, want [a c b], got %v", got)
+	}
+
+	c.MoveGameToWatch("c", -1)
+	if got := c.GamesToWatch; got[0] != "c" || got[1] != "a" || got[2] != "b" {
+		t.Fatalf("after move c up again, want [c a b], got %v", got)
+	}
+
+	c.MoveGameToWatch("c", -1) // already at top
+	if got := c.GamesToWatch; got[0] != "c" {
+		t.Fatalf("move at top boundary should be no-op, got %v", got)
+	}
+
+	c.MoveGameToWatch("c", +1)
+	if got := c.GamesToWatch; got[0] != "a" || got[1] != "c" {
+		t.Fatalf("after move c down, want [a c b], got %v", got)
+	}
+
+	c.MoveGameToWatch("missing", -1) // absent game = no-op
+	if got := c.GamesToWatch; len(got) != 3 {
+		t.Fatalf("move absent game should be no-op, got %v", got)
+	}
+}
+
+func TestSetGamesToWatchDedupAndTrim(t *testing.T) {
+	c := &Config{}
+	c.SetGamesToWatch([]string{"  Arena  ", "marvel", "Arena", "", "  ", "marvel"})
+	got := c.GetGamesToWatch()
+	if len(got) != 2 || got[0] != "Arena" || got[1] != "marvel" {
+		t.Fatalf("SetGamesToWatch should dedup case-insensitive and trim, got %v", got)
+	}
+}
+
+func TestUnmarkCampaignCompleted(t *testing.T) {
+	c := &Config{CompletedCampaigns: []string{"a", "b", "c"}}
+	c.UnmarkCampaignCompleted("b")
+	if len(c.CompletedCampaigns) != 2 || c.CompletedCampaigns[0] != "a" || c.CompletedCampaigns[1] != "c" {
+		t.Fatalf("unmark should remove only the matched ID, got %v", c.CompletedCampaigns)
+	}
+	c.UnmarkCampaignCompleted("not-present")
+	if len(c.CompletedCampaigns) != 2 {
+		t.Fatalf("unmark of absent ID should be no-op, got %v", c.CompletedCampaigns)
+	}
+}

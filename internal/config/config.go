@@ -28,7 +28,8 @@ type Config struct {
 	DropsEnabled          bool     `json:"drops_enabled"`                         // enable drop mining (default true)
 	DisabledCampaigns     []string `json:"disabled_campaigns,omitempty"`          // campaign IDs to skip
 	CompletedCampaigns    []string `json:"completed_campaigns,omitempty"`         // campaign IDs already fully claimed
-	PinnedCampaignID      string   `json:"pinned_campaign_id,omitempty"`          // single campaign to prioritize over remaining-time sort (empty = no pin)
+	PinnedCampaignID      string   `json:"pinned_campaign_id,omitempty"`          // v1.7.0 (deprecated v1.8.0; ignored by selector but kept for backward compat)
+	GamesToWatch          []string `json:"games_to_watch,omitempty"`              // v1.8.0 ordered priority list of game names; empty = remaining_time fallback
 
 	path string // file path, not serialized
 }
@@ -308,6 +309,84 @@ func (c *Config) IsCampaignPinned(campaignID string) bool {
 // GetPinnedCampaign returns the currently pinned campaign ID, or empty string if none.
 func (c *Config) GetPinnedCampaign() string {
 	return c.PinnedCampaignID
+}
+
+// GetGamesToWatch returns the ordered wanted-games list (copy, safe to mutate).
+func (c *Config) GetGamesToWatch() []string {
+	out := make([]string, len(c.GamesToWatch))
+	copy(out, c.GamesToWatch)
+	return out
+}
+
+// AddGameToWatch appends a game to the end of the priority list if not already present (case-insensitive).
+func (c *Config) AddGameToWatch(game string) {
+	game = strings.TrimSpace(game)
+	if game == "" {
+		return
+	}
+	for _, g := range c.GamesToWatch {
+		if strings.EqualFold(g, game) {
+			return
+		}
+	}
+	c.GamesToWatch = append(c.GamesToWatch, game)
+}
+
+// RemoveGameFromWatch removes a game from the priority list (case-insensitive).
+func (c *Config) RemoveGameFromWatch(game string) {
+	for i, g := range c.GamesToWatch {
+		if strings.EqualFold(g, game) {
+			c.GamesToWatch = append(c.GamesToWatch[:i], c.GamesToWatch[i+1:]...)
+			return
+		}
+	}
+}
+
+// MoveGameToWatch shifts a game one position in the priority list.
+// direction: -1 = up (toward higher priority), +1 = down. No-op at boundaries.
+func (c *Config) MoveGameToWatch(game string, direction int) {
+	idx := -1
+	for i, g := range c.GamesToWatch {
+		if strings.EqualFold(g, game) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	target := idx + direction
+	if target < 0 || target >= len(c.GamesToWatch) {
+		return
+	}
+	c.GamesToWatch[idx], c.GamesToWatch[target] = c.GamesToWatch[target], c.GamesToWatch[idx]
+}
+
+// SetGamesToWatch replaces the whole list (used by web API atomic reorder).
+// Trims whitespace, dedupes case-insensitively, drops empty entries.
+func (c *Config) SetGamesToWatch(games []string) {
+	out := make([]string, 0, len(games))
+	seen := make(map[string]bool, len(games))
+	for _, g := range games {
+		key := strings.ToLower(strings.TrimSpace(g))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, strings.TrimSpace(g))
+	}
+	c.GamesToWatch = out
+}
+
+// UnmarkCampaignCompleted removes a campaign ID from the completed list.
+// Used by daily-rolling-campaign scrub when Twitch resets a campaign's drops.
+func (c *Config) UnmarkCampaignCompleted(campaignID string) {
+	for i, id := range c.CompletedCampaigns {
+		if id == campaignID {
+			c.CompletedCampaigns = append(c.CompletedCampaigns[:i], c.CompletedCampaigns[i+1:]...)
+			return
+		}
+	}
 }
 
 // HasChannel checks if a channel is in the config.
