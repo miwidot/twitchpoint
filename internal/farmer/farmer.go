@@ -36,7 +36,7 @@ type Farmer struct {
 
 	user *twitch.UserInfo
 
-	mu       sync.RWMutex // protects: stopped, seenClaims, seenRaids, stats counters, rotationIndex, nameCache
+	mu       sync.RWMutex // protects: stopped, rotationIndex (rotationIndex moves with Phase 4 batch 3)
 	channels *channels.Registry
 
 	logMu      sync.RWMutex
@@ -48,19 +48,10 @@ type Farmer struct {
 	stopCh    chan struct{}
 	stopped   bool
 
-	// Stats
-	totalPointsEarned int
-	totalClaimsMade   int
-
-	// Dedup
-	seenClaims map[string]time.Time // claimID -> when we attempted
-	seenRaids  map[string]time.Time // raidID -> when we attempted
-
-	// Name cache for untracked channels (PubSub fires for all channels user watches)
-	nameCache map[string]string // channelID -> displayName
-
-	// Rotation
-	rotationIndex int // which pair of channels is currently being watched
+	// Rotation cursor — moves to points.Service when rotateChannels is moved
+	// across in Phase 4 batch 3. For now still here because farmer.rotateChannels
+	// reads/writes it under f.mu.
+	rotationIndex int
 
 	// Drops
 	drops *drops.Service
@@ -78,14 +69,11 @@ type Farmer struct {
 // New creates a new Farmer from config.
 func New(cfg *config.Config, version string) *Farmer {
 	return &Farmer{
-		cfg:        cfg,
-		version:    version,
-		events:     make(chan twitch.FarmerEvent, 100),
-		channels:   channels.New(),
-		seenClaims: make(map[string]time.Time),
-		nameCache:  make(map[string]string),
-		seenRaids:  make(map[string]time.Time),
-		stopCh:     make(chan struct{}),
+		cfg:      cfg,
+		version:  version,
+		events:   make(chan twitch.FarmerEvent, 100),
+		channels: channels.New(),
+		stopCh:   make(chan struct{}),
 	}
 }
 
@@ -605,64 +593,29 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 	case twitch.EventClaimAvailable:
 		data := evt.Data.(twitch.ClaimData)
 
-		// Dedup - only attempt each claim once
-		f.mu.Lock()
-		if _, seen := f.seenClaims[data.ClaimID]; seen {
-			f.mu.Unlock()
+		// Dedup — only attempt each claim once.
+		if f.points.SeenClaim(data.ClaimID) {
 			return
 		}
-		f.seenClaims[data.ClaimID] = time.Now()
-		// Clean old entries
-		for id, t := range f.seenClaims {
-			if time.Since(t) > 30*time.Minute {
-				delete(f.seenClaims, id)
-			}
-		}
-		f.mu.Unlock()
 
-		// Resolve channel name
 		channelName := evt.ChannelID
-		claimCh := ch // from top-level lookup
 		if ok {
 			channelName = ch.DisplayName
 		} else {
-			// Untracked channel — check name cache or resolve via GQL
-			channelName = f.resolveChannelName(evt.ChannelID)
+			channelName = f.points.ResolveChannelName(evt.ChannelID)
 		}
 
-		// Attempt claim with retry
-		go func() {
-			var lastErr error
-			for attempt := 0; attempt < 3; attempt++ {
-				if attempt > 0 {
-					time.Sleep(2 * time.Second)
-				}
-				lastErr = f.gql.ClaimCommunityPoints(evt.ChannelID, data.ClaimID)
-				if lastErr == nil {
-					if claimCh != nil {
-						claimCh.RecordClaim()
-					}
-					f.mu.Lock()
-					f.totalClaimsMade++
-					f.mu.Unlock()
-					f.addLog("Claimed bonus on %s!", channelName)
-					return
-				}
-			}
-			f.addLog("Claim failed on %s after 3 attempts: %v", channelName, lastErr)
-		}()
+		f.points.AttemptClaim(evt.ChannelID, data.ClaimID, channelName, ch)
 
 	case twitch.EventPointsEarned:
 		data := evt.Data.(twitch.PointsData)
-		f.mu.Lock()
-		f.totalPointsEarned += data.PointsGained
-		f.mu.Unlock()
+		f.points.RecordPoints(data.PointsGained)
 		if ok {
 			ch.AddPointsEarned(data.PointsGained, data.TotalPoints)
 			f.addLog("+%d points on %s (%s) - Balance: %d",
 				data.PointsGained, ch.DisplayName, data.ReasonCode, data.TotalPoints)
 		} else {
-			channelName := f.resolveChannelName(evt.ChannelID)
+			channelName := f.points.ResolveChannelName(evt.ChannelID)
 			f.addLog("+%d points on %s (%s) - Balance: %d",
 				data.PointsGained, channelName, data.ReasonCode, data.TotalPoints)
 		}
@@ -734,20 +687,10 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 	case twitch.EventRaid:
 		data := evt.Data.(twitch.RaidData)
 
-		// Only attempt each raid once - PubSub fires this event every second during countdown
-		f.mu.Lock()
-		if _, seen := f.seenRaids[data.RaidID]; seen {
-			f.mu.Unlock()
+		// Dedup — PubSub fires EventRaid every second during the countdown.
+		if f.points.SeenRaid(data.RaidID) {
 			return
 		}
-		f.seenRaids[data.RaidID] = time.Now()
-		// Clean up old entries (older than 30 min)
-		for id, t := range f.seenRaids {
-			if time.Since(t) > 30*time.Minute {
-				delete(f.seenRaids, id)
-			}
-		}
-		f.mu.Unlock()
 
 		sourceName := evt.ChannelID
 		if ok {
@@ -1070,29 +1013,6 @@ func (f *Farmer) writeLogFile(msg string) {
 	f.logFile.WriteString(line)
 }
 
-// resolveChannelName looks up a channel name by ID for untracked channels.
-// Uses a simple cache to avoid repeated GQL calls.
-func (f *Farmer) resolveChannelName(channelID string) string {
-	f.mu.RLock()
-	if name, ok := f.nameCache[channelID]; ok {
-		f.mu.RUnlock()
-		return name
-	}
-	f.mu.RUnlock()
-
-	// GQL lookup by channel ID
-	name, err := f.gql.GetChannelNameByID(channelID)
-	if err != nil || name == "" {
-		return channelID // fallback to raw ID
-	}
-
-	f.mu.Lock()
-	f.nameCache[channelID] = name
-	f.mu.Unlock()
-
-	return name
-}
-
 // GetUser returns the authenticated user info.
 func (f *Farmer) GetUser() *twitch.UserInfo {
 	return f.user
@@ -1147,13 +1067,11 @@ type Stats struct {
 }
 
 func (f *Farmer) GetStats() Stats {
-	f.mu.RLock()
 	stats := Stats{
-		TotalPointsEarned: f.totalPointsEarned,
-		TotalClaimsMade:   f.totalClaimsMade,
+		TotalPointsEarned: f.points.TotalPointsEarned(),
+		TotalClaimsMade:   f.points.TotalClaimsMade(),
 		Uptime:            time.Since(f.startTime),
 	}
-	f.mu.RUnlock()
 
 	stats.ChannelsTotal = f.channels.Len()
 	for _, snap := range f.channels.Snapshots() {

@@ -1,3 +1,25 @@
+== 2026-04-30 01:30 == Refactor: Phase 4b — dedup/stats/naming move to points.Service ==
+
+PubSub-event helpers extracted from farmer.handleEvent:
+- SeenClaim/SeenRaid (dedup with 30 min TTL + prune-on-insert)
+- RecordPoints (totalPointsEarned counter)
+- AttemptClaim (3-retry async ClaimCommunityPoints with totalClaimsMade
+  bump + channel.RecordClaim mirror + log)
+- ResolveChannelName (nameCache + GQL fallback for untracked PubSub events)
+
+Farmer.handleEvent now delegates these — the EventClaimAvailable case
+shrank from ~50 lines to 10 (dedup → resolve name → attempt). Farmer
+state for these (seenClaims, seenRaids, totalPointsEarned,
+totalClaimsMade, nameCache) all gone; Farmer.mu now only protects
+`stopped` and `rotationIndex`.
+
+GetStats reads from f.points.TotalPointsEarned/TotalClaimsMade
+accessors instead of internal fields. resolveChannelName method on
+Farmer deleted; web/TUI never called it.
+
+Files: internal/points/events.go (new), internal/points/naming.go
+(new), internal/farmer/farmer.go.
+
 == 2026-04-30 01:21 == Refactor: Phase 4a — points.Service skeleton ==
 
 Start of the v2.0 split's last domain extraction. internal/points/
