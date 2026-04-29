@@ -82,10 +82,17 @@ func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []tw
 		if s.cfg.IsCampaignCompleted(c.ID) {
 			continue
 		}
-		// Need at least one watchable, unclaimed drop
+		// Need at least one drop that's actually earnable RIGHT NOW.
+		// IsEarnable mirrors TDM's TimedDrop._base_can_earn — checks
+		// not just unclaimed-with-required-mins but also the per-drop
+		// time window and the precondition chain. Without this, the
+		// selector picks campaigns whose first-unclaimed drop is
+		// gated (precondition unclaimed, or startAt in the future)
+		// and Twitch refuses to credit, leaving the bot blind-
+		// heartbeating until the silent-pick threshold trips.
 		hasWatchable := false
 		for _, d := range c.Drops {
-			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
+			if d.IsEarnable(now, c.Drops) {
 				hasWatchable = true
 				break
 			}

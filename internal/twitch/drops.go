@@ -27,7 +27,12 @@ const queryDropsDashboard = `query ViewerDropsDashboard {
 			timeBasedDrops {
 				id
 				name
+				startAt
+				endAt
 				requiredMinutesWatched
+				preconditionDrops {
+					id
+				}
 				benefitEdges {
 					benefit {
 						id
@@ -78,7 +83,12 @@ const queryDropsInventory = `query Inventory {
 				timeBasedDrops {
 					id
 					name
+					startAt
+					endAt
 					requiredMinutesWatched
+					preconditionDrops {
+						id
+					}
 					benefitEdges {
 						benefit {
 							id
@@ -134,8 +144,55 @@ type TimeBasedDrop struct {
 	CurrentMinutesWatched  int
 	DropInstanceID         string // non-empty when progress exists
 	IsClaimed              bool
-	BenefitID              string // benefit ID for cross-referencing with gameEventDrops
+	BenefitID              string    // benefit ID for cross-referencing with gameEventDrops
 	BenefitName            string
+	StartAt                time.Time // per-drop time window — drop only earnable from StartAt
+	EndAt                  time.Time // per-drop time window — drop only earnable until EndAt
+	PreconditionDrops      []string  // IDs of drops that must be claimed before this one is earnable
+}
+
+// IsEarnable returns true when the drop is currently earnable on Twitch's
+// side. Mirrors TDM's TimedDrop._base_can_earn — checks the drop's own
+// time window plus the preconditions chain (every precondition drop must
+// already be claimed). Caller passes the campaign's full drop list so we
+// can resolve preconditionDrops IDs back to their is_claimed state.
+//
+// Without this filter, the bot picks campaigns whose first-unclaimed drop
+// is technically still in inventory but Twitch refuses to credit (drop
+// hasn't started yet, or its precondition isn't claimed). Symptom:
+// getCurrentDropSession returns nil and the bot wastes a pick window.
+func (d *TimeBasedDrop) IsEarnable(now time.Time, campaignDrops []TimeBasedDrop) bool {
+	if d.IsClaimed {
+		return false
+	}
+	if d.RequiredMinutesWatched <= 0 {
+		return false
+	}
+	// Time window. A zero StartAt is treated as "always started" (legacy
+	// drops without per-drop timestamps); zero EndAt likewise means
+	// "no end" — fall back to the campaign-level window in callers if
+	// stricter checking is needed.
+	if !d.StartAt.IsZero() && now.Before(d.StartAt) {
+		return false
+	}
+	if !d.EndAt.IsZero() && !now.Before(d.EndAt) {
+		return false
+	}
+	// Preconditions: every precondition drop must already be claimed.
+	if len(d.PreconditionDrops) > 0 {
+		claimed := make(map[string]bool, len(campaignDrops))
+		for _, cd := range campaignDrops {
+			if cd.IsClaimed {
+				claimed[cd.ID] = true
+			}
+		}
+		for _, pid := range d.PreconditionDrops {
+			if !claimed[pid] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // DropChannel represents a channel allowed for a drop campaign.
@@ -401,6 +458,34 @@ func parseCampaignList(campaignList []interface{}) []DropCampaign {
 						ID:                    getString(dMap, "id"),
 						Name:                  getString(dMap, "name"),
 						RequiredMinutesWatched: getInt(dMap, "requiredMinutesWatched"),
+					}
+
+					// Parse per-drop time window (TDM parity — a drop's
+					// startAt/endAt may differ from the campaign's window
+					// for multi-drop chains).
+					if startAt := getString(dMap, "startAt"); startAt != "" {
+						if t, err := time.Parse(time.RFC3339, startAt); err == nil {
+							drop.StartAt = t
+						}
+					}
+					if endAt := getString(dMap, "endAt"); endAt != "" {
+						if t, err := time.Parse(time.RFC3339, endAt); err == nil {
+							drop.EndAt = t
+						}
+					}
+
+					// Parse preconditionDrops list (drops that must be
+					// claimed before this one becomes earnable).
+					if pre, ok := dMap["preconditionDrops"]; ok && pre != nil {
+						if preList, ok := pre.([]interface{}); ok {
+							for _, pItem := range preList {
+								if pMap, ok := pItem.(map[string]interface{}); ok {
+									if pid := getString(pMap, "id"); pid != "" {
+										drop.PreconditionDrops = append(drop.PreconditionDrops, pid)
+									}
+								}
+							}
+						}
 					}
 
 					// Parse benefit name
