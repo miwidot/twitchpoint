@@ -469,6 +469,7 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 			if ok {
 				ch.ClearDropInfo()
 			}
+			f.unsubscribeBroadcastSettings(prevPickID)
 		}
 		return
 	}
@@ -526,6 +527,33 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 		if ok {
 			prevCh.ClearDropInfo()
 		}
+		f.unsubscribeBroadcastSettings(prevPickID)
+	}
+
+	// v1.8.0: subscribe to broadcast-settings-update for the new pick so we get
+	// instant game-change notifications. Idempotent — Listen ignores duplicates.
+	f.subscribeBroadcastSettings(pick.ChannelID)
+}
+
+// subscribeBroadcastSettings subscribes to broadcast-settings-update for one channel.
+func (f *Farmer) subscribeBroadcastSettings(channelID string) {
+	if f.pubsub == nil {
+		return
+	}
+	topic := fmt.Sprintf("broadcast-settings-update.%s", channelID)
+	if err := f.pubsub.Listen([]string{topic}); err != nil {
+		f.addLog("[PubSub] subscribe %s failed: %v", topic, err)
+	}
+}
+
+// unsubscribeBroadcastSettings drops the broadcast-settings-update topic for one channel.
+func (f *Farmer) unsubscribeBroadcastSettings(channelID string) {
+	if f.pubsub == nil {
+		return
+	}
+	topic := fmt.Sprintf("broadcast-settings-update.%s", channelID)
+	if err := f.pubsub.Unlisten([]string{topic}); err != nil {
+		f.addLog("[PubSub] unsubscribe %s failed: %v", topic, err)
 	}
 }
 
