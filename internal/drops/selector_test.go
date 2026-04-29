@@ -1,4 +1,4 @@
-package farmer
+package drops
 
 import (
 	"testing"
@@ -11,8 +11,8 @@ import (
 // fixed reference time for deterministic tests
 var testNow = time.Date(2026, 4, 28, 22, 0, 0, 0, time.UTC)
 
-func newTestSelector(cfg *config.Config) *DropSelector {
-	return &DropSelector{
+func newTestSelector(cfg *config.Config) *Selector {
+	return &Selector{
 		cfg:     cfg,
 		streams: nil,
 		now:     func() time.Time { return testNow },
@@ -155,8 +155,8 @@ func (f *fakeStreamSource) GetChannelInfos(logins []string) []*twitch.ChannelInf
 	return out
 }
 
-func newSelectorWithStreams(cfg *config.Config, src *fakeStreamSource) *DropSelector {
-	return &DropSelector{
+func newSelectorWithStreams(cfg *config.Config, src *fakeStreamSource) *Selector {
+	return &Selector{
 		cfg:     cfg,
 		streams: src,
 		now:     func() time.Time { return testNow },

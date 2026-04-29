@@ -103,7 +103,7 @@ func (f *Farmer) Start() error {
 	f.gql = twitch.NewGQLClient(f.cfg.AuthToken)
 
 	// Initialize drop selector now that gql client exists
-	f.drops.selector = NewDropSelector(f.cfg, f.gql)
+	f.drops.selector = drops.NewSelector(f.cfg, f.gql)
 
 	// Validate auth token by getting user info
 	user, err := f.gql.GetUserInfo()

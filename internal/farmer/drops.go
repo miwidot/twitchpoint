@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/twitch"
 )
 
@@ -84,7 +85,7 @@ type dropState struct {
 	// timer says progress is overdue.
 	lastProgressUpdate time.Time
 
-	selector *DropSelector
+	selector *drops.Selector
 }
 
 // dropProgressPollLoop polls Twitch's DropCurrentSessionContext GQL every
@@ -376,7 +377,7 @@ func (f *Farmer) activeStallSkipSet() map[string]bool {
 
 // snapshotPickProgress records the picked channel's primary-campaign drop
 // progress so the next cycle's applyStallDetection can compare.
-func (f *Farmer) snapshotPickProgress(pick *PoolEntry, campaigns []twitch.DropCampaign) {
+func (f *Farmer) snapshotPickProgress(pick *drops.PoolEntry, campaigns []twitch.DropCampaign) {
 	f.drops.mu.Lock()
 	defer f.drops.mu.Unlock()
 
@@ -541,12 +542,12 @@ func (f *Farmer) markCompletedIfFinishedExternally(campaignID string) {
 // buildDropRows produces the per-campaign UI rows for the web API.
 func (f *Farmer) buildDropRows(
 	campaigns []twitch.DropCampaign,
-	pick *PoolEntry,
-	pool []*PoolEntry,
+	pick *drops.PoolEntry,
+	pool []*drops.PoolEntry,
 ) (active, queued, idle []ActiveDrop) {
 	pinnedID := f.cfg.GetPinnedCampaign()
 
-	campaignsInPool := make(map[string]*PoolEntry)
+	campaignsInPool := make(map[string]*drops.PoolEntry)
 	for _, e := range pool {
 		for _, ref := range e.Campaigns {
 			if _, exists := campaignsInPool[ref.ID]; !exists {
@@ -679,7 +680,7 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 // insensitive) any of the pick's campaign games. Used as a guard before
 // committing the watcher to a channel — streamer may have switched games
 // between selector run and now.
-func pickGameMatches(pick *PoolEntry, currentGame string) bool {
+func pickGameMatches(pick *drops.PoolEntry, currentGame string) bool {
 	for _, c := range pick.Campaigns {
 		if strings.EqualFold(c.GameName, currentGame) {
 			return true
@@ -690,7 +691,7 @@ func pickGameMatches(pick *PoolEntry, currentGame string) bool {
 
 // pickCampaignGames returns a comma-separated list of distinct game names
 // across the pick's campaigns. Diagnostic only.
-func pickCampaignGames(pick *PoolEntry) string {
+func pickCampaignGames(pick *drops.PoolEntry) string {
 	seen := make(map[string]bool, len(pick.Campaigns))
 	out := make([]string, 0, len(pick.Campaigns))
 	for _, c := range pick.Campaigns {
@@ -712,7 +713,7 @@ func pickCampaignGames(pick *PoolEntry) string {
 // state cleanly). Returns false when the metadata refresh failed for a non-nil
 // pick — callers must NOT commit currentPickID in that case, otherwise we
 // end up with state believing "drop is running" while no Watcher is active.
-func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampaign) bool {
+func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.DropCampaign) bool {
 	f.drops.mu.RLock()
 	prevPickID := f.drops.currentPickID
 	f.drops.mu.RUnlock()
@@ -876,7 +877,7 @@ func (f *Farmer) unsubscribeBroadcastSettings(channelID string) {
 
 // cleanupNonPickedTempChannels removes every temporary channel that is NOT
 // the current pick.
-func (f *Farmer) cleanupNonPickedTempChannels(pick *PoolEntry) {
+func (f *Farmer) cleanupNonPickedTempChannels(pick *drops.PoolEntry) {
 	pickID := ""
 	if pick != nil {
 		pickID = pick.ChannelID

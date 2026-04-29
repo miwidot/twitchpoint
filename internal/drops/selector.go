@@ -1,4 +1,4 @@
-package farmer
+package drops
 
 import (
 	"sort"
@@ -42,17 +42,17 @@ type PoolEntry struct {
 	Campaigns    []CampaignRef // 1+ eligible campaigns this channel serves; sorted with highest priority first
 }
 
-// DropSelector is a pure pick-a-channel function with no side effects on Farmer state.
+// Selector is a pure pick-a-channel function with no side effects on Farmer state.
 // Construction takes everything it needs as dependencies so tests can substitute mocks.
-type DropSelector struct {
+type Selector struct {
 	cfg     *config.Config
 	streams streamSource
 	now     func() time.Time // injectable for deterministic tests
 }
 
-// NewDropSelector constructs a selector with the production stream source.
-func NewDropSelector(cfg *config.Config, gql *twitch.GQLClient) *DropSelector {
-	return &DropSelector{
+// NewSelector constructs a selector with the production stream source.
+func NewSelector(cfg *config.Config, gql *twitch.GQLClient) *Selector {
+	return &Selector{
 		cfg:     cfg,
 		streams: gql,
 		now:     time.Now,
@@ -62,7 +62,7 @@ func NewDropSelector(cfg *config.Config, gql *twitch.GQLClient) *DropSelector {
 // filterEligibleCampaigns drops campaigns that are not currently farmable:
 // non-active status, expired, account not connected, disabled by user,
 // already completed, or have no watchable (non-sub-only, non-claimed) drops.
-func (s *DropSelector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []twitch.DropCampaign {
+func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []twitch.DropCampaign {
 	now := s.now()
 	out := make([]twitch.DropCampaign, 0, len(campaigns))
 
@@ -106,7 +106,7 @@ func (s *DropSelector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) 
 //
 // Channels appearing in multiple campaigns are deduped — a single PoolEntry
 // carries all the campaigns it serves.
-func (s *DropSelector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
+func (s *Selector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 	pinnedID := s.cfg.GetPinnedCampaign()
 
 	// Game-name → cached directory result, so we hit GQL at most once per game per cycle.
@@ -224,7 +224,7 @@ func (s *DropSelector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 //
 // Empty wanted_games falls back to the v1.7.0 (endAt, viewers) ordering — fully
 // backward compatible. Pin (v1.7.0 PinnedCampaignID) is silently ignored in v1.8.0.
-func (s *DropSelector) sortPool(pool []*PoolEntry) {
+func (s *Selector) sortPool(pool []*PoolEntry) {
 	wanted := s.cfg.GetGamesToWatch()
 	gameRanks := make(map[string]int, len(wanted))
 	for i, g := range wanted {
@@ -281,7 +281,7 @@ func (s *DropSelector) sortPool(pool []*PoolEntry) {
 // for stall-cooldown so a channel that wasn't crediting drops doesn't keep
 // getting re-picked. Pass nil if no skip set.
 // The returned pool is sorted; callers can use pool[1:] as the queue for UI.
-func (s *DropSelector) Select(campaigns []twitch.DropCampaign, skipChannels map[string]bool) (*PoolEntry, []*PoolEntry) {
+func (s *Selector) Select(campaigns []twitch.DropCampaign, skipChannels map[string]bool) (*PoolEntry, []*PoolEntry) {
 	eligible := s.filterEligibleCampaigns(campaigns)
 	if len(eligible) == 0 {
 		return nil, nil

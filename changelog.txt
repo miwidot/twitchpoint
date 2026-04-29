@@ -1,3 +1,45 @@
+== 2026-04-29 21:46 == Refactor: Phase 2a of v2.0 split — move Selector into drops package ==
+
+First slice of the drops-domain split. The pure pick-a-channel
+selector moves out of farmer and into the existing internal/drops
+package. No behavior change; this is a pure relocation that lets
+later sub-phases (inventory, progress, broadcast handlers) land
+against a stable selector boundary.
+
+What changed:
+- internal/farmer/dropselector.go → internal/drops/selector.go
+- internal/farmer/dropselector_test.go → internal/drops/selector_test.go
+- Type renames (Go convention — package name shouldn't repeat in type):
+  - farmer.DropSelector  → drops.Selector
+  - farmer.NewDropSelector → drops.NewSelector
+- PoolEntry, CampaignRef, streamSource keep their names (no package
+  repetition).
+- Farmer references migrated:
+  - farmer.go:      drops.NewSelector(f.cfg, f.gql)
+  - farmer/drops.go: *drops.Selector field, *drops.PoolEntry, drops.CampaignRef
+  - farmer/drops_test.go: same — TestPickGameMatches /
+    TestPickCampaignGames_DedupesCaseInsensitive still verify the
+    pickGameMatches/pickCampaignGames helpers (which still live in
+    farmer/drops.go for now and will move in Phase 2b along with
+    applySelectorPick).
+
+Why now:
+- Selector is the most self-contained chunk of the drops domain
+  (pure logic, own tests, no Farmer state). Moving it first gives
+  every subsequent sub-phase a stable interface to call into without
+  having to invent farmer↔drops interfaces on the fly.
+- Sub-phases queued: 2b inventory + claim flow, 2c selector
+  orchestration (applySelectorPick), 2d progress polling, 2e
+  broadcast handlers. Each lands as its own commit so any single
+  sub-phase can be reverted without touching the others.
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — all packages pass.
+  - internal/drops now hosts both watch_test.go (Watcher unit tests)
+    and selector_test.go (selector pipeline tests).
+
 == 2026-04-29 21:33 == Refactor: Phase 1 of v2.0 split — extract channels package ==
 
 First slice of the agreed v2.0 logic split. The channel-registry concern
