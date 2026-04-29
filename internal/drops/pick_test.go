@@ -1,10 +1,6 @@
-package farmer
+package drops
 
-import (
-	"testing"
-
-	"github.com/miwi/twitchpoint/internal/drops"
-)
+import "testing"
 
 // Pure-function unit tests for the applySelectorPick guards. Full integration
 // coverage of the Farmer state machine is deferred (would require a fake GQL
@@ -15,25 +11,25 @@ import (
 func TestPickGameMatches(t *testing.T) {
 	tests := []struct {
 		name        string
-		campaigns   []drops.CampaignRef
+		campaigns   []CampaignRef
 		currentGame string
 		want        bool
 	}{
 		{
 			name:        "exact match single campaign",
-			campaigns:   []drops.CampaignRef{{GameName: "Arena Breakout: Infinite"}},
+			campaigns:   []CampaignRef{{GameName: "Arena Breakout: Infinite"}},
 			currentGame: "Arena Breakout: Infinite",
 			want:        true,
 		},
 		{
 			name:        "case-insensitive match",
-			campaigns:   []drops.CampaignRef{{GameName: "Escape From Tarkov"}},
+			campaigns:   []CampaignRef{{GameName: "Escape From Tarkov"}},
 			currentGame: "escape from tarkov",
 			want:        true,
 		},
 		{
 			name: "match against second campaign of multi-campaign pick",
-			campaigns: []drops.CampaignRef{
+			campaigns: []CampaignRef{
 				{GameName: "Other Game"},
 				{GameName: "Arena Breakout: Infinite"},
 			},
@@ -42,13 +38,13 @@ func TestPickGameMatches(t *testing.T) {
 		},
 		{
 			name:        "streamer switched to unrelated game — no match",
-			campaigns:   []drops.CampaignRef{{GameName: "Arena Breakout: Infinite"}},
+			campaigns:   []CampaignRef{{GameName: "Arena Breakout: Infinite"}},
 			currentGame: "Just Chatting",
 			want:        false,
 		},
 		{
 			name:        "empty current game (offline) — no match",
-			campaigns:   []drops.CampaignRef{{GameName: "Arena Breakout: Infinite"}},
+			campaigns:   []CampaignRef{{GameName: "Arena Breakout: Infinite"}},
 			currentGame: "",
 			want:        false,
 		},
@@ -61,21 +57,21 @@ func TestPickGameMatches(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			pick := &drops.PoolEntry{Campaigns: tc.campaigns}
-			if got := pickGameMatches(pick, tc.currentGame); got != tc.want {
-				t.Fatalf("pickGameMatches(%q) = %v, want %v", tc.currentGame, got, tc.want)
+			pick := &PoolEntry{Campaigns: tc.campaigns}
+			if got := PickGameMatches(pick, tc.currentGame); got != tc.want {
+				t.Fatalf("PickGameMatches(%q) = %v, want %v", tc.currentGame, got, tc.want)
 			}
 		})
 	}
 }
 
 func TestPickCampaignGames_DedupesCaseInsensitive(t *testing.T) {
-	pick := &drops.PoolEntry{Campaigns: []drops.CampaignRef{
+	pick := &PoolEntry{Campaigns: []CampaignRef{
 		{GameName: "Arena Breakout: Infinite"},
 		{GameName: "arena breakout: infinite"},
 		{GameName: "Escape from Tarkov"},
 	}}
-	got := pickCampaignGames(pick)
+	got := PickCampaignGames(pick)
 	// Order preserves insertion of the first-seen casing
 	want := "Arena Breakout: Infinite,Escape from Tarkov"
 	if got != want {

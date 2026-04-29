@@ -1,3 +1,34 @@
+== 2026-04-29 21:49 == Refactor: Phase 2b — move pick-helper functions to drops ==
+
+The two stateless helpers that decide whether a selector pick is
+acceptable (game-match check + diagnostic game-list join) move from
+farmer to the drops package alongside their existing test file.
+
+What changed:
+- New internal/drops/pick.go containing PickGameMatches and
+  PickCampaignGames (both exported now — Phase 2c will move
+  applySelectorPick which calls them, at which point we can revisit
+  whether to keep them exported).
+- Tests move with the code: internal/farmer/drops_test.go is gone,
+  replaced by internal/drops/pick_test.go (same 6 sub-tests for
+  game-match + the dedupe test). Test cases unchanged.
+- farmer/drops.go now calls drops.PickGameMatches /
+  drops.PickCampaignGames at the two existing sites in
+  applySelectorPick. The helpers are deleted from drops.go
+  (~28 lines gone).
+- internal/farmer no longer has any test files; all drops-related
+  tests now live in the drops package.
+
+Why now: smallest possible chunk, zero behavior risk, lets Phase 2c
+(applySelectorPick orchestration) move the call sites along with the
+function, without dragging test files at the same time.
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — channels, config, drops all pass
+  (drops now hosts watch_test.go, selector_test.go, pick_test.go).
+
 == 2026-04-29 21:46 == Refactor: Phase 2a of v2.0 split — move Selector into drops package ==
 
 First slice of the drops-domain split. The pure pick-a-channel

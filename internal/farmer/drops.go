@@ -676,35 +676,6 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 	}
 }
 
-// pickGameMatches returns true if the freshly-fetched game equals (case-
-// insensitive) any of the pick's campaign games. Used as a guard before
-// committing the watcher to a channel — streamer may have switched games
-// between selector run and now.
-func pickGameMatches(pick *drops.PoolEntry, currentGame string) bool {
-	for _, c := range pick.Campaigns {
-		if strings.EqualFold(c.GameName, currentGame) {
-			return true
-		}
-	}
-	return false
-}
-
-// pickCampaignGames returns a comma-separated list of distinct game names
-// across the pick's campaigns. Diagnostic only.
-func pickCampaignGames(pick *drops.PoolEntry) string {
-	seen := make(map[string]bool, len(pick.Campaigns))
-	out := make([]string, 0, len(pick.Campaigns))
-	for _, c := range pick.Campaigns {
-		key := strings.ToLower(c.GameName)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, c.GameName)
-	}
-	return strings.Join(out, ",")
-}
-
 // applySelectorPick registers the picked channel as a temp channel if not
 // already tracked, sets HasActiveDrop=true on it, and clears HasActiveDrop on
 // any other channel that was the previous pick.
@@ -759,9 +730,9 @@ func (f *Farmer) applySelectorPick(pick *drops.PoolEntry, campaigns []twitch.Dro
 	//    run and now. If the freshly-fetched game doesn't match any of the
 	//    pick's campaigns, abort — sending sendSpadeEvents with a wrong
 	//    game_id makes Twitch silently drop credit.
-	if !pickGameMatches(pick, info.GameName) {
+	if !drops.PickGameMatches(pick, info.GameName) {
 		f.addLog("[Drops/Watch] skip %s — game changed to %q (expected one of %s)",
-			pick.ChannelLogin, info.GameName, pickCampaignGames(pick))
+			pick.ChannelLogin, info.GameName, drops.PickCampaignGames(pick))
 		// Manual-reason cooldown so the selector doesn't immediately re-pick.
 		f.setManualCooldown(pick.ChannelID, 15*time.Minute)
 		return false
