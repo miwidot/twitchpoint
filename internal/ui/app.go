@@ -26,6 +26,9 @@ type Model struct {
 	inputMode  inputState
 	inputValue string
 
+	// v1.8.0 game-list editor state
+	gameListCursor int
+
 	// Error display
 	errMsg    string
 	errExpiry time.Time
@@ -45,7 +48,9 @@ const (
 	inputRemoveChannel
 	inputSetPriority
 	inputToggleCampaign
-	inputPinCampaign
+	inputPinCampaign  // v1.7.0 — kept for back-compat in switch cases (no longer dispatched)
+	inputGameList     // v1.8.0 modal wanted-games editor
+	inputAddGameName  // v1.8.0 prompt overlay inside the editor for new-game name
 )
 
 // NewModel creates a new UI model.
@@ -90,6 +95,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// v1.8.0: modal game-list editor uses its own keymap (not text input)
+	if m.inputMode == inputGameList {
+		return m.handleGameListKey(msg)
+	}
 	// If in input mode, handle text input
 	if m.inputMode != inputNone {
 		switch msg.Type {
@@ -138,9 +147,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputMode = inputToggleCampaign
 		m.inputValue = ""
 		return m, nil
-	case "i":
-		m.inputMode = inputPinCampaign
-		m.inputValue = ""
+	case "g":
+		m.inputMode = inputGameList
+		m.gameListCursor = 0
 		return m, nil
 	case "up", "k":
 		if m.channelScroll > 0 {
@@ -158,6 +167,60 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	return m, nil
+}
+
+// handleGameListKey dispatches keys while the wanted-games modal editor is open.
+// v1.8.0.
+func (m Model) handleGameListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	games := m.farmer.Config().GetGamesToWatch()
+
+	switch msg.String() {
+	case "esc", "enter":
+		m.inputMode = inputNone
+		_ = m.farmer.Config().Save()
+		return m, nil
+
+	case "up", "k":
+		if m.gameListCursor > 0 {
+			m.gameListCursor--
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.gameListCursor < len(games)-1 {
+			m.gameListCursor++
+		}
+		return m, nil
+
+	case "u":
+		if m.gameListCursor > 0 && m.gameListCursor < len(games) {
+			m.farmer.Config().MoveGameToWatch(games[m.gameListCursor], -1)
+			m.gameListCursor--
+		}
+		return m, nil
+
+	case "d":
+		if m.gameListCursor < len(games)-1 {
+			m.farmer.Config().MoveGameToWatch(games[m.gameListCursor], +1)
+			m.gameListCursor++
+		}
+		return m, nil
+
+	case "-":
+		if m.gameListCursor < len(games) {
+			m.farmer.Config().RemoveGameFromWatch(games[m.gameListCursor])
+			if m.gameListCursor > 0 && m.gameListCursor >= len(games)-1 {
+				m.gameListCursor--
+			}
+		}
+		return m, nil
+
+	case "+":
+		m.inputMode = inputAddGameName
+		m.inputValue = ""
+		return m, nil
+	}
 	return m, nil
 }
 
@@ -226,33 +289,21 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-	case inputPinCampaign:
-		// Partial campaign name → toggle pin (idempotent).
+	case inputAddGameName:
+		// v1.8.0: add a game to the wanted-games list and return to the editor.
 		if value != "" {
-			drop, err := m.findCampaignByPartial(value)
-			if err != nil {
-				m.errMsg = err.Error()
-				m.errExpiry = time.Now().Add(5 * time.Second)
-			} else {
-				cfg := m.farmer.Config()
-				if drop.IsPinned {
-					cfg.SetPinnedCampaign("")
-					m.errMsg = fmt.Sprintf("unpinned %q", drop.CampaignName)
-				} else {
-					cfg.SetPinnedCampaign(drop.CampaignID)
-					m.errMsg = fmt.Sprintf("pinned %q", drop.CampaignName)
-				}
-				if err := cfg.Save(); err != nil {
-					m.errMsg = fmt.Sprintf("Error saving: %v", err)
-					m.errExpiry = time.Now().Add(5 * time.Second)
-				} else {
-					m.errExpiry = time.Now().Add(3 * time.Second)
-				}
-			}
+			m.farmer.Config().AddGameToWatch(value)
+			_ = m.farmer.Config().Save()
 		}
+		m.inputMode = inputGameList
+		return m, nil
 	}
 
-	m.inputMode = inputNone
+	// inputAddGameName routes back to the modal editor (handled above);
+	// every other input mode closes back to normal mode.
+	if m.inputMode != inputGameList {
+		m.inputMode = inputNone
+	}
 	return m, nil
 }
 
@@ -366,6 +417,12 @@ func (m Model) View() string {
 	logs := m.farmer.GetLogs()
 	sections = append(sections, renderEventLog(logs, logHeight, m.width))
 
+	// v1.8.0 wanted-games modal — render above the help bar when open.
+	if m.inputMode == inputGameList || m.inputMode == inputAddGameName {
+		games := m.farmer.Config().GetGamesToWatch()
+		sections = append(sections, "", renderGameListEditor(games, m.gameListCursor))
+	}
+
 	// Input or error or help bar
 	if m.inputMode != inputNone {
 		sections = append(sections, m.renderInput())
@@ -428,9 +485,9 @@ func (m Model) renderInput() string {
 	case inputToggleCampaign:
 		prompt = "Toggle campaign (partial name): "
 		hint = "  (toggles disabled state)"
-	case inputPinCampaign:
-		prompt = "Pin campaign (partial name): "
-		hint = "  (toggles pin; only one campaign can be pinned)"
+	case inputAddGameName:
+		prompt = "Add game name: "
+		hint = "  (Enter to confirm, Esc to cancel)"
 	}
 
 	input := helpKeyStyle.Render(prompt) + m.inputValue + lipgloss.NewStyle().

@@ -302,7 +302,7 @@ func renderHelpBar() string {
 		{"d", "remove channel"},
 		{"p", "set priority"},
 		{"t", "toggle campaign"},
-		{"i", "pin campaign"},
+		{"g", "wanted games"},
 		{"↑↓", "scroll"},
 	}
 
@@ -366,4 +366,50 @@ func renderUpdateBanner(info farmer.UpdateInfo) string {
 
 	text := fmt.Sprintf("  New version available: %s", strings.Join(parts, " and "))
 	return updateBannerStyle.Render(text)
+}
+
+// renderGameListEditor draws the v1.8.0 wanted-games modal overlay.
+// Called when m.inputMode == inputGameList (or inputAddGameName for the
+// add-prompt overlay layered on top).
+func renderGameListEditor(games []string, cursor int) string {
+	header := titleStyle.Render(" Wanted Games (priority order) ")
+
+	if len(games) == 0 {
+		body := tableCellStyle.Render("  (empty — press '+' to add games)")
+		footer := helpStyle.Render("  " +
+			helpKeyStyle.Render("+") + helpStyle.Render(" add") +
+			"  " + helpKeyStyle.Render("enter") + helpStyle.Render(" close") +
+			"  " + helpKeyStyle.Render("esc") + helpStyle.Render(" close"))
+		return header + "\n" + body + "\n" + footer
+	}
+
+	var rows []string
+	for i, g := range games {
+		marker := "  "
+		if i == cursor {
+			marker = "▸ "
+		}
+		row := fmt.Sprintf("%s%2d. %s", marker, i+1, g)
+		if i == cursor {
+			rows = append(rows, dropStyle.Render(row))
+		} else {
+			rows = append(rows, tableCellStyle.Render(row))
+		}
+	}
+
+	keys := []struct{ key, desc string }{
+		{"↑↓", "navigate"},
+		{"+", "add"},
+		{"-", "remove"},
+		{"u", "up"},
+		{"d", "down"},
+		{"enter", "close"},
+	}
+	var helpParts []string
+	for _, k := range keys {
+		helpParts = append(helpParts, helpKeyStyle.Render(k.key)+helpStyle.Render(" "+k.desc))
+	}
+	footer := helpStyle.Render("  " + strings.Join(helpParts, "  |  "))
+
+	return header + "\n" + strings.Join(rows, "\n") + "\n\n" + footer
 }
