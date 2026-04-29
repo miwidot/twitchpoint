@@ -102,10 +102,24 @@ func (f *Farmer) pollDropProgressOnce() {
 	}
 
 	f.applyDropProgressUpdate(twitch.DropProgressData{
-		CampaignID:            pickedCampID,
-		DropID:                session.DropID,
-		CurrentMinutesWatched: session.CurrentMinutesWatched,
+		CampaignID:             pickedCampID,
+		DropID:                 session.DropID,
+		CurrentMinutesWatched:  session.CurrentMinutesWatched,
+		RequiredMinutesWatched: session.RequiredMinutesWatched,
 	})
+
+	// If Twitch's session reports the drop is complete (currentMinutes >= requiredMinutes),
+	// the campaign is done — even if the dashboard query lies about claimed:false.
+	// Mark it completed and trigger an out-of-cycle re-pick so we move on.
+	if session.RequiredMinutesWatched > 0 && session.CurrentMinutesWatched >= session.RequiredMinutesWatched {
+		if !f.cfg.IsCampaignCompleted(pickedCampID) {
+			f.cfg.MarkCampaignCompleted(pickedCampID)
+			_ = f.cfg.Save()
+			f.addLog("[Drops/Poll] campaign %s drop complete per Twitch session (%d/%d) — marking completed",
+				pickedCampID, session.CurrentMinutesWatched, session.RequiredMinutesWatched)
+			go f.processDrops()
+		}
+	}
 }
 
 // dropCheckLoop polls the drops inventory periodically as a safety net for

@@ -108,8 +108,9 @@ const (
 // CurrentDropSession is the lean response from DropCurrentSessionContext.
 // Either field may be empty if no drop session is active for the channel.
 type CurrentDropSession struct {
-	DropID                string
-	CurrentMinutesWatched int
+	DropID                 string
+	CurrentMinutesWatched  int
+	RequiredMinutesWatched int
 }
 
 // GQLClient handles all Twitch GQL API calls.
@@ -536,6 +537,14 @@ func (g *GQLClient) GetCurrentDropSession(channelID string) (*CurrentDropSession
 			out.CurrentMinutesWatched = int(n)
 		case int:
 			out.CurrentMinutesWatched = n
+		}
+	}
+	if v, ok := dcs["requiredMinutesWatched"]; ok && v != nil {
+		switch n := v.(type) {
+		case float64:
+			out.RequiredMinutesWatched = int(n)
+		case int:
+			out.RequiredMinutesWatched = n
 		}
 	}
 	if out.DropID == "" {
