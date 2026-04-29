@@ -573,11 +573,14 @@
                 <li style="color:var(--text-muted);padding:8px">loading...</li>
             </ul>
             <div style="margin-top:8px;display:flex;gap:8px">
-                <input id="wanted-games-input" type="text" placeholder="Game name (start typing for autocomplete)"
+                <input id="wanted-games-input" type="text" placeholder="Game name — autocomplete suggests current campaigns; type any name for forward-queue (e.g. Escape from Tarkov: Arena)"
                        list="wanted-games-suggestions" autocomplete="off"
                        style="flex:1;padding:6px;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text)">
                 <datalist id="wanted-games-suggestions"></datalist>
                 <button onclick="addWantedGame()" class="btn">Add</button>
+            </div>
+            <div style="margin-top:4px;font-size:0.8em;color:var(--text-muted)">
+                Tipp: Add works even without an autocomplete match — useful to pre-queue games whose campaigns aren't live yet. Game name must match Twitch's <em>exact</em> game name (case-insensitive).
             </div>
         </div>
 
