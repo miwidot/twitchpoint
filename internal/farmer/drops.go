@@ -108,16 +108,21 @@ func (f *Farmer) pollDropProgressOnce() {
 		RequiredMinutesWatched: session.RequiredMinutesWatched,
 	})
 
-	// Per spec 6: poll never marks campaigns completed itself. When the current
-	// drop is at 100%, trigger an out-of-cycle processDrops so the inventory
-	// pull re-evaluates. autoClaimAndMarkCompleted (using the InInventory
-	// signal) decides whether the WHOLE campaign is done or there are more
-	// drops left to farm. This avoids the v1.8.0 bug where poll-completion
-	// of one drop in a multi-drop campaign falsely marked the entire campaign.
+	// When poll says the current drop is at 100%, do TWO things:
+	// 1. Try markCompletedIfFinishedExternally — fetches inventory + only
+	//    marks completed if the campaign is genuinely no longer in progress
+	//    (i.e., user really finished all drops). For multi-drop campaigns
+	//    where one drop is done but more are pending, the campaign WILL
+	//    still be in inventory progress, so it stays un-completed.
+	// 2. Trigger processDrops so the selector re-evaluates (next drop in
+	//    queue gets picked if this one is done, etc).
 	if session.RequiredMinutesWatched > 0 && session.CurrentMinutesWatched >= session.RequiredMinutesWatched {
-		f.writeLogFile(fmt.Sprintf("[Drops/Poll] drop complete on campaign %s (%d/%d) — triggering re-evaluation",
+		f.writeLogFile(fmt.Sprintf("[Drops/Poll] drop complete on campaign %s (%d/%d)",
 			pickedCampID, session.CurrentMinutesWatched, session.RequiredMinutesWatched))
-		go f.processDrops()
+		go func() {
+			f.markCompletedIfFinishedExternally(pickedCampID)
+			f.processDrops()
+		}()
 	}
 }
 
@@ -380,20 +385,43 @@ func (f *Farmer) autoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
 			f.cfg.MarkCampaignCompleted(c.ID)
 			f.cfg.Save()
 			f.addLog("[Drops] Campaign %q fully claimed — marked as completed", c.Name)
+		}
+		// NOTE: don't auto-mark on !c.InInventory alone — that signal is
+		// ambiguous (could be "user finished externally" OR "user never started").
+		// Instead pollDropProgressOnce handles "finished externally" by polling
+		// DropCurrentSession on the picked channel — when the channel IS picked
+		// AND poll says current >= required AND inventory shows !InInventory,
+		// THAT combination is reliable. See markCompletedIfFinishedExternally.
+	}
+}
+
+// markCompletedIfFinishedExternally is called by pollDropProgressOnce when the
+// poll says the picked channel's drop is at 100%. It re-fetches inventory and
+// confirms the campaign is no longer in dropCampaignsInProgress before marking
+// completed. This combo is reliable: poll says "Twitch credited me past
+// required" + inventory says "campaign no longer in progress list" =
+// genuinely done. Avoids the false-positive of marking never-started
+// campaigns as completed just because they aren't in the inventory yet.
+func (f *Farmer) markCompletedIfFinishedExternally(campaignID string) {
+	campaigns, err := f.gql.GetDropsInventory()
+	if err != nil {
+		return
+	}
+	for _, c := range campaigns {
+		if c.ID != campaignID {
 			continue
 		}
-
-		// v1.8.0 source-of-truth fix: dashboard's claimed:false is unreliable
-		// (Marble Day 245 reported claimed:false yet poll showed 744/720). The
-		// authoritative signal is dropCampaignsInProgress (InInventory). If a
-		// campaign has watchable drops AND is NOT in the inventory progress
-		// list, the user has finished it externally — mark completed so we
-		// stop wasting cycles on it.
-		if hasWatchable && !c.InInventory {
-			f.cfg.MarkCampaignCompleted(c.ID)
-			f.cfg.Save()
-			f.addLog("[Drops] Campaign %q not in inventory progress list — marked completed (already finished externally)", c.Name)
+		if c.InInventory {
+			// Still in progress — has more drops to farm. Don't mark.
+			return
 		}
+		if f.cfg.IsCampaignCompleted(c.ID) {
+			return
+		}
+		f.cfg.MarkCampaignCompleted(c.ID)
+		_ = f.cfg.Save()
+		f.addLog("[Drops] Campaign %q finished externally (poll: complete + not in inventory) — marked completed", c.Name)
+		return
 	}
 }
 
