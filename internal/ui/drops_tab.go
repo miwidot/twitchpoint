@@ -66,14 +66,17 @@ func renderDropsCampaignsPanel(rows []drops.ActiveDrop, cursor int, focused bool
 		channelW  = 16
 		statusW   = 10
 	)
+	// tableHeaderStyle has BorderBottom(true); apply it to the joined row
+	// (not per cell) so the bottom rule spans the whole header instead
+	// of stacking each cell as a 2-line box.
 	headerCells := []string{
-		padCell(tableHeaderStyle.Render("Campaign"), campaignW, false),
-		padCell(tableHeaderStyle.Render("Game"),     gameW,     false),
-		padCell(tableHeaderStyle.Render("Progress"), progressW, false),
-		padCell(tableHeaderStyle.Render("Channel"),  channelW,  false),
-		padCell(tableHeaderStyle.Render("Status"),   statusW,   false),
+		padCell("Campaign", campaignW, false),
+		padCell("Game",     gameW,     false),
+		padCell("Progress", progressW, false),
+		padCell("Channel",  channelW,  false),
+		padCell("Status",   statusW,   false),
 	}
-	headerLine := "    " + strings.Join(headerCells, " ")
+	headerLine := tableHeaderStyle.Render("    " + strings.Join(headerCells, " "))
 
 	var renderedRows []string
 	for i, d := range rows {
