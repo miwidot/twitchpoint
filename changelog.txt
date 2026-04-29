@@ -1,3 +1,32 @@
+== 2026-04-30 02:42 == Feature: Twitch-catalog autocomplete + Channels-tab drops filter ==
+
+Two TUI improvements that landed together:
+
+1. Wanted Games '+' prompt now searches the FULL Twitch catalog
+   (proxies SearchGameCategories) instead of only matching the
+   current inventory cycle's eligible games. The Web UI already had
+   this; the TUI was lagging.
+
+   - Each keystroke spawns a 250ms-debounced async tea.Cmd that
+     hits SearchGameCategories(query, 10). Results arrive as a
+     gameSearchResultsMsg and are filtered by the Update handler
+     (stale results from typed-past queries are discarded).
+   - Up/Down arrow keys navigate the suggestion list; Enter saves
+     either the highlighted match (cursor >=0) or the typed text
+     verbatim (cursor =-1, the default).
+   - Game names preserve case — Twitch's selector is case-sensitive
+     on game names ("Escape from Tarkov" ≠ "escape from tarkov"),
+     so submitInput no longer ToLower's the value for inputAddGameName.
+   - Search only fires for queries >=2 chars (avoids hundreds of
+     results for single-letter prefixes).
+   - "(searching Twitch catalog…)" status shown during the debounce
+     window so the user knows something is happening.
+
+2. Channels-tab Drop Campaigns mini-table now filters to status=
+   ACTIVE only. COMPLETED / QUEUED / IDLE / DISABLED rows still show
+   in the full Drops-tab Drop Campaigns panel; Tab 1 stays focused
+   on "what's happening right now".
+
 == 2026-04-30 02:28 == Fix: Drops-tab '+' / '-' / 'u' / 'd' work from any panel ==
 
 UX bug shipped in 02:22 — game-management keys only worked when the

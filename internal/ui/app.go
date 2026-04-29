@@ -14,6 +14,16 @@ import (
 // tickMsg is sent periodically to refresh the UI.
 type tickMsg time.Time
 
+// gameSearchResultsMsg carries the Twitch searchCategories result for a
+// specific query string. The Update handler only accepts the message if
+// query still matches the current m.inputValue — typing fast spawns
+// multiple in-flight searches, and only the last one's result is
+// relevant by the time it arrives.
+type gameSearchResultsMsg struct {
+	query   string
+	results []string
+}
+
 // tabID identifies the top-level tab the user is currently viewing.
 type tabID int
 
@@ -31,6 +41,16 @@ type Model struct {
 
 	// Active tab — switched via 1/2/3 number keys or Tab/Shift-Tab.
 	activeTab tabID
+
+	// Twitch-catalog autocomplete state for the inputAddGameName prompt.
+	// Each keystroke spawns a searchGamesCmd that fires after 250ms;
+	// stale results (gameSearchQuery != current input) are dropped on
+	// arrival in Update. gameSearchCursor selects which suggestion is
+	// highlighted: -1 means "no suggestion selected, save typed text
+	// verbatim on Enter"; >=0 means "save gameSearchResults[cursor]".
+	gameSearchQuery   string
+	gameSearchResults []string
+	gameSearchCursor  int
 
 	// Channel table scroll (tab 1).
 	channelScroll int
@@ -90,9 +110,47 @@ const (
 // NewModel creates a new UI model.
 func NewModel(f *farmer.Farmer) Model {
 	return Model{
-		farmer: f,
-		width:  120,
-		height: 40,
+		farmer:           f,
+		width:            120,
+		height:           40,
+		gameSearchCursor: -1, // -1 = no suggestion selected, Enter saves typed text
+	}
+}
+
+// maybeSearchGames returns a searchGamesCmd if we're in the game-name
+// prompt and the typed query is at least 2 chars (anything shorter is
+// noise — Twitch's searchCategories returns hundreds of results for a
+// single letter). Returns nil otherwise so the keystroke is a no-op
+// for the search system.
+func (m Model) maybeSearchGames() tea.Cmd {
+	if m.inputMode != inputAddGameName {
+		return nil
+	}
+	q := strings.TrimSpace(m.inputValue)
+	if len(q) < 2 {
+		return nil
+	}
+	return searchGamesCmd(m.farmer, q)
+}
+
+// searchGamesCmd is the async Twitch-catalog autocomplete fetcher. It
+// sleeps 250ms (debounce — fast typing won't burst-fire 10 GQL calls
+// in a row), then proxies SearchGameCategories. The result is wrapped
+// in gameSearchResultsMsg with the originating query so Update can
+// drop stale results that arrive after the user has typed past them.
+//
+// We don't try to cancel in-flight goroutines; we just discard their
+// output. The 250ms wait + a typical 200-500ms GQL turnaround means
+// at most a handful of goroutines are alive at once during fast
+// typing, all completing within a second or two.
+func searchGamesCmd(f *farmer.Farmer, query string) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(250 * time.Millisecond)
+		results, err := f.SearchGameCategories(query, 10)
+		if err != nil {
+			return gameSearchResultsMsg{query: query, results: nil}
+		}
+		return gameSearchResultsMsg{query: query, results: results}
 	}
 }
 
@@ -123,6 +181,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		return m, tickCmd()
+
+	case gameSearchResultsMsg:
+		// Drop stale results — only commit if the message's query still
+		// matches the current input value (the user hasn't typed past
+		// it during the debounce + network roundtrip).
+		if m.inputMode == inputAddGameName && msg.query == m.inputValue {
+			m.gameSearchResults = msg.results
+			m.gameSearchQuery = msg.query
+			// Reset cursor when result set changes — user starts at "save
+			// typed text" and walks down into suggestions with arrow keys.
+			m.gameSearchCursor = -1
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -132,23 +203,44 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// If a text-input modal is active (channel add/remove/priority or
 	// game-name prompt from Drops tab), capture the keys.
 	if m.inputMode != inputNone {
+		// Game-name prompt has autocomplete — Up/Down navigate the
+		// suggestion list, Enter saves either the highlighted match or
+		// the typed text (if cursor is at -1, the "save raw" position).
+		if m.inputMode == inputAddGameName && len(m.gameSearchResults) > 0 {
+			switch msg.String() {
+			case "up":
+				if m.gameSearchCursor > -1 {
+					m.gameSearchCursor--
+				}
+				return m, nil
+			case "down":
+				if m.gameSearchCursor < len(m.gameSearchResults)-1 {
+					m.gameSearchCursor++
+				}
+				return m, nil
+			}
+		}
+
 		switch msg.Type {
 		case tea.KeyEnter:
 			return m.submitInput()
 		case tea.KeyEscape:
 			m.inputMode = inputNone
 			m.inputValue = ""
+			m.gameSearchQuery = ""
+			m.gameSearchResults = nil
+			m.gameSearchCursor = -1
 			return m, nil
 		case tea.KeyBackspace:
 			if len(m.inputValue) > 0 {
 				m.inputValue = m.inputValue[:len(m.inputValue)-1]
 			}
-			return m, nil
+			return m, m.maybeSearchGames()
 		default:
 			if msg.Type == tea.KeyRunes {
 				m.inputValue += string(msg.Runes)
 			}
-			return m, nil
+			return m, m.maybeSearchGames()
 		}
 	}
 
@@ -408,11 +500,13 @@ func (m Model) dropsToggle(drops []drops.ActiveDrop, settings []dropsSetting) Mo
 }
 
 func (m Model) submitInput() (tea.Model, tea.Cmd) {
-	value := strings.TrimSpace(strings.ToLower(m.inputValue))
+	raw := strings.TrimSpace(m.inputValue)
 	m.inputValue = ""
 
 	switch m.inputMode {
 	case inputAddChannel:
+		// Channel logins are canonically lowercase on Twitch.
+		value := strings.ToLower(raw)
 		if value != "" {
 			if err := m.farmer.AddChannelLive(value); err != nil {
 				m.errMsg = fmt.Sprintf("Error: %v", err)
@@ -420,6 +514,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			}
 		}
 	case inputRemoveChannel:
+		value := strings.ToLower(raw)
 		if value != "" {
 			if err := m.farmer.RemoveChannelLive(value); err != nil {
 				m.errMsg = fmt.Sprintf("Error: %v", err)
@@ -427,7 +522,8 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			}
 		}
 	case inputSetPriority:
-		// Format: "channelname 1" or "channelname 2"
+		// Format: "channelname 1" or "channelname 2".
+		value := strings.ToLower(raw)
 		if value != "" {
 			parts := strings.Fields(value)
 			if len(parts) != 2 || (parts[1] != "1" && parts[1] != "2") {
@@ -445,12 +541,18 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			}
 		}
 	case inputAddGameName:
-		// User typed a game name on the Wanted Games panel. Persist it
-		// and jump the cursor to the freshly-added entry (which always
-		// goes to the end of the list) so the user can immediately
-		// reorder / delete it.
-		if value != "" {
-			m.farmer.Config().AddGameToWatch(value)
+		// Save EITHER the highlighted suggestion (if cursor is on one)
+		// OR the typed text verbatim. Twitch is case-sensitive on game
+		// names, so we don't ToLower this — "Escape from Tarkov" must
+		// stay capitalized for the selector to match correctly.
+		var save string
+		if m.gameSearchCursor >= 0 && m.gameSearchCursor < len(m.gameSearchResults) {
+			save = m.gameSearchResults[m.gameSearchCursor]
+		} else {
+			save = raw
+		}
+		if save != "" {
+			m.farmer.Config().AddGameToWatch(save)
 			_ = m.farmer.Config().Save()
 			games := m.farmer.Config().GetGamesToWatch()
 			if len(games) > 0 {
@@ -458,6 +560,10 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 				m.dropsGameCursor = len(games) - 1
 			}
 		}
+		// Reset autocomplete state for next time.
+		m.gameSearchQuery = ""
+		m.gameSearchResults = nil
+		m.gameSearchCursor = -1
 	}
 
 	m.inputMode = inputNone
@@ -510,8 +616,18 @@ func (m Model) viewChannelsTab(stats farmer.Stats) string {
 	var sections []string
 
 	channels := m.farmer.GetChannels()
-	drops := m.farmer.GetActiveDrops()
-	dropsTable := renderDropsTable(drops, m.width)
+	// Channels tab only surfaces the actively-farming drop(s) — the full
+	// table (including COMPLETED + QUEUED + IDLE rows) lives on the
+	// Drops tab. Filter here so the channels view stays focused on
+	// "what is happening RIGHT NOW".
+	allDrops := m.farmer.GetActiveDrops()
+	var activeDrops []drops.ActiveDrop
+	for _, d := range allDrops {
+		if d.Status == "ACTIVE" {
+			activeDrops = append(activeDrops, d)
+		}
+	}
+	dropsTable := renderDropsTable(activeDrops, m.width)
 	hasDropsTable := dropsTable != ""
 
 	// Header overhead: header(1) + tab_bar(1) + spacer(1) = 3 lines
@@ -523,7 +639,7 @@ func (m Model) viewChannelsTab(stats farmer.Stats) string {
 		overhead += 2
 	}
 	if hasDropsTable {
-		overhead += len(drops) + 3
+		overhead += len(activeDrops) + 3
 	}
 
 	available := m.height - overhead
@@ -674,24 +790,29 @@ func (m Model) renderInput() string {
 
 	out := "  " + input + helpStyle.Render(hint)
 
-	// v1.8.0: when adding a wanted-game name, show fuzzy matches against
-	// the current cycle's eligible games so the user doesn't have to type
-	// the full name correctly.
-	if m.inputMode == inputAddGameName {
-		query := strings.ToLower(strings.TrimSpace(m.inputValue))
-		all := m.farmer.GetEligibleGames()
-		var matches []string
-		for _, g := range all {
-			if query == "" || strings.Contains(strings.ToLower(g), query) {
-				matches = append(matches, g)
-				if len(matches) >= 6 {
-					break
-				}
+	// Game-name prompt has live Twitch-catalog autocomplete via
+	// gameSearchResults (populated by gameSearchResultsMsg). Each match
+	// is rendered on its own line so the user can see the full list at
+	// a glance; the highlighted row (gameSearchCursor) gets the purple
+	// cursor + reversed colors, matching the Drops-tab styling.
+	if m.inputMode == inputAddGameName && len(m.gameSearchResults) > 0 {
+		var lines []string
+		for i, g := range m.gameSearchResults {
+			if i == m.gameSearchCursor {
+				lines = append(lines, "  "+cursorStyle.Render("▸ ")+
+					lipgloss.NewStyle().Foreground(colorWhite).Bold(true).Render(g))
+			} else {
+				lines = append(lines, "    "+tableCellStyle.Render(g))
 			}
 		}
-		if len(matches) > 0 {
-			out += "\n  " + helpStyle.Render("matches: ") + helpKeyStyle.Render(strings.Join(matches, " | "))
-		}
+		footer := "    " + helpKeyStyle.Render("↑/↓") + helpStyle.Render(" select  ") +
+			helpKeyStyle.Render("enter") + helpStyle.Render(" save selected (or typed text if none)  ") +
+			helpKeyStyle.Render("esc") + helpStyle.Render(" cancel")
+		out += "\n" + strings.Join(lines, "\n") + "\n" + footer
+	} else if m.inputMode == inputAddGameName && len(strings.TrimSpace(m.inputValue)) >= 2 {
+		// Query is long enough to search but no results yet — likely
+		// the 250ms debounce is still pending. Show a subtle status.
+		out += "\n    " + subtitleStyle.Render("(searching Twitch catalog…)")
 	}
 
 	return out
