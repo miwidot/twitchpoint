@@ -188,7 +188,7 @@ func (f *Farmer) Start() error {
 	if f.cfg.DropsEnabled {
 		f.addLog("Drop mining enabled — checking inventory every 15 min + DropCurrentSession poll every 60s")
 		go f.dropCheckLoop()
-		go f.dropProgressPollLoop()
+		go f.drops.ProgressPollLoop(f.stopCh)
 	}
 
 	// Start background update checker
@@ -511,20 +511,22 @@ func (f *Farmer) SetPriorityLive(login string, priority int) error {
 	return nil
 }
 
-// dropProgressLoop drains drops.Watcher progress events and forwards them
-// to the existing applyDropProgressUpdate (which knows how to resolve the
-// drop_id back to a campaign and update the channel state).
+// dropProgressLoop drains drops.Watcher progress events and forwards
+// them to drops.Service.ApplyProgressUpdate (which knows how to resolve
+// the drop_id back to a campaign and update the channel state). This
+// loop stays in farmer because it owns the drops.Watcher progress
+// channel — service is the consumer.
 func (f *Farmer) dropProgressLoop() {
 	for {
 		select {
 		case ev := <-f.dropProgC:
-			// We get drop_id but applyDropProgressUpdate wants
-			// (campaign_id, drop_id). Resolve via the campaign cache.
-			campID := f.lookupCampaignByDropID(ev.DropID)
+			// ApplyProgressUpdate wants (campaign_id, drop_id) — resolve via
+			// the cached inventory.
+			campID := f.drops.LookupCampaignByDropID(ev.DropID)
 			if campID == "" {
 				continue // Unknown drop — fresh inventory cycle will catch it
 			}
-			f.applyDropProgressUpdate(twitch.DropProgressData{
+			f.drops.ApplyProgressUpdate(twitch.DropProgressData{
 				CampaignID:             campID,
 				DropID:                 ev.DropID,
 				CurrentMinutesWatched:  ev.CurrentMin,
@@ -534,21 +536,6 @@ func (f *Farmer) dropProgressLoop() {
 			return
 		}
 	}
-}
-
-// lookupCampaignByDropID searches the cached campaigns for the drop and
-// returns its campaign ID. Empty string if unknown.
-func (f *Farmer) lookupCampaignByDropID(dropID string) string {
-	f.drops.RLock()
-	defer f.drops.RUnlock()
-	for _, c := range f.drops.CampaignCache {
-		for _, d := range c.Drops {
-			if d.ID == dropID {
-				return c.ID
-			}
-		}
-	}
-	return ""
 }
 
 func (f *Farmer) tryStartWatching(state *channels.State) {
@@ -772,7 +759,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 	case twitch.EventDropProgress:
 		data := evt.Data.(twitch.DropProgressData)
-		f.applyDropProgressUpdate(data)
+		f.drops.ApplyProgressUpdate(data)
 
 	case twitch.EventDropClaim:
 		// Per TDM message_handlers.py:201-237: drop-claim is sequential, not
@@ -782,7 +769,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 		// races: processDrops can pull inventory before the claim is
 		// recorded, then sees the drop as still unclaimed.
 		data := evt.Data.(twitch.DropClaimData)
-		go f.handleDropClaim(data)
+		go f.drops.HandleDropClaim(data)
 
 	case twitch.EventGameChange:
 		data := evt.Data.(twitch.GameChangeData)

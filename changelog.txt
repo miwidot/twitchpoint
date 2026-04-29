@@ -1,3 +1,84 @@
+== 2026-04-29 23:36 == Refactor: Phase 2g — progress poller + claim flow to Service ==
+
+The four progress-pipeline functions move into drops.Service. After
+this commit, all WebSocket / poll-driven drop progress and claim
+handling lives inside the drops package; farmer keeps only the
+orchestrator (processDrops, dropCheckLoop) and the public API
+surface for Phase 2h.
+
+What changed:
+- New internal/drops/progress.go (~271 lines):
+  - Service.ProgressPollLoop(stopCh) — was farmer.dropProgressPollLoop.
+    Now takes the stop channel as a parameter since farmer still owns
+    the lifecycle; loop drives PollProgressOnce on a 60s tick.
+  - Service.PollProgressOnce — was farmer.pollDropProgressOnce. Reads
+    CurrentPickID + LastProgressUpdate under Service lock, calls
+    Stall.LastPickCampaignID, GQL.GetCurrentDropSession, then
+    ApplyProgressUpdate. On 100% completion fires
+    MarkCompletedIfFinishedExternally + triggerProcessDrops.
+  - Service.HandleDropClaim — was farmer.handleDropClaim. The
+    sequential TDM-aligned flow: ClaimDrop → 4s sleep → up-to-8×
+    GetCurrentDropSession until DropID changes → triggerProcessDrops.
+  - Service.ApplyProgressUpdate — was farmer.applyDropProgressUpdate.
+    Updates the in-memory ActiveDrops slice + LastProgressUpdate
+    timestamp + mirrors progress to the picked channels.State so the
+    TUI shows live values within ~1s.
+  - Service.LookupCampaignByDropID — was farmer.lookupCampaignByDropID.
+    Reverse-lookup helper for the dropProgressLoop drain in farmer.
+- farmer/drops.go shrinks 433 → 200 lines. Functions deleted:
+  dropProgressPollLoop, pollDropProgressOnce, handleDropClaim,
+  applyDropProgressUpdate. lookupCampaignByDropID was deleted from
+  farmer.go (it lived there alongside dropProgressLoop).
+- 4 call sites migrated:
+    farmer.Start:               go f.dropProgressPollLoop()
+                              → go f.drops.ProgressPollLoop(f.stopCh)
+    farmer.dropProgressLoop:    f.lookupCampaignByDropID(...)
+                              → f.drops.LookupCampaignByDropID(...)
+                              + f.applyDropProgressUpdate(...)
+                              → f.drops.ApplyProgressUpdate(...)
+    farmer.handleEvent (DropProgress): f.applyDropProgressUpdate(data)
+                              → f.drops.ApplyProgressUpdate(data)
+    farmer.handleEvent (DropClaim):    go f.handleDropClaim(data)
+                              → go f.drops.HandleDropClaim(data)
+- farmer.dropProgressLoop stays in farmer because it owns the
+  drops.Watcher progress channel (f.dropProgC) — service is the
+  consumer, not the channel owner.
+
+Why this batch: the four functions form one cohesive sub-system —
+ApplyProgressUpdate is called from both the WS path (handleEvent),
+the poll path (PollProgressOnce), and the Watcher-channel-drain
+(dropProgressLoop). Splitting the move would leave the type signatures
+inconsistent across paths.
+
+drops.go shrinkage tracker (post-Phase-1 baseline 1221 lines):
+  Phase 2a:        1199
+  Phase 2b:        1153
+  Phase 2c:        1007
+  Phase 2d:         849
+  Phase 2e-prep:    825
+  Phase 2e (1/2):   738
+  Phase 2e (2/2):   695
+  Phase 2f:         433
+  Phase 2g:         200
+  Total:          −1021 / −84%
+
+What's left in farmer/drops.go (200 lines):
+- dropCheckLoop, processDrops — the inventory orchestrator (Phase 2h)
+- SetCampaignEnabled, GetActiveDrops, GetEligibleGames,
+  SearchGameCategories — public API surface for web/UI
+
+After Phase 2h, farmer/drops.go drops to ~80 lines of thin delegate
+methods.
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — all packages pass; channels (11
+  tests), drops (selector, pick, stall + existing watch_test). No
+  new tests for the moved functions yet — they're exercised every
+  cycle at runtime; unit tests for ApplyProgressUpdate's row-update
+  logic could be added later.
+
 == 2026-04-29 22:59 == Refactor: Phase 2f — applySelectorPick + game-change handlers to Service ==
 
 The ABI-credit-critical pick path moves from farmer to drops.Service.
