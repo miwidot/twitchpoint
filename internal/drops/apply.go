@@ -18,9 +18,9 @@ import (
 // in that case, otherwise we end up with state believing "drop is
 // running" while no Watcher is active.
 func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) bool {
-	s.RLock()
-	prevPickID := s.CurrentPickID
-	s.RUnlock()
+	s.mu.RLock()
+	prevPickID := s.currentPickID
+	s.mu.RUnlock()
 
 	if pick == nil {
 		if prevPickID != "" {
@@ -163,7 +163,7 @@ func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) bo
 	// timer ticks forward on every successful ApplyProgressUpdate and is
 	// the basis for the SilentPickThreshold check.
 	s.mu.Lock()
-	s.LastProgressUpdate = time.Now()
+	s.lastProgressUpdate = time.Now()
 	s.mu.Unlock()
 	return true
 }
@@ -208,9 +208,9 @@ func (s *Service) RefreshWatcherBroadcast(channelID, login string) {
 // re-fetch the channel's actual current game; if the streamer has
 // switched back to the expected game by then, no action.
 func (s *Service) HandleGameChange(channelID string, data twitch.GameChangeData) {
-	s.RLock()
-	currentPick := s.CurrentPickID
-	s.RUnlock()
+	s.mu.RLock()
+	currentPick := s.currentPickID
+	s.mu.RUnlock()
 	pickCampaign := s.Stall.LastPickCampaignID()
 
 	if channelID != currentPick {
@@ -221,16 +221,16 @@ func (s *Service) HandleGameChange(channelID string, data twitch.GameChangeData)
 		return
 	}
 
-	s.RLock()
+	s.mu.RLock()
 	expectedGame := ""
 	pickedChannelLogin := ""
-	if c, ok := s.CampaignCache[pickCampaign]; ok {
+	if c, ok := s.campaignCache[pickCampaign]; ok {
 		expectedGame = c.GameName
 	}
 	if ch, ok := s.channels.Get(channelID); ok {
 		pickedChannelLogin = ch.Login
 	}
-	s.RUnlock()
+	s.mu.RUnlock()
 
 	if expectedGame == "" || pickedChannelLogin == "" {
 		return
@@ -260,9 +260,9 @@ func (s *Service) HandleGameChange(channelID string, data twitch.GameChangeData)
 
 		// Re-check whether this is still the picked channel (selector
 		// may have moved on while we slept).
-		s.RLock()
-		stillPicked := s.CurrentPickID == channelID
-		s.RUnlock()
+		s.mu.RLock()
+		stillPicked := s.currentPickID == channelID
+		s.mu.RUnlock()
 		if !stillPicked {
 			return
 		}

@@ -44,10 +44,10 @@ func (s *Service) ProgressPollLoop(stopCh <-chan struct{}) {
 // what we just got pushed. Cuts the DropCurrentSession query rate
 // roughly in half when WebSocket is healthy.
 func (s *Service) PollProgressOnce() {
-	s.RLock()
-	pickedID := s.CurrentPickID
-	recentUpdate := !s.LastProgressUpdate.IsZero() && time.Since(s.LastProgressUpdate) < 30*time.Second
-	s.RUnlock()
+	s.mu.RLock()
+	pickedID := s.currentPickID
+	recentUpdate := !s.lastProgressUpdate.IsZero() && time.Since(s.lastProgressUpdate) < 30*time.Second
+	s.mu.RUnlock()
 	pickedCampID := s.Stall.LastPickCampaignID()
 
 	if pickedID == "" || pickedCampID == "" {
@@ -82,7 +82,7 @@ func (s *Service) PollProgressOnce() {
 		// queued campaign gets the slot without waiting for the
 		// 15-min CheckLoop.
 		s.mu.RLock()
-		silentFor := time.Since(s.LastProgressUpdate)
+		silentFor := time.Since(s.lastProgressUpdate)
 		s.mu.RUnlock()
 
 		if silentFor > SilentPickThreshold {
@@ -150,9 +150,9 @@ func (s *Service) HandleDropClaim(data twitch.DropClaimData) {
 	// Wait for Twitch to advance the session.
 	time.Sleep(4 * time.Second)
 
-	s.RLock()
-	pickedID := s.CurrentPickID
-	s.RUnlock()
+	s.mu.RLock()
+	pickedID := s.currentPickID
+	s.mu.RUnlock()
 
 	if pickedID != "" && data.DropID != "" {
 		for i := 0; i < 8; i++ {
@@ -198,8 +198,8 @@ func (s *Service) ApplyProgressUpdate(data twitch.DropProgressData) {
 	// has advanced to a later drop in a multi-drop campaign.
 	resolvedName := ""
 	resolvedRequired := data.RequiredMinutesWatched
-	s.RLock()
-	if c, ok := s.CampaignCache[data.CampaignID]; ok {
+	s.mu.RLock()
+	if c, ok := s.campaignCache[data.CampaignID]; ok {
 		for _, d := range c.Drops {
 			if d.ID == data.DropID {
 				resolvedName = d.BenefitName
@@ -213,31 +213,31 @@ func (s *Service) ApplyProgressUpdate(data twitch.DropProgressData) {
 			}
 		}
 	}
-	s.RUnlock()
+	s.mu.RUnlock()
 
-	s.Lock()
+	s.mu.Lock()
 	updated := false
-	for i := range s.ActiveDrops {
-		if s.ActiveDrops[i].CampaignID != data.CampaignID {
+	for i := range s.activeDrops {
+		if s.activeDrops[i].CampaignID != data.CampaignID {
 			continue
 		}
 		// If the cached row already targets a different drop, swap to the new one.
 		if data.DropID != "" && resolvedName != "" {
-			s.ActiveDrops[i].DropName = resolvedName
+			s.activeDrops[i].DropName = resolvedName
 		}
 		if resolvedRequired > 0 {
-			s.ActiveDrops[i].Required = resolvedRequired
+			s.activeDrops[i].Required = resolvedRequired
 		}
-		s.ActiveDrops[i].Progress = data.CurrentMinutesWatched
-		if s.ActiveDrops[i].Required > 0 {
-			pct := (data.CurrentMinutesWatched * 100) / s.ActiveDrops[i].Required
+		s.activeDrops[i].Progress = data.CurrentMinutesWatched
+		if s.activeDrops[i].Required > 0 {
+			pct := (data.CurrentMinutesWatched * 100) / s.activeDrops[i].Required
 			if pct > 100 {
 				pct = 100
 			}
-			s.ActiveDrops[i].Percent = pct
-			s.ActiveDrops[i].EtaMinutes = s.ActiveDrops[i].Required - data.CurrentMinutesWatched
-			if s.ActiveDrops[i].EtaMinutes < 0 {
-				s.ActiveDrops[i].EtaMinutes = 0
+			s.activeDrops[i].Percent = pct
+			s.activeDrops[i].EtaMinutes = s.activeDrops[i].Required - data.CurrentMinutesWatched
+			if s.activeDrops[i].EtaMinutes < 0 {
+				s.activeDrops[i].EtaMinutes = 0
 			}
 		}
 		updated = true
@@ -252,9 +252,9 @@ func (s *Service) ApplyProgressUpdate(data twitch.DropProgressData) {
 	// fresh WS event already updated the same data (TDM
 	// minute_almost_done).
 	if updated {
-		s.LastProgressUpdate = time.Now()
+		s.lastProgressUpdate = time.Now()
 	}
-	s.Unlock()
+	s.mu.Unlock()
 
 	if updated {
 		if s.writeLogFile != nil {
@@ -271,9 +271,9 @@ func (s *Service) ApplyProgressUpdate(data twitch.DropProgressData) {
 		// sync with the activeDrops table.
 		nextName := resolvedName
 		nextRequired := resolvedRequired
-		s.RLock()
-		pickedCh := s.CurrentPickID
-		s.RUnlock()
+		s.mu.RLock()
+		pickedCh := s.currentPickID
+		s.mu.RUnlock()
 		if pickedCh != "" {
 			if ch, ok := s.channels.Get(pickedCh); ok {
 				snap := ch.Snapshot()
@@ -295,9 +295,9 @@ func (s *Service) ApplyProgressUpdate(data twitch.DropProgressData) {
 // that owns the given drop ID. Returns "" if the drop is not in the
 // current cache (e.g., a fresh inventory cycle hasn't run yet).
 func (s *Service) LookupCampaignByDropID(dropID string) string {
-	s.RLock()
-	defer s.RUnlock()
-	for _, c := range s.CampaignCache {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.campaignCache {
 		for _, d := range c.Drops {
 			if d.ID == dropID {
 				return c.ID

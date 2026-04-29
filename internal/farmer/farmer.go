@@ -687,9 +687,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 			// waiting up to 15 minutes for the next inventory cycle.
 			// Non-pick channels go through the normal slot-fill path only.
 			if hasDropBefore {
-				f.drops.RLock()
-				isCurrentPick := f.drops.CurrentPickID == ch.ChannelID
-				f.drops.RUnlock()
+				isCurrentPick := f.drops.IsCurrentPick(ch.ChannelID)
 				// FIX: stop the drops Watcher RIGHT NOW for the pick — don't wait
 				// for processDrops to finish (which may hang on a slow Inventory
 				// fetch). Otherwise the Watcher keeps sending sendSpadeEvents
@@ -882,12 +880,9 @@ func (f *Farmer) rotateChannels() {
 	}
 
 	// Sort P0 by campaign end time (soonest expiring first gets the Spade slot)
-	f.drops.RLock()
 	sort.Slice(priority0, func(i, j int) bool {
-		ci := priority0[i].Snapshot().CampaignID
-		cj := priority0[j].Snapshot().CampaignID
-		ei := f.drops.CampaignCache[ci].EndAt
-		ej := f.drops.CampaignCache[cj].EndAt
+		ei := f.drops.CampaignEndAt(priority0[i].Snapshot().CampaignID)
+		ej := f.drops.CampaignEndAt(priority0[j].Snapshot().CampaignID)
 		if ei.IsZero() {
 			return false
 		}
@@ -899,7 +894,6 @@ func (f *Farmer) rotateChannels() {
 		}
 		return ei.Before(ej)
 	})
-	f.drops.RUnlock()
 	sort.Slice(priority1, func(i, j int) bool {
 		return priority1[i].ChannelID < priority1[j].ChannelID
 	})
@@ -1145,9 +1139,7 @@ func (f *Farmer) GetStats() Stats {
 		}
 	}
 
-	f.drops.RLock()
-	stats.ActiveDrops = len(f.drops.ActiveDrops)
-	f.drops.RUnlock()
+	stats.ActiveDrops = f.drops.ActiveDropsCount()
 
 	return stats
 }

@@ -94,14 +94,14 @@ func (s *Service) ProcessDrops() {
 
 	// 7. Pick applied successfully — commit the new state atomically.
 	s.mu.Lock()
-	s.ActiveDrops = active
-	s.QueuedDrops = queued
-	s.IdleDrops = idle
-	s.CampaignCache = newCache
+	s.activeDrops = active
+	s.queuedDrops = queued
+	s.idleDrops = idle
+	s.campaignCache = newCache
 	if pick != nil {
-		s.CurrentPickID = pick.ChannelID
+		s.currentPickID = pick.ChannelID
 	} else {
-		s.CurrentPickID = ""
+		s.currentPickID = ""
 	}
 	s.mu.Unlock()
 
@@ -136,14 +136,14 @@ func (s *Service) GetActiveDrops() []ActiveDrop {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	total := len(s.ActiveDrops) + len(s.QueuedDrops) + len(s.IdleDrops)
+	total := len(s.activeDrops) + len(s.queuedDrops) + len(s.idleDrops)
 	if total == 0 {
 		return nil
 	}
 	out := make([]ActiveDrop, 0, total)
-	out = append(out, s.ActiveDrops...)
-	out = append(out, s.QueuedDrops...)
-	out = append(out, s.IdleDrops...)
+	out = append(out, s.activeDrops...)
+	out = append(out, s.queuedDrops...)
+	out = append(out, s.idleDrops...)
 	return out
 }
 
@@ -158,7 +158,7 @@ func (s *Service) GetEligibleGames() []string {
 
 	seen := make(map[string]bool)
 	var out []string
-	for _, c := range s.CampaignCache {
+	for _, c := range s.campaignCache {
 		if c.GameName == "" {
 			continue
 		}

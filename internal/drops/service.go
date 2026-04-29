@@ -14,23 +14,22 @@ import (
 // UI row slices, and the dependencies the drop flow needs to talk to
 // Twitch and the rest of the farmer.
 //
-// The exported state fields (ActiveDrops, CampaignCache, CurrentPickID,
-// …) and the Lock/Unlock pass-throughs are transitional: they let
-// farmer keep its existing access patterns while methods migrate over
-// from farmer/drops.go one phase at a time. Later phases will encapsulate
-// each access behind a Service method and demote the fields to
-// unexported.
+// All state is private. External callers (farmer.go) reach the state
+// only through accessor methods — IsCurrentPick, CampaignEndAt,
+// ActiveDropsCount, GetActiveDrops, GetEligibleGames. Internal Service
+// methods (in process.go, apply.go, progress.go, …) take the lock
+// directly via s.mu since they live in the same package.
 type Service struct {
 	// Dependencies (set at construction).
-	cfg                     *config.Config
-	gql                     *twitch.GQLClient
-	pubsub                  *twitch.PubSubClient
-	spade                   *twitch.SpadeTracker
-	prober                  *twitch.StreamProber
-	channels                *channels.Registry
-	watcher                 *Watcher
-	log                     func(string, ...interface{}) // visible UI + file
-	writeLogFile            func(string)                 // file-only noise log
+	cfg                    *config.Config
+	gql                    *twitch.GQLClient
+	pubsub                 *twitch.PubSubClient
+	spade                  *twitch.SpadeTracker
+	prober                 *twitch.StreamProber
+	channels               *channels.Registry
+	watcher                *Watcher
+	log                    func(string, ...interface{}) // visible UI + file
+	writeLogFile           func(string)                 // file-only noise log
 	removeTempChannel      func(channelID string)
 	addTempChannelFromInfo func(info *twitch.ChannelInfo, campaignID string) error
 	triggerRotation        func()
@@ -41,12 +40,12 @@ type Service struct {
 
 	// State (protected by mu).
 	mu                 sync.RWMutex
-	ActiveDrops        []ActiveDrop                   // status=ACTIVE/DISABLED/COMPLETED for /api/drops
-	QueuedDrops        []ActiveDrop                   // status=QUEUED for /api/drops
-	IdleDrops          []ActiveDrop                   // status=IDLE for /api/drops
-	CampaignCache      map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
-	CurrentPickID      string                         // ChannelID currently assigned the drop slot, "" if none
-	LastProgressUpdate time.Time                      // when applyDropProgressUpdate last fired (WS or poll)
+	activeDrops        []ActiveDrop                   // status=ACTIVE/DISABLED/COMPLETED for /api/drops
+	queuedDrops        []ActiveDrop                   // status=QUEUED for /api/drops
+	idleDrops          []ActiveDrop                   // status=IDLE for /api/drops
+	campaignCache      map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
+	currentPickID      string                         // ChannelID currently assigned the drop slot, "" if none
+	lastProgressUpdate time.Time                      // when applyDropProgressUpdate last fired (WS or poll)
 }
 
 // ServiceDeps bundles the external dependencies NewService needs. The
@@ -102,12 +101,31 @@ func NewService(deps ServiceDeps) *Service {
 	}
 }
 
-// Lock / Unlock / RLock / RUnlock are transitional pass-throughs to the
-// state mutex. Farmer code still acquires the lock directly for compound
-// reads/writes of the exported state fields. As each access pattern
-// migrates into a Service method, the corresponding caller stops needing
-// these — final goal is to remove them entirely.
-func (s *Service) Lock()    { s.mu.Lock() }
-func (s *Service) Unlock()  { s.mu.Unlock() }
-func (s *Service) RLock()   { s.mu.RLock() }
-func (s *Service) RUnlock() { s.mu.RUnlock() }
+// IsCurrentPick reports whether the given channelID matches the
+// channel currently assigned the drop slot. Callers use this to decide
+// drop-pick-specific behavior (e.g. EventStreamDown should stop the
+// drops Watcher only if the offline channel was the active pick).
+func (s *Service) IsCurrentPick(channelID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentPickID == channelID
+}
+
+// CampaignEndAt returns the cached EndAt for the given campaign, or
+// the zero time if the campaign isn't in the cache. Used by farmer's
+// rotation logic to sort priority-0 channels (channels actively
+// farming a drop) by soonest-expiring campaign first.
+func (s *Service) CampaignEndAt(campaignID string) time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.campaignCache[campaignID].EndAt
+}
+
+// ActiveDropsCount returns the length of the ACTIVE+DISABLED+COMPLETED
+// row slice. Used by farmer's GetStats for the dashboard counter; if
+// callers need the actual rows they should use GetActiveDrops.
+func (s *Service) ActiveDropsCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.activeDrops)
+}
