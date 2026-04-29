@@ -1,3 +1,61 @@
+== 2026-04-29 22:05 == Refactor: Phase 2d — move ActiveDrop + BuildRows into drops ==
+
+The web-API row builder and its data type leave farmer for the
+drops package. UI and web layers now consume drops.ActiveDrop
+directly without going through farmer.
+
+What changed:
+- New internal/drops/rows.go (~185 lines):
+  - Exported type: drops.ActiveDrop (moved verbatim from farmer
+    with all JSON tags intact — the /api/drops contract is
+    unchanged).
+  - Exported function: drops.BuildRows(cfg, campaigns, pick, pool)
+    returning (active, queued, idle []ActiveDrop).
+  - Exported interface: drops.RowsConfig with the three config
+    methods BuildRows actually needs (GetPinnedCampaign,
+    IsCampaignDisabled, IsCampaignCompleted) — keeps the drops
+    package independent of the config package.
+  - Unexported helper: campaignToRow.
+- farmer/drops.go shrinks ~158 lines:
+  - ActiveDrop type, buildDropRows method, and campaignToRow
+    helper deleted.
+  - dropState's activeDrops/queuedDrops/idleDrops fields now hold
+    []drops.ActiveDrop.
+  - processDrops calls drops.BuildRows(f.cfg, …) directly; the
+    method-form farmer.buildDropRows is gone.
+  - GetActiveDrops returns []drops.ActiveDrop.
+- internal/ui/app.go: imports drops package, two
+  *farmer.ActiveDrop / []farmer.ActiveDrop sites in
+  findCampaignByPartial migrated. Local variable named drops in
+  that function renamed to rows so the type reference doesn't
+  shadow the package.
+- internal/ui/components.go: imports drops package, one
+  []farmer.ActiveDrop parameter in renderDropsTable migrated.
+- internal/web/server.go: imports drops package, the
+  []farmer.ActiveDrop{} fallback at /api/drops migrated. Local
+  variable also renamed to rows for the same shadowing reason.
+
+Why now: the row builder is the most UI-shaped part of the drops
+domain — pulling it before the inventory/claim/pick orchestration
+moves means the next sub-phases produce drops.ActiveDrop directly
+without needing aliases or conversion shims.
+
+drops.go shrinkage tracker (post-Phase-1 baseline 1221 lines):
+  Phase 2a:  1199  (Selector moved)
+  Phase 2b:  1153  (pick helpers moved)
+  Phase 2c:  1007  (StallTracker extracted)
+  Phase 2d:   849  (rows + ActiveDrop moved)
+  Total:    −372 / −30%
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — all packages still pass; no new
+  tests added (BuildRows is exercised at runtime in drops cycle —
+  unit tests for the disabled/completed/queued/idle/active
+  classification could be added later if a regression makes that
+  worthwhile).
+
 == 2026-04-29 21:55 == Refactor: Phase 2c — extract StallTracker into drops ==
 
 Cooldown / stall-detection logic moves out of farmer's dropState

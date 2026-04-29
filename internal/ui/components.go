@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/miwi/twitchpoint/internal/channels"
+	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/farmer"
 )
 
@@ -153,7 +154,7 @@ func renderChannelTableScrollable(channels []channels.Snapshot, width, maxRows, 
 }
 
 // renderDropsTable renders the active drop campaigns table.
-func renderDropsTable(drops []farmer.ActiveDrop, width int) string {
+func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 	if len(drops) == 0 {
 		return ""
 	}

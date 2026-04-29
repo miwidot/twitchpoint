@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/farmer"
 )
 
@@ -438,14 +439,14 @@ func (m Model) View() string {
 // findCampaignByPartial does a case-insensitive substring match against the
 // current ActiveDrops snapshot. Returns the unique match or an error if not
 // found / multiple matches.
-func (m Model) findCampaignByPartial(query string) (*farmer.ActiveDrop, error) {
+func (m Model) findCampaignByPartial(query string) (*drops.ActiveDrop, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
 		return nil, fmt.Errorf("empty query")
 	}
-	drops := m.farmer.GetActiveDrops()
-	var matches []farmer.ActiveDrop
-	for _, d := range drops {
+	rows := m.farmer.GetActiveDrops()
+	var matches []drops.ActiveDrop
+	for _, d := range rows {
 		if strings.Contains(strings.ToLower(d.CampaignName), query) {
 			matches = append(matches, d)
 		}

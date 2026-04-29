@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/farmer"
 )
 
@@ -292,11 +293,11 @@ func (s *Server) handleDrops(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	drops := s.farmer.GetActiveDrops()
-	if drops == nil {
-		drops = []farmer.ActiveDrop{}
+	rows := s.farmer.GetActiveDrops()
+	if rows == nil {
+		rows = []drops.ActiveDrop{}
 	}
-	jsonResponse(w, drops)
+	jsonResponse(w, rows)
 }
 
 func (s *Server) handleDropAction(w http.ResponseWriter, r *http.Request) {

@@ -11,36 +11,15 @@ import (
 	"github.com/miwi/twitchpoint/internal/twitch"
 )
 
-// ActiveDrop represents a drop being tracked, exposed for the Web UI.
-type ActiveDrop struct {
-	CampaignID         string    `json:"campaign_id"`
-	CampaignName       string    `json:"campaign_name"`
-	GameName           string    `json:"game_name"`
-	DropName           string    `json:"drop_name"`
-	ChannelLogin       string    `json:"channel_login"`        // matched channel (if any)
-	Progress           int       `json:"progress"`              // current minutes watched
-	Required           int       `json:"required"`               // minutes required
-	Percent            int       `json:"percent"`                // 0-100
-	IsClaimed          bool      `json:"is_claimed"`
-	EndAt              time.Time `json:"end_at"`                 // campaign end time
-	IsAutoSelected     bool      `json:"is_auto_selected"`       // channel was auto-discovered
-	IsEnabled          bool      `json:"is_enabled"`              // campaign not disabled
-	IsAccountConnected bool      `json:"is_account_connected"`   // account linked for this game
-	Status             string    `json:"status"`                 // ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED
-	IsPinned           bool      `json:"is_pinned"`
-	QueueIndex         int       `json:"queue_index"`            // 1-based for ACTIVE/QUEUED/IDLE; 0 otherwise
-	EtaMinutes         int       `json:"eta_minutes"`            // RequiredMinutesWatched - CurrentMinutesWatched of next-to-claim drop
-}
-
 // dropState holds internal state for the drop tracker. The stall-detection
 // and cooldown machinery lives in drops.StallTracker (pluggable, separately
 // tested); this struct only holds the orchestration state that doesn't fit
 // there yet.
 type dropState struct {
 	mu            sync.RWMutex
-	activeDrops   []ActiveDrop                   // for /api/drops, status=ACTIVE/DISABLED/COMPLETED
-	queuedDrops   []ActiveDrop                   // for /api/drops, status=QUEUED
-	idleDrops     []ActiveDrop                   // for /api/drops, status=IDLE
+	activeDrops   []drops.ActiveDrop                   // for /api/drops, status=ACTIVE/DISABLED/COMPLETED
+	queuedDrops   []drops.ActiveDrop                   // for /api/drops, status=QUEUED
+	idleDrops     []drops.ActiveDrop                   // for /api/drops, status=IDLE
 	campaignCache map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
 	currentPickID string                         // ChannelID currently assigned the drop slot, "" if none
 
@@ -191,7 +170,7 @@ func (f *Farmer) processDrops() {
 	pick, pool := f.drops.selector.Select(campaigns, skipChannels)
 
 	// 3. Build per-campaign UI rows.
-	active, queued, idle := f.buildDropRows(campaigns, pick, pool)
+	active, queued, idle := drops.BuildRows(f.cfg, campaigns, pick, pool)
 
 	// 4. Rebuild campaign cache (for web UI endAt lookups).
 	newCache := make(map[string]twitch.DropCampaign, len(campaigns))
@@ -373,143 +352,6 @@ func (f *Farmer) markCompletedIfFinishedExternally(campaignID string) {
 		_ = f.cfg.Save()
 		f.addLog("[Drops] Campaign %q finished externally (poll: complete + not in inventory) — marked completed", c.Name)
 		return
-	}
-}
-
-// buildDropRows produces the per-campaign UI rows for the web API.
-func (f *Farmer) buildDropRows(
-	campaigns []twitch.DropCampaign,
-	pick *drops.PoolEntry,
-	pool []*drops.PoolEntry,
-) (active, queued, idle []ActiveDrop) {
-	pinnedID := f.cfg.GetPinnedCampaign()
-
-	campaignsInPool := make(map[string]*drops.PoolEntry)
-	for _, e := range pool {
-		for _, ref := range e.Campaigns {
-			if _, exists := campaignsInPool[ref.ID]; !exists {
-				campaignsInPool[ref.ID] = e
-			}
-		}
-	}
-
-	pickedCampaignIDs := make(map[string]bool)
-	if pick != nil {
-		for _, ref := range pick.Campaigns {
-			pickedCampaignIDs[ref.ID] = true
-		}
-	}
-
-	queueIdx := 1
-	seenWatchableNames := make(map[string]bool) // dedup sub-only-deduped campaign noise (e.g. 9× "S5 Support ABI Partners")
-	for _, c := range campaigns {
-		if c.Status != "" && c.Status != "ACTIVE" {
-			continue
-		}
-		if !c.EndAt.IsZero() && !c.EndAt.After(time.Now()) {
-			continue
-		}
-		if !c.IsAccountConnected {
-			continue
-		}
-
-		// Skip campaigns with no watchable drops (sub-only, or all drops claimed).
-		// These can't be farmed, so showing them in the queue is just noise.
-		// EXCEPTION: keep them if disabled or completed so the user can see why.
-		hasWatchable := false
-		for _, d := range c.Drops {
-			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
-				hasWatchable = true
-				break
-			}
-		}
-		if !hasWatchable && !f.cfg.IsCampaignDisabled(c.ID) && !f.cfg.IsCampaignCompleted(c.ID) {
-			continue
-		}
-
-		// Dedup by name: when Twitch returns N copies of the same campaign with
-		// different IDs (each with one allowed channel — typical for streamer-
-		// exclusive drops), show only the first. The selector still considers
-		// all of them; this is purely a UI dedup.
-		if seenWatchableNames[c.Name] {
-			continue
-		}
-		seenWatchableNames[c.Name] = true
-
-		row := campaignToRow(c, pinnedID)
-
-		switch {
-		case f.cfg.IsCampaignDisabled(c.ID):
-			row.Status = "DISABLED"
-			active = append(active, row)
-		case f.cfg.IsCampaignCompleted(c.ID):
-			row.Status = "COMPLETED"
-			active = append(active, row)
-		case pickedCampaignIDs[c.ID]:
-			row.Status = "ACTIVE"
-			row.QueueIndex = queueIdx
-			queueIdx++
-			if pick != nil {
-				row.ChannelLogin = pick.ChannelLogin
-			}
-			active = append(active, row)
-		case campaignsInPool[c.ID] != nil:
-			row.Status = "QUEUED"
-			row.QueueIndex = queueIdx
-			queueIdx++
-			queued = append(queued, row)
-		default:
-			row.Status = "IDLE"
-			idle = append(idle, row)
-		}
-	}
-
-	return active, queued, idle
-}
-
-// campaignToRow projects a DropCampaign into the ActiveDrop UI shape.
-func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
-	var dropName string
-	var progress, required int
-	for _, d := range c.Drops {
-		if d.RequiredMinutesWatched <= 0 || d.IsClaimed {
-			continue
-		}
-		dropName = d.BenefitName
-		if dropName == "" {
-			dropName = d.Name
-		}
-		progress = d.CurrentMinutesWatched
-		required = d.RequiredMinutesWatched
-		break
-	}
-
-	pct := 0
-	if required > 0 {
-		pct = (progress * 100) / required
-		if pct > 100 {
-			pct = 100
-		}
-	}
-
-	eta := required - progress
-	if eta < 0 {
-		eta = 0
-	}
-
-	return ActiveDrop{
-		CampaignID:         c.ID,
-		CampaignName:       c.Name,
-		GameName:           c.GameName,
-		DropName:           dropName,
-		Progress:           progress,
-		Required:           required,
-		Percent:            pct,
-		EndAt:              c.EndAt,
-		IsEnabled:          true,
-		IsAccountConnected: c.IsAccountConnected,
-		IsPinned:           c.ID == pinnedID && pinnedID != "",
-		EtaMinutes:         eta,
 	}
 }
 
@@ -722,7 +564,7 @@ func (f *Farmer) SetCampaignEnabled(campaignID string, enabled bool) error {
 	return nil
 }
 // Order: ACTIVE / DISABLED / COMPLETED first, then QUEUED, then IDLE.
-func (f *Farmer) GetActiveDrops() []ActiveDrop {
+func (f *Farmer) GetActiveDrops() []drops.ActiveDrop {
 	f.drops.mu.RLock()
 	defer f.drops.mu.RUnlock()
 
@@ -730,7 +572,7 @@ func (f *Farmer) GetActiveDrops() []ActiveDrop {
 	if total == 0 {
 		return nil
 	}
-	out := make([]ActiveDrop, 0, total)
+	out := make([]drops.ActiveDrop, 0, total)
 	out = append(out, f.drops.activeDrops...)
 	out = append(out, f.drops.queuedDrops...)
 	out = append(out, f.drops.idleDrops...)
