@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miwi/twitchpoint/internal/channels"
@@ -36,7 +37,6 @@ type Farmer struct {
 
 	user *twitch.UserInfo
 
-	mu       sync.RWMutex // protects: stopped (last remaining field — Phase 4 batch 6 will swap to atomic.Bool)
 	channels *channels.Registry
 
 	logMu      sync.RWMutex
@@ -46,7 +46,10 @@ type Farmer struct {
 
 	startTime time.Time
 	stopCh    chan struct{}
-	stopped   bool
+	// stopped is atomic so Stop() doesn't need a mutex — Farmer no longer
+	// owns any other shared mutable state since Phase 4 moved everything
+	// across to channels.Registry / drops.Service / points.Service.
+	stopped atomic.Bool
 
 	// Drops
 	drops *drops.Service
@@ -208,16 +211,12 @@ func (f *Farmer) Start() error {
 	return nil
 }
 
-// Stop shuts down the farmer.
+// Stop shuts down the farmer. Idempotent — calling twice is a no-op.
 func (f *Farmer) Stop() {
-	f.mu.Lock()
-	if f.stopped {
-		f.mu.Unlock()
+	if !f.stopped.CompareAndSwap(false, true) {
 		return
 	}
-	f.stopped = true
 	close(f.stopCh)
-	f.mu.Unlock()
 
 	f.writeLogFile("=== TwitchPoint Farmer stopped ===")
 
@@ -294,10 +293,7 @@ func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
 		f.addLog("PubSub subscribe error for %s: %v", info.Login, err)
 	}
 
-	// Join IRC channel for viewer presence
-	if f.irc != nil {
-		f.irc.Join(info.Login)
-	}
+	f.points.NotifyChannelAdded(info.Login)
 
 	priLabel := "rotate"
 	if state.Priority == 1 {
@@ -375,10 +371,7 @@ func (f *Farmer) addTemporaryChannelFromInfo(info *twitch.ChannelInfo, campaignI
 		f.addLog("[Drops] PubSub subscribe error for temp channel %s: %v", info.Login, err)
 	}
 
-	// Join IRC
-	if f.irc != nil {
-		f.irc.Join(info.Login)
-	}
+	f.points.NotifyChannelAdded(info.Login)
 
 	state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 	f.addLog("[Drops] Auto-added temporary channel: %s (campaign: %s)", info.DisplayName, campaignID)
@@ -408,9 +401,7 @@ func (f *Farmer) removeTemporaryChannel(channelID string) {
 		fmt.Sprintf("raid.%s", channelID),
 	})
 
-	if f.irc != nil {
-		f.irc.Part(login)
-	}
+	f.points.NotifyChannelRemoved(login)
 
 	f.addLog("[Drops] Removed temporary channel: %s", displayName)
 }
@@ -478,10 +469,7 @@ func (f *Farmer) RemoveChannelLive(login string) error {
 		fmt.Sprintf("raid.%s", channelID),
 	})
 
-	// Leave IRC channel
-	if f.irc != nil {
-		f.irc.Part(login)
-	}
+	f.points.NotifyChannelRemoved(login)
 
 	f.addLog("Removed channel: %s", ch.DisplayName)
 

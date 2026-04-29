@@ -1,3 +1,27 @@
+== 2026-04-30 01:52 == Refactor: Phase 4e — IRC lifecycle + Farmer.mu → atomic.Bool ==
+
+Phase 4 final cleanup:
+
+1. IRC join/part calls move out of farmer into points.NotifyChannelAdded
+   / NotifyChannelRemoved (4 call sites: addChannelWithInfo,
+   addTemporaryChannelFromInfo, removeTemporaryChannel, RemoveChannelLive).
+   The IRC client itself stays in twitch.IRCClient — points just
+   delegates. Cleans up the (f.irc != nil) nil-check pattern from 4
+   places.
+
+2. Farmer.mu (sync.RWMutex) is deleted. All shared mutable state has
+   moved out across the v2.0 refactor: channels.Registry,
+   drops.Service, points.Service own theirs. The one remaining piece
+   was the `stopped` flag → swapped for atomic.Bool with a CAS guard
+   in Stop() so the close(stopCh) only fires once.
+
+End-state: internal/farmer/farmer.go = 829 lines (was 1145 before
+Phase 4 started, peaked around 1200+ before Phase 1). Points domain
+totals 550 lines across 6 files (service / events / naming / rotation
+/ balance / irc).
+
+Files: internal/points/irc.go (new), internal/farmer/farmer.go.
+
 == 2026-04-30 01:46 == Refactor: Phase 4d — balance refresh moves to points.Service ==
 
 5-min channel-points balance refresh loop extracted to
