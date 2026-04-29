@@ -253,15 +253,19 @@ func (m Model) handleDropsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case " ", "space":
 		return m.dropsToggle(drops, settings), nil
+
+	// '+' / '-' / 'u' / 'd' are wanted-games actions. They auto-focus
+	// the Games panel so the user doesn't have to navigate j/k there
+	// first — this is the most common Drops-tab interaction and
+	// requiring a precondition (cursor on Games panel) was confusing.
 	case "+":
-		// Only the wanted-games panel honors '+' (add game).
-		if m.dropsFocusedPanel == dropsPanelGames {
-			m.inputMode = inputAddGameName
-			m.inputValue = ""
-		}
+		m.dropsFocusedPanel = dropsPanelGames
+		m.inputMode = inputAddGameName
+		m.inputValue = ""
 		return m, nil
 	case "-":
-		if m.dropsFocusedPanel == dropsPanelGames && m.dropsGameCursor < len(games) {
+		m.dropsFocusedPanel = dropsPanelGames
+		if m.dropsGameCursor < len(games) {
 			m.farmer.Config().RemoveGameFromWatch(games[m.dropsGameCursor])
 			_ = m.farmer.Config().Save()
 			if m.dropsGameCursor > 0 && m.dropsGameCursor >= len(games)-1 {
@@ -270,14 +274,16 @@ func (m Model) handleDropsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "u":
-		if m.dropsFocusedPanel == dropsPanelGames && m.dropsGameCursor > 0 && m.dropsGameCursor < len(games) {
+		m.dropsFocusedPanel = dropsPanelGames
+		if m.dropsGameCursor > 0 && m.dropsGameCursor < len(games) {
 			m.farmer.Config().MoveGameToWatch(games[m.dropsGameCursor], -1)
 			_ = m.farmer.Config().Save()
 			m.dropsGameCursor--
 		}
 		return m, nil
 	case "d":
-		if m.dropsFocusedPanel == dropsPanelGames && m.dropsGameCursor < len(games)-1 {
+		m.dropsFocusedPanel = dropsPanelGames
+		if m.dropsGameCursor < len(games)-1 {
 			m.farmer.Config().MoveGameToWatch(games[m.dropsGameCursor], +1)
 			_ = m.farmer.Config().Save()
 			m.dropsGameCursor++
@@ -440,11 +446,17 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		}
 	case inputAddGameName:
 		// User typed a game name on the Wanted Games panel. Persist it
-		// and exit the modal — cursor stays where it was so the user
-		// can immediately reorder / delete the freshly-added entry.
+		// and jump the cursor to the freshly-added entry (which always
+		// goes to the end of the list) so the user can immediately
+		// reorder / delete it.
 		if value != "" {
 			m.farmer.Config().AddGameToWatch(value)
 			_ = m.farmer.Config().Save()
+			games := m.farmer.Config().GetGamesToWatch()
+			if len(games) > 0 {
+				m.dropsFocusedPanel = dropsPanelGames
+				m.dropsGameCursor = len(games) - 1
+			}
 		}
 	}
 

@@ -1,3 +1,19 @@
+== 2026-04-30 02:28 == Fix: Drops-tab '+' / '-' / 'u' / 'd' work from any panel ==
+
+UX bug shipped in 02:22 — game-management keys only worked when the
+cursor was already on the Wanted Games panel, which made adding the
+first game effectively undiscoverable (panel was empty so no rows to
+j/k onto).
+
+Fix:
+- '+' / '-' / 'u' / 'd' auto-focus the Games panel on press so they
+  work from anywhere in the Drops tab.
+- After successful '+' add, cursor jumps to the freshly-added entry
+  (which always lands at the end of the list).
+- Empty-state text on Games panel now reads
+  "(no games yet — press + to add one)".
+- Help footer always lists +/-/u/d regardless of focused panel.
+
 == 2026-04-30 02:22 == Feature: TUI tab system (Channels / Drops / Help) ==
 
 Top-level tab navigation introduced. The single-screen TUI is now

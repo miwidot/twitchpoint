@@ -137,7 +137,9 @@ func renderDropsGamesPanel(games []string, cursor int, focused bool) string {
 	title := renderPanelTitle("Wanted Games (priority order)", focused)
 
 	if len(games) == 0 {
-		body := tableCellStyle.Render("    (empty — focus this panel and press '+' to add games)")
+		body := tableCellStyle.Render("    (no games yet — press ") +
+			helpKeyStyle.Render("+") +
+			tableCellStyle.Render(" to add one)")
 		return title + "\n" + body
 	}
 
@@ -192,39 +194,36 @@ func renderPanelTitle(name string, focused bool) string {
 	return sectionTitleStyle.Render(" " + name + " ")
 }
 
-// renderDropsHelpFooter shows the per-panel keybind hints based on
-// which panel currently has focus.
+// renderDropsHelpFooter shows the keybind hints. The Wanted Games
+// actions (+, -, u/d) auto-focus the Games panel on press, so they
+// work from anywhere in the Drops tab — listed in every footer.
+// Per-panel space-toggle behavior differs (campaigns vs settings),
+// so that hint changes based on focused panel.
 func renderDropsHelpFooter(focused dropsPanel) string {
-	common := []struct{ k, d string }{
+	var parts []string
+
+	switch focused {
+	case dropsPanelCampaigns:
+		parts = append(parts, helpKeyStyle.Render("space")+helpStyle.Render(" toggle disable"))
+	case dropsPanelSettings:
+		parts = append(parts, helpKeyStyle.Render("space")+helpStyle.Render(" toggle setting"))
+	case dropsPanelGames:
+		// Games panel — Space is a no-op, so don't list it; +/-/u/d
+		// are listed in the always-visible block below.
+	}
+
+	always := []struct{ k, d string }{
+		{"+", "add game"},
+		{"-", "remove game"},
+		{"u/d", "reorder"},
 		{"j/k", "navigate"},
 		{"1/2/3", "tab"},
 		{"q", "quit"},
 	}
-	var perPanel []struct{ k, d string }
-	switch focused {
-	case dropsPanelCampaigns:
-		perPanel = []struct{ k, d string }{
-			{"space", "toggle disable"},
-		}
-	case dropsPanelGames:
-		perPanel = []struct{ k, d string }{
-			{"+", "add"},
-			{"-", "remove"},
-			{"u/d", "reorder"},
-		}
-	case dropsPanelSettings:
-		perPanel = []struct{ k, d string }{
-			{"space", "toggle"},
-		}
+	for _, a := range always {
+		parts = append(parts, helpKeyStyle.Render(a.k)+helpStyle.Render(" "+a.d))
 	}
 
-	var parts []string
-	for _, p := range perPanel {
-		parts = append(parts, helpKeyStyle.Render(p.k)+helpStyle.Render(" "+p.d))
-	}
-	for _, c := range common {
-		parts = append(parts, helpKeyStyle.Render(c.k)+helpStyle.Render(" "+c.d))
-	}
 	return helpStyle.Render("  " + strings.Join(parts, "  |  "))
 }
 
