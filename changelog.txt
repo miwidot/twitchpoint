@@ -1,3 +1,57 @@
+== 2026-04-29 21:33 == Refactor: Phase 1 of v2.0 split — extract channels package ==
+
+First slice of the agreed v2.0 logic split. The channel-registry concern
+moves out of Farmer and into a dedicated internal/channels package.
+
+What changed:
+- New internal/channels package owns the live channel state and the
+  registry that maps channelID/login → state.
+  - State (was farmer.ChannelState) keeps all setters (SetOnline,
+    SetWatching, SetDropInfo, etc.) and gains three new typed setters
+    (SetPriority, SetIsTemporary, SetCampaignID) so callers no longer
+    need to reach for a now-unexported mutex.
+  - Snapshot (was farmer.ChannelSnapshot) is unchanged in shape; only
+    the package qualifier moved.
+  - Registry exposes Add / Get / GetByLogin / Remove / States /
+    Snapshots / Len. Last-writer-wins on Add(); Remove returns the
+    removed *State so callers can run cleanup (Spade.StopWatching,
+    prober.Stop, IRC Part).
+  - Concurrent-access tested with the race detector.
+- Farmer struct loses `channels map[string]*ChannelState` and
+  `loginMap map[string]string`; gains `channels *channels.Registry`.
+  Farmer.mu now only protects the residual non-channel state (stopped
+  flag, seenClaims/seenRaids dedup, totalPointsEarned/ClaimsMade,
+  rotationIndex, nameCache). Future phases will split those out too.
+- ~60 call sites in farmer.go and drops.go migrated to the registry.
+  Net diff: −82 LOC (lock-acquire/release boilerplate gone).
+- internal/ui/components.go switched from farmer.ChannelSnapshot to
+  channels.Snapshot — UI is now a direct channels-package consumer.
+
+Why now:
+- During the ABI Partner-Only credit fix, every review pass surfaced
+  more bugs in drops.go because rotation, channel state, drop pick
+  state, and cooldown reasons were tangled under one mutex. Splitting
+  channels out is the prerequisite for cleaning that up.
+- Each subsequent phase (slots, points, drops InventoryService)
+  becomes a smaller, lower-risk diff against this baseline.
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race ./... — all packages pass, including the new
+  internal/channels suite (10 unit tests, race-clean).
+
+Outstanding (carried into next phases):
+- internal/slots/ extraction — Spade 2-slot Acquire/Release.
+- internal/points/ extraction — rotation, IRC, chest claims,
+  seenClaims/seenRaids dedup, stats counters.
+- internal/drops/ expansion — InventoryService + Selector +
+  drop-event handlers.
+- nameCache should eventually live in the channels package.
+- pre-existing `addTemporaryChannel` is now flagged as unused by
+  the linter — confirmed dead before this refactor; left untouched
+  so the diff stays scoped.
+
 == 2026-04-29 12:57 == Major: WebSocket-driven drops + wanted_games priority (v1.8.0) ==
 
 Replaces 5-min inventory polling with Twitch PubSub WebSocket for

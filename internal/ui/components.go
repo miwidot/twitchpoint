@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/miwi/twitchpoint/internal/channels"
 	"github.com/miwi/twitchpoint/internal/farmer"
 )
 
@@ -35,7 +36,7 @@ func channelTableHeader() string {
 }
 
 // renderChannelRow renders a single channel row.
-func renderChannelRow(ch farmer.ChannelSnapshot) string {
+func renderChannelRow(ch channels.Snapshot) string {
 	const (
 		priW       = 4
 		nameW      = 16
@@ -120,7 +121,7 @@ func renderChannelRow(ch farmer.ChannelSnapshot) string {
 }
 
 // renderChannelTableScrollable renders the channel table with scroll support.
-func renderChannelTableScrollable(channels []farmer.ChannelSnapshot, width, maxRows, scroll int) string {
+func renderChannelTableScrollable(channels []channels.Snapshot, width, maxRows, scroll int) string {
 	if len(channels) == 0 {
 		return subtitleStyle.Render("  No channels configured. Press 'a' to add a channel.")
 	}

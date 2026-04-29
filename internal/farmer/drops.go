@@ -719,10 +719,7 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 
 	if pick == nil {
 		if prevPickID != "" {
-			f.mu.RLock()
-			ch, ok := f.channels[prevPickID]
-			f.mu.RUnlock()
-			if ok {
+			if ch, ok := f.channels.Get(prevPickID); ok {
 				ch.ClearDropInfo()
 				// Clear IsWatching so rotation can pick this channel up
 				// again as a normal Spade slot.
@@ -788,10 +785,7 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 	//    No second GetChannelInfo call — same data drives temp creation
 	//    AND watcher start, so we can't end up with a registered temp that
 	//    failed its refresh.
-	f.mu.RLock()
-	ch, exists := f.channels[pick.ChannelID]
-	f.mu.RUnlock()
-
+	ch, exists := f.channels.Get(pick.ChannelID)
 	if !exists {
 		primaryCampID := ""
 		if len(pick.Campaigns) > 0 {
@@ -801,10 +795,8 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 			f.addLog("[Drops/Pool] failed to add %s: %v", pick.ChannelLogin, err)
 			return false
 		}
-		f.mu.RLock()
-		ch = f.channels[pick.ChannelID]
-		f.mu.RUnlock()
-		if ch == nil {
+		ch, exists = f.channels.Get(pick.ChannelID)
+		if !exists {
 			return false
 		}
 	} else {
@@ -831,9 +823,7 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 				name = d.Name
 			}
 			ch.SetDropInfo(name, d.CurrentMinutesWatched, d.RequiredMinutesWatched)
-			ch.mu.Lock()
-			ch.CampaignID = c.ID
-			ch.mu.Unlock()
+			ch.SetCampaignID(c.ID)
 			break
 		}
 		break
@@ -841,10 +831,7 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 
 	// 4. Release previous pick (only if it's a different channel).
 	if prevPickID != "" && prevPickID != pick.ChannelID {
-		f.mu.RLock()
-		prevCh, ok := f.channels[prevPickID]
-		f.mu.RUnlock()
-		if ok {
+		if prevCh, ok := f.channels.Get(prevPickID); ok {
 			prevCh.ClearDropInfo()
 			prevCh.SetWatching(false)
 		}
@@ -895,14 +882,13 @@ func (f *Farmer) cleanupNonPickedTempChannels(pick *PoolEntry) {
 		pickID = pick.ChannelID
 	}
 
-	f.mu.RLock()
 	var stale []string
-	for chID, ch := range f.channels {
-		if ch.Snapshot().IsTemporary && chID != pickID {
-			stale = append(stale, chID)
+	for _, ch := range f.channels.States() {
+		snap := ch.Snapshot()
+		if snap.IsTemporary && snap.ChannelID != pickID {
+			stale = append(stale, snap.ChannelID)
 		}
 	}
-	f.mu.RUnlock()
 
 	for _, chID := range stale {
 		f.removeTemporaryChannel(chID)
@@ -1076,10 +1062,7 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 		pickedCh := f.drops.currentPickID
 		f.drops.mu.RUnlock()
 		if pickedCh != "" {
-			f.mu.RLock()
-			ch, ok := f.channels[pickedCh]
-			f.mu.RUnlock()
-			if ok {
+			if ch, ok := f.channels.Get(pickedCh); ok {
 				snap := ch.Snapshot()
 				if snap.HasActiveDrop {
 					if nextName == "" {
@@ -1126,11 +1109,9 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 	if c, ok := f.drops.campaignCache[pickCampaign]; ok {
 		expectedGame = c.GameName
 	}
-	f.mu.RLock()
-	if ch, ok := f.channels[channelID]; ok {
+	if ch, ok := f.channels.Get(channelID); ok {
 		pickedChannelLogin = ch.Login
 	}
-	f.mu.RUnlock()
 	f.drops.mu.RUnlock()
 
 	if expectedGame == "" || pickedChannelLogin == "" {
@@ -1205,10 +1186,7 @@ func (f *Farmer) refreshWatcherBroadcast(channelID, login string) {
 	if info.BroadcastID == "" || info.GameID == "" {
 		return
 	}
-	f.mu.RLock()
-	ch, ok := f.channels[channelID]
-	f.mu.RUnlock()
-	if ok {
+	if ch, ok := f.channels.Get(channelID); ok {
 		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 	}
 	f.dropWatch.UpdateBroadcast(channelID, info.BroadcastID, info.GameName, info.GameID)

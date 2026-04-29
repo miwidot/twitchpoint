@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/miwi/twitchpoint/internal/channels"
 	"github.com/miwi/twitchpoint/internal/config"
 	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/twitch"
@@ -34,9 +35,8 @@ type Farmer struct {
 
 	user *twitch.UserInfo
 
-	mu       sync.RWMutex
-	channels map[string]*ChannelState // channelID -> state
-	loginMap map[string]string        // login -> channelID
+	mu       sync.RWMutex // protects: stopped, seenClaims, seenRaids, stats counters, rotationIndex, nameCache
+	channels *channels.Registry
 
 	logMu      sync.RWMutex
 	logEntries []LogEntry
@@ -74,8 +74,7 @@ func New(cfg *config.Config, version string) *Farmer {
 		cfg:        cfg,
 		version:    version,
 		events:     make(chan twitch.FarmerEvent, 100),
-		channels:   make(map[string]*ChannelState),
-		loginMap:   make(map[string]string),
+		channels:   channels.New(),
 		seenClaims: make(map[string]time.Time),
 		nameCache:  make(map[string]string),
 		seenRaids:  make(map[string]time.Time),
@@ -256,13 +255,10 @@ func (f *Farmer) addChannelFromEntry(entry config.ChannelEntry) error {
 }
 
 func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
-	state := NewChannelState(info.Login, info.DisplayName, info.ID)
+	state := channels.NewState(info.Login, info.DisplayName, info.ID)
 	state.Priority = f.cfg.GetPriority(info.Login)
 
-	f.mu.Lock()
-	f.channels[info.ID] = state
-	f.loginMap[info.Login] = info.ID
-	f.mu.Unlock()
+	f.channels.Add(state)
 
 	// Subscribe to PubSub topics for this channel
 	topics := []string{
@@ -311,21 +307,14 @@ func (f *Farmer) addTemporaryChannel(login, campaignID string) error {
 	login = strings.ToLower(login)
 
 	// Check if already tracked
-	f.mu.RLock()
-	if chID, ok := f.loginMap[login]; ok {
-		ch := f.channels[chID]
-		f.mu.RUnlock()
+	if ch, ok := f.channels.GetByLogin(login); ok {
 		// If it's already a permanent channel, just set the campaign ID
-		snap := ch.Snapshot()
-		if !snap.IsTemporary {
-			ch.mu.Lock()
-			ch.CampaignID = campaignID
-			ch.mu.Unlock()
+		if !ch.Snapshot().IsTemporary {
+			ch.SetCampaignID(campaignID)
 			return nil
 		}
 		return fmt.Errorf("channel %s already tracked", login)
 	}
-	f.mu.RUnlock()
 
 	info, err := f.gql.GetChannelInfo(login)
 	if err != nil {
@@ -345,15 +334,12 @@ func (f *Farmer) addTemporaryChannel(login, campaignID string) error {
 // mutation. Avoids duplicate GQL calls and ensures the temp channel is
 // only registered when the metadata is provably valid.
 func (f *Farmer) addTemporaryChannelFromInfo(info *twitch.ChannelInfo, campaignID string) error {
-	state := NewChannelState(info.Login, info.DisplayName, info.ID)
+	state := channels.NewState(info.Login, info.DisplayName, info.ID)
 	state.Priority = 2 // temp channels use P2 (drops will promote to P0)
 	state.IsTemporary = true
 	state.CampaignID = campaignID
 
-	f.mu.Lock()
-	f.channels[info.ID] = state
-	f.loginMap[info.Login] = info.ID
-	f.mu.Unlock()
+	f.channels.Add(state)
 
 	// Subscribe to PubSub topics
 	topics := []string{
@@ -382,18 +368,12 @@ func (f *Farmer) addTemporaryChannelFromInfo(info *twitch.ChannelInfo, campaignI
 
 // removeTemporaryChannel cleans up a temporary channel without touching config.
 func (f *Farmer) removeTemporaryChannel(channelID string) {
-	f.mu.Lock()
-	ch, ok := f.channels[channelID]
+	ch, ok := f.channels.Remove(channelID)
 	if !ok {
-		f.mu.Unlock()
 		return
 	}
-
 	login := ch.Login
 	displayName := ch.DisplayName
-	delete(f.channels, channelID)
-	delete(f.loginMap, login)
-	f.mu.Unlock()
 
 	f.spade.StopWatching(channelID)
 	f.prober.Stop(login)
@@ -414,18 +394,12 @@ func (f *Farmer) removeTemporaryChannel(channelID string) {
 func (f *Farmer) AddChannelLive(login string) error {
 	login = strings.ToLower(login)
 
-	f.mu.RLock()
-	if chID, ok := f.loginMap[login]; ok {
-		ch := f.channels[chID]
-		f.mu.RUnlock()
-
+	if ch, ok := f.channels.GetByLogin(login); ok {
 		// If channel exists as temporary, promote to permanent
 		if ch.Snapshot().IsTemporary {
-			ch.mu.Lock()
-			ch.IsTemporary = false
-			ch.mu.Unlock()
+			ch.SetIsTemporary(false)
 			f.cfg.AddChannel(login)
-			f.cfg.SetChannelID(login, chID)
+			f.cfg.SetChannelID(login, ch.ChannelID)
 			if err := f.cfg.Save(); err != nil {
 				f.addLog("Warning: could not save config: %v", err)
 			}
@@ -434,7 +408,6 @@ func (f *Farmer) AddChannelLive(login string) error {
 		}
 		return fmt.Errorf("channel %s already added", login)
 	}
-	f.mu.RUnlock()
 
 	// Resolve channel info first so we have the ID
 	info, err := f.gql.GetChannelInfo(login)
@@ -456,26 +429,19 @@ func (f *Farmer) AddChannelLive(login string) error {
 func (f *Farmer) RemoveChannelLive(login string) error {
 	login = strings.ToLower(login)
 
-	f.mu.RLock()
-	channelID, ok := f.loginMap[login]
+	ch, ok := f.channels.GetByLogin(login)
 	if !ok {
-		f.mu.RUnlock()
 		return fmt.Errorf("channel %s not found", login)
 	}
-	ch := f.channels[channelID]
-	isTemp := ch.Snapshot().IsTemporary
-	f.mu.RUnlock()
+	channelID := ch.ChannelID
 
 	// Temporary channels use separate cleanup (no config changes)
-	if isTemp {
+	if ch.Snapshot().IsTemporary {
 		f.removeTemporaryChannel(channelID)
 		return nil
 	}
 
-	f.mu.Lock()
-	delete(f.channels, channelID)
-	delete(f.loginMap, login)
-	f.mu.Unlock()
+	f.channels.Remove(channelID)
 
 	// Stop watching
 	f.spade.StopWatching(channelID)
@@ -506,18 +472,12 @@ func (f *Farmer) RemoveChannelLive(login string) error {
 // SetPriorityLive changes a channel's priority at runtime.
 func (f *Farmer) SetPriorityLive(login string, priority int) error {
 	login = strings.ToLower(login)
-	f.mu.RLock()
-	channelID, ok := f.loginMap[login]
+	ch, ok := f.channels.GetByLogin(login)
 	if !ok {
-		f.mu.RUnlock()
 		return fmt.Errorf("channel %s not found", login)
 	}
-	ch := f.channels[channelID]
-	f.mu.RUnlock()
 
-	ch.mu.Lock()
-	ch.Priority = priority
-	ch.mu.Unlock()
+	ch.SetPriority(priority)
 
 	priLabel := "rotate"
 	if priority == 1 {
@@ -577,7 +537,7 @@ func (f *Farmer) lookupCampaignByDropID(dropID string) string {
 	return ""
 }
 
-func (f *Farmer) tryStartWatching(state *ChannelState) {
+func (f *Farmer) tryStartWatching(state *channels.State) {
 	snap := state.Snapshot()
 	if !snap.IsOnline || snap.IsWatching {
 		return
@@ -612,9 +572,7 @@ func (f *Farmer) eventLoop() {
 }
 
 func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
-	f.mu.RLock()
-	ch, ok := f.channels[evt.ChannelID]
-	f.mu.RUnlock()
+	ch, ok := f.channels.Get(evt.ChannelID)
 
 	switch evt.Type {
 	case twitch.EventClaimAvailable:
@@ -820,15 +778,13 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 // fillSpadeSlots tries to fill open Spade slots with online channels.
 func (f *Farmer) fillSpadeSlots() {
-	f.mu.RLock()
-	var candidates []*ChannelState
-	for _, ch := range f.channels {
+	var candidates []*channels.State
+	for _, ch := range f.channels.States() {
 		snap := ch.Snapshot()
 		if snap.IsOnline && !snap.IsWatching {
 			candidates = append(candidates, ch)
 		}
 	}
-	f.mu.RUnlock()
 
 	// Sort by viewer count descending (prioritize popular channels)
 	sort.Slice(candidates, func(i, j int) bool {
@@ -858,14 +814,7 @@ func (f *Farmer) balanceRefreshLoop() {
 }
 
 func (f *Farmer) refreshBalances() {
-	f.mu.RLock()
-	channels := make([]*ChannelState, 0, len(f.channels))
-	for _, ch := range f.channels {
-		channels = append(channels, ch)
-	}
-	f.mu.RUnlock()
-
-	for _, ch := range channels {
+	for _, ch := range f.channels.States() {
 		balance, err := f.gql.GetChannelPointsBalance(ch.Login)
 		if err == nil && balance > 0 {
 			ch.SetBalance(balance)
@@ -911,11 +860,10 @@ func (f *Farmer) rotateChannels() {
 		dropChanID = f.dropWatch.CurrentChannelID()
 	}
 
-	f.mu.RLock()
-	var priority0 []*ChannelState // P0: active drop (auto-promoted)
-	var priority1 []*ChannelState
-	var priority2 []*ChannelState
-	for _, ch := range f.channels {
+	var priority0 []*channels.State // P0: active drop (auto-promoted)
+	var priority1 []*channels.State
+	var priority2 []*channels.State
+	for _, ch := range f.channels.States() {
 		snap := ch.Snapshot()
 		if !snap.IsOnline {
 			continue
@@ -931,7 +879,6 @@ func (f *Farmer) rotateChannels() {
 			priority2 = append(priority2, ch)
 		}
 	}
-	f.mu.RUnlock()
 
 	// Sort P0 by campaign end time (soonest expiring first gets the Spade slot)
 	f.drops.mu.RLock()
@@ -962,7 +909,7 @@ func (f *Farmer) rotateChannels() {
 	// Build the desired set of channels to watch
 	// P0 (drop active) → P1 (always watch) → P2 (rotate)
 	const maxSlots = 2
-	desired := make(map[string]*ChannelState) // channelID -> state
+	desired := make(map[string]*channels.State) // channelID -> state
 
 	slotsUsed := 0
 	for _, ch := range priority0 {
@@ -996,7 +943,7 @@ func (f *Farmer) rotateChannels() {
 
 	// Compute diff: stop channels no longer desired, keep channels that stay
 	currentlyWatching := make(map[string]bool)
-	for _, list := range [][]*ChannelState{priority0, priority1, priority2} {
+	for _, list := range [][]*channels.State{priority0, priority1, priority2} {
 		for _, ch := range list {
 			if ch.Snapshot().IsWatching {
 				currentlyWatching[ch.ChannelID] = true
@@ -1037,7 +984,7 @@ func (f *Farmer) rotateChannels() {
 }
 
 // fetchAndStartWatching fetches broadcast ID via GQL and starts Spade for a channel.
-func (f *Farmer) fetchAndStartWatching(ch *ChannelState) {
+func (f *Farmer) fetchAndStartWatching(ch *channels.State) {
 	info, err := f.gql.GetChannelInfo(ch.Login)
 	if err != nil {
 		f.addLog("[Spade] failed to fetch broadcast ID for %s: %v", ch.DisplayName, err)
@@ -1131,20 +1078,14 @@ func (f *Farmer) GetUser() *twitch.UserInfo {
 }
 
 // GetChannels returns snapshots of all channel states.
-func (f *Farmer) GetChannels() []ChannelSnapshot {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
-	snapshots := make([]ChannelSnapshot, 0, len(f.channels))
-	for _, ch := range f.channels {
-		snapshots = append(snapshots, ch.Snapshot())
-	}
+func (f *Farmer) GetChannels() []channels.Snapshot {
+	snapshots := f.channels.Snapshots()
 
 	// Sort: watching first, then online, then offline — each group alphabetically
 	sort.Slice(snapshots, func(i, j int) bool {
 		si, sj := snapshots[i], snapshots[j]
 		// Rank: 0 = watching (highest), 1 = online, 2 = offline
-		rank := func(s ChannelSnapshot) int {
+		rank := func(s channels.Snapshot) int {
 			if s.IsWatching {
 				return 0
 			}
@@ -1186,17 +1127,15 @@ type Stats struct {
 
 func (f *Farmer) GetStats() Stats {
 	f.mu.RLock()
-	defer f.mu.RUnlock()
-
 	stats := Stats{
 		TotalPointsEarned: f.totalPointsEarned,
 		TotalClaimsMade:   f.totalClaimsMade,
 		Uptime:            time.Since(f.startTime),
-		ChannelsTotal:     len(f.channels),
 	}
+	f.mu.RUnlock()
 
-	for _, ch := range f.channels {
-		snap := ch.Snapshot()
+	stats.ChannelsTotal = f.channels.Len()
+	for _, snap := range f.channels.Snapshots() {
 		if snap.IsOnline {
 			stats.ChannelsOnline++
 		}
