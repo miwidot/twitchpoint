@@ -6,24 +6,24 @@
     <title>twitchpoint.farmer</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg:           #0A0A0B;
             --bg-elev:      #131316;
             --bg-hover:     #1C1C21;
-            --rule:         #27272A;
+            --rule:         #2A2A2E;
             --rule-soft:    #1F1F22;
-            --text:         #F4F4F5;
-            --text-muted:   #71717A;
-            --text-dim:     #52525B;
+            --text:         #FAFAFA;
+            --text-muted:   #B4B4BA;
+            --text-dim:     #828289;
             --accent:       #D7FF00;
             --accent-glow:  rgba(215, 255, 0, 0.18);
             --accent-soft:  rgba(215, 255, 0, 0.08);
             --live:         #4ADE80;
             --warn:         #FF8A4C;
             --danger:       #FF5E5B;
-            --font-mono:    'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+            --font-mono:    'Geist Mono', 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
             --pad-sm: 8px; --pad-md: 16px; --pad-lg: 24px; --pad-xl: 40px;
         }
 
@@ -33,15 +33,15 @@
             background: var(--bg);
             color: var(--text);
             font-family: var(--font-mono);
-            font-size: 13px;
+            font-size: 14px;
             line-height: 1.55;
-            font-weight: 400;
+            font-weight: 500;
             -webkit-font-smoothing: antialiased;
             text-rendering: geometricPrecision;
             min-height: 100vh;
         }
         body {
-            background-image: radial-gradient(circle, rgba(255,255,255,0.025) 1px, transparent 1px);
+            background-image: radial-gradient(circle, rgba(255,255,255,0.012) 1px, transparent 1px);
             background-size: 28px 28px;
             background-attachment: fixed;
         }
@@ -218,20 +218,20 @@
         .btn-danger:hover { border-color: var(--danger); color: var(--danger); }
 
         .table-wrap { overflow-x: auto; margin: 0 -2px; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
         thead th {
             text-align: left;
-            font-size: 10px;
-            font-weight: 500;
+            font-size: 11px;
+            font-weight: 600;
             letter-spacing: 0.1em;
             text-transform: uppercase;
-            color: var(--text-dim);
-            padding: 8px 12px 8px 0;
+            color: var(--text-muted);
+            padding: 10px 14px 10px 0;
             border-bottom: 1px solid var(--rule);
         }
         thead th.r { text-align: right; }
         tbody td {
-            padding: 10px 12px 10px 0;
+            padding: 12px 14px 12px 0;
             border-bottom: 1px solid var(--rule-soft);
             vertical-align: middle;
         }
@@ -249,14 +249,14 @@
 
         .pri-tag {
             display: inline-block;
-            font-size: 10px;
+            font-size: 11px;
             font-weight: 700;
             letter-spacing: 0.05em;
             min-width: 24px;
         }
         .pri-tag.p0 { color: var(--accent); }
         .pri-tag.p1 { color: var(--text); }
-        .pri-tag.p2 { color: var(--text-dim); }
+        .pri-tag.p2 { color: var(--text-muted); }
 
         .ch-name { font-weight: 500; color: var(--text); }
         .ch-name.offline { color: var(--text-muted); font-weight: 400; }
@@ -271,11 +271,11 @@
         .status-dot.live     { background: var(--live);   box-shadow: 0 0 6px var(--live); }
         .status-dot.watching { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
         .status-dot.offline  { background: transparent; border: 1px solid var(--text-dim); }
-        .status-text { font-size: 10px; color: var(--text-muted); letter-spacing: 0.06em; }
+        .status-text { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; font-weight: 600; }
 
         .game-cell {
             color: var(--text-muted);
-            font-size: 12px;
+            font-size: 13px;
             max-width: 240px;
             overflow: hidden;
             text-overflow: ellipsis;

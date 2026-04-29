@@ -1,3 +1,36 @@
+== 2026-04-30 03:28 == Polish: web UI readability — Geist Mono + brighter greys ==
+
+User flagged that the redesign was visually striking but text was
+hard to read. Specific issues:
+- JetBrains Mono regular at 13px feels thin on dark with the
+  dot-grid texture pulling contrast down
+- Muted/dim greys (#71717A / #52525B) were too dark for body text
+  like game names and table headers — nearly invisible "—" dashes
+- Header rows in tables fell below comfortable contrast
+
+Fixes (no aesthetic shift, just better legibility):
+- Font: JetBrains Mono → Geist Mono. Rounder x-height, slightly
+  larger apparent size, designed for UI/dev-tool contexts. Stays
+  in mono, stays in the same family ecosystem as the accent.
+- Body: 13px → 14px, weight 400 → 500. More readable at glance.
+- --text-muted: #71717A → #B4B4BA (significantly brighter for
+  body-secondary like game names, sidebar labels, status hints).
+- --text-dim: #52525B → #828289 (still subordinate but no longer
+  invisible — for table-cell placeholders, very-secondary meta).
+- --rule: #27272A → #2A2A2E (slightly brighter rules so structure
+  is visible without becoming heavy).
+- Dot-grid alpha: 0.025 → 0.012 (less noise pulling contrast down).
+- Table header font: 10px → 11px, weight 500 → 600, color
+  --text-dim → --text-muted (header is now properly readable).
+- Table cell font: 12px → 13px, padding 10/12 → 12/14 (more
+  breathing room).
+- Status text: 10px → 11px weight 600.
+- Pri-tag P2: --text-dim → --text-muted (more readable priority
+  badges).
+
+Aesthetic preserved — chartreuse accent + dark warm base
+unchanged; just the text layer is now properly legible.
+
 == 2026-04-30 03:23 == Feature: web UI redesign — Operator Terminal aesthetic ==
 
 Full rewrite of internal/web/static/index.html (was Twitch-purple
