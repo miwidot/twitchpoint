@@ -157,6 +157,14 @@ func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) bo
 		s.watcher.Start(snap.ChannelID, snap.Login, snap.BroadcastID, snap.GameName, snap.GameID)
 		s.log("[Drops/Watch] handing %s to drops Watcher (exclusive)", snap.DisplayName)
 	}
+
+	// Reset the silent-pick stall clock so PollProgressOnce gives this
+	// pick a fresh grace window before flagging it as un-credited. The
+	// timer ticks forward on every successful ApplyProgressUpdate and is
+	// the basis for the SilentPickThreshold check.
+	s.mu.Lock()
+	s.LastProgressUpdate = time.Now()
+	s.mu.Unlock()
 	return true
 }
 

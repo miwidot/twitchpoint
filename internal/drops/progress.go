@@ -7,6 +7,16 @@ import (
 	"github.com/miwi/twitchpoint/internal/twitch"
 )
 
+// SilentPickThreshold is how long a pick can go without
+// ApplyProgressUpdate firing (no successful CurrentDrop session, no WS
+// progress event) before PollProgressOnce flags it as un-credited and
+// kicks it onto the manual cooldown. 3 minutes is past the
+// "first 1-2 cycles after fresh pick" Twitch warmup window but well
+// under the 15-min full inventory cycle, so the bot drops a stuck pick
+// long before the next CheckLoop tick. TDM uses a similar order of
+// magnitude (its DROP_VERIFICATION_INTERVAL is in the same range).
+const SilentPickThreshold = 3 * time.Minute
+
 // ProgressPollLoop polls DropCurrentSessionContext every 60 seconds for
 // the currently picked drop channel. This is the bridge that keeps
 // progress in sync when user-drop-events PubSub is silent (which is
@@ -58,19 +68,34 @@ func (s *Service) PollProgressOnce() {
 		return
 	}
 	if session == nil {
-		// Twitch reports no active drop session for this channel. Two
-		// common causes:
-		//   1. Drop just hit 100% — Twitch goes quiet on the session
-		//      info between completion and inventory advancing to the
-		//      next drop. The 15-min CheckLoop will catch this on the
-		//      next ProcessDrops cycle.
-		//   2. Streamer's drops aren't crediting us at all — the stall
-		//      tracker handles that path.
-		// Either way we want a file-only log so post-mortem can spot
-		// when the bot went into "blind heartbeat" mode.
+		// Twitch reports no active drop session for this channel.
+		// Two common causes: (1) drop just hit 100% and Twitch is
+		// silent until inventory advances; (2) the pick is genuinely
+		// not crediting (stale broadcast, anti-cheat soft-throttle,
+		// daily-rolling campaign without a fresh slot, …).
+		//
+		// LastProgressUpdate is reset at end of ApplyPick and again
+		// on every ApplyProgressUpdate, so silentFor measures
+		// "wall-clock time since the last good signal for THIS pick".
+		// Past SilentPickThreshold, push the pick onto the manual
+		// cooldown and re-run ProcessDrops out-of-band — the next
+		// queued campaign gets the slot without waiting for the
+		// 15-min CheckLoop.
+		s.mu.RLock()
+		silentFor := time.Since(s.LastProgressUpdate)
+		s.mu.RUnlock()
+
+		if silentFor > SilentPickThreshold {
+			s.log("[Drops/Poll] pick=%s silent %v — manual cooldown 15min, re-picking",
+				pickedID, silentFor.Round(time.Second))
+			s.Stall.SetManual(pickedID, 15*time.Minute)
+			go s.ProcessDrops()
+			return
+		}
+
 		if s.writeLogFile != nil {
-			s.writeLogFile(fmt.Sprintf("[Drops/Poll] no session for pick=%s campaign=%s — Twitch returned nil",
-				pickedID, pickedCampID))
+			s.writeLogFile(fmt.Sprintf("[Drops/Poll] no session for pick=%s campaign=%s — Twitch returned nil (%v silent, threshold %v)",
+				pickedID, pickedCampID, silentFor.Round(time.Second), SilentPickThreshold))
 		}
 		return
 	}
