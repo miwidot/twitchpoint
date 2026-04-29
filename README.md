@@ -19,10 +19,23 @@ Automated Twitch channel points farmer. Watches multiple channels, auto-claims b
 
 Download the latest release for your platform from [Releases](https://github.com/miwidot/twitchpoint/releases).
 
+| File | Platform |
+|------|----------|
+| `twitchpoint-macos` | macOS Apple Silicon (M1/M2/M3/M4) |
+| `twitchpoint-macos-intel` | macOS Intel (x86_64) |
+| `twitchpoint-linux` | Linux x86_64 |
+| `twitchpoint-linux-arm64` | Linux ARM64 (Raspberry Pi 4/5, ARM servers) |
+| `twitchpoint-windows.exe` | Windows x86_64 |
+
 ```bash
-# macOS / Linux
-chmod +x twitchpoint-*
-./twitchpoint-macos     # or ./twitchpoint-linux
+# macOS Apple Silicon
+chmod +x twitchpoint-macos && ./twitchpoint-macos
+
+# macOS Intel
+chmod +x twitchpoint-macos-intel && ./twitchpoint-macos-intel
+
+# Linux
+chmod +x twitchpoint-linux && ./twitchpoint-linux
 
 # Windows
 twitchpoint-windows.exe
