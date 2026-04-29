@@ -95,6 +95,9 @@ func (f *Farmer) processDrops() {
 
 	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
 
+	// 0. v1.8.0: scrub stale CompletedCampaigns entries (daily-rolling reset detection).
+	f.scrubStaleCompleted(campaigns)
+
 	// 1. Auto-claim any drops that are complete and have an instance ID.
 	f.autoClaimAndMarkCompleted(campaigns)
 
@@ -579,4 +582,32 @@ func (f *Farmer) GetActiveDrops() []ActiveDrop {
 	out = append(out, f.drops.queuedDrops...)
 	out = append(out, f.drops.idleDrops...)
 	return out
+}
+
+// scrubStaleCompleted removes campaign IDs from CompletedCampaigns whose drops
+// are again unclaimed in the new inventory. Twitch reuses the same campaign ID
+// for daily-rolling campaigns (e.g. "Marble Day 245") and resets the drops —
+// without this scrub the bot silently skips them forever.
+func (f *Farmer) scrubStaleCompleted(campaigns []twitch.DropCampaign) {
+	changed := false
+	for _, c := range campaigns {
+		if !f.cfg.IsCampaignCompleted(c.ID) {
+			continue
+		}
+		hasUnclaimed := false
+		for _, d := range c.Drops {
+			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
+				hasUnclaimed = true
+				break
+			}
+		}
+		if hasUnclaimed {
+			f.cfg.UnmarkCampaignCompleted(c.ID)
+			f.addLog("[Drops] Campaign %q has unclaimed drops again — un-marking completed", c.Name)
+			changed = true
+		}
+	}
+	if changed {
+		f.cfg.Save()
+	}
 }
