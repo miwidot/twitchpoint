@@ -1,30 +1,41 @@
 package twitch
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	spadeURLFallback   = "https://spade.twitch.tv/track"
+	// Modern Twitch tracking endpoint. The legacy spade.twitch.tv/track URL
+	// still accepts requests (returns 204) but the drop-credit pipeline only
+	// honors heartbeats sent to beacon.twitch.tv. TDM uses this endpoint via
+	// the `beacon_?url` regex on settings.js — see TDM channel.py:300.
+	spadeURLFallback   = "https://beacon.twitch.tv/track"
 	heartbeatInterval  = 60 * time.Second
 	maxWatchedChannels = 2
-	browserUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	// MUST match the client-ID we use (kd1unb4b3q4t58fwlpcbzcbnm76a8fp = Android App).
+	// Twitch's drop anti-cheat correlates client-ID with user-agent — sending
+	// Android client-ID with a Windows Chrome UA gets flagged and silently
+	// blocks drop credit (channel-points still credit because that uses a
+	// different verification path). TDM uses identical Dalvik UAs for this
+	// client-ID; see TDM config/client_info.py ClientType.ANDROID_APP.
+	browserUserAgent = "Dalvik/2.1.0 (Linux; U; Android 16; SM-S911B Build/TP1A.220624.014) tv.twitch.android.app/25.3.0/2503006"
 )
 
-// SpadeTracker sends minute-watched heartbeats to Twitch's Spade endpoint.
+// SpadeTracker sends minute-watched heartbeats. As of 2024+ Twitch only
+// credits drops via the `sendSpadeEvents` GQL mutation — the legacy
+// POST to spade.twitch.tv/track silently fails on stricter campaigns.
+// We call gql.SendMinuteWatched here. Name kept for compatibility.
 type SpadeTracker struct {
 	userID     string
 	authToken  string
-	spadeURL   string
+	deviceID   string // kept for legacy fallback; no longer used by GQL path
+	spadeURL   string // legacy, only used as informational log
+	gql        *GQLClient
 	httpClient *http.Client
 	logFunc    func(string, ...interface{})
 
@@ -35,17 +46,23 @@ type SpadeTracker struct {
 }
 
 type spadeChannel struct {
-	channelID   string
+	channelID    string
 	channelLogin string
-	broadcastID string
-	stopCh      chan struct{}
+	broadcastID  string
+	gameName     string
+	gameID       string
+	stopCh       chan struct{}
 }
 
 // NewSpadeTracker creates a new Spade tracker for sending watch heartbeats.
-func NewSpadeTracker(userID, authToken string, logFunc func(string, ...interface{})) *SpadeTracker {
+// gql is the shared GQL client — heartbeats are sent via the sendSpadeEvents
+// mutation through it (the only credit-honored path on modern Twitch).
+func NewSpadeTracker(userID, authToken, deviceID string, gql *GQLClient, logFunc func(string, ...interface{})) *SpadeTracker {
 	return &SpadeTracker{
 		userID:     userID,
 		authToken:  authToken,
+		deviceID:   deviceID,
+		gql:        gql,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		logFunc:    logFunc,
 		channels:   make(map[string]*spadeChannel),
@@ -67,14 +84,16 @@ func (s *SpadeTracker) Start() error {
 
 // StartWatching begins sending heartbeats for a channel.
 // Returns false if at max capacity.
-func (s *SpadeTracker) StartWatching(channelID, channelLogin, broadcastID string) bool {
+func (s *SpadeTracker) StartWatching(channelID, channelLogin, broadcastID, gameName, gameID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Already watching this channel
 	if _, ok := s.channels[channelID]; ok {
-		// Update broadcast ID if changed
+		// Update broadcast ID and game in case they changed
 		s.channels[channelID].broadcastID = broadcastID
+		s.channels[channelID].gameName = gameName
+		s.channels[channelID].gameID = gameID
 		return true
 	}
 
@@ -87,6 +106,8 @@ func (s *SpadeTracker) StartWatching(channelID, channelLogin, broadcastID string
 		channelID:    channelID,
 		channelLogin: channelLogin,
 		broadcastID:  broadcastID,
+		gameName:     gameName,
+		gameID:       gameID,
 		stopCh:       make(chan struct{}),
 	}
 	s.channels[channelID] = ch
@@ -170,69 +191,16 @@ func (s *SpadeTracker) heartbeatLoop(ch *spadeChannel) {
 const heartbeatMaxRetries = 2
 
 func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
-	// Payload fields match TwitchDropsMiner exactly. Twitch's drop credit system
-	// appears to silently drop heartbeats missing any of hidden/location/logged_in/muted
-	// (community points still credit on the lighter payload, but drop minutes don't —
-	// observed on this bot's account vs TDM in identical conditions).
-	payload := []map[string]interface{}{
-		{
-			"event": "minute-watched",
-			"properties": map[string]interface{}{
-				"channel_id":   ch.channelID,
-				"broadcast_id": ch.broadcastID,
-				"player":       "site",
-				"user_id":      s.userID,
-				"channel":      ch.channelLogin,
-				"hidden":       false,
-				"live":         true,
-				"location":     "channel",
-				"logged_in":    true,
-				"muted":        false,
-			},
-		},
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-
-	encoded := base64.StdEncoding.EncodeToString(jsonData)
-	body := url.Values{"data": {encoded}}.Encode()
-
 	for attempt := range heartbeatMaxRetries + 1 {
-		req, err := http.NewRequest("POST", s.spadeURL, strings.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("User-Agent", browserUserAgent)
-
-		resp, err := s.httpClient.Do(req)
-		if err != nil {
-			if attempt < heartbeatMaxRetries {
-				time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
-				continue
-			}
-			s.log("[Spade] heartbeat failed for %s after %d attempts: %v", ch.channelLogin, attempt+1, err)
-			return
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
-		// Per TDM (channel.py:483): only 204 means accepted. Twitch returns 200
-		// with an error body when the heartbeat is technically valid but the
-		// drop-credit subsystem rejected it (e.g. anti-cheat). Treating that as
-		// success would mask drop-credit failures.
-		if resp.StatusCode == http.StatusNoContent {
+		err := s.gql.SendMinuteWatched(ch.channelID, ch.channelLogin, ch.broadcastID, ch.gameName, ch.gameID, s.userID)
+		if err == nil {
 			return
 		}
 		if attempt < heartbeatMaxRetries {
 			time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
 			continue
 		}
-		s.log("[Spade] heartbeat for %s returned HTTP %d after %d attempts", ch.channelLogin, resp.StatusCode, attempt+1)
-		return
+		s.log("[Spade] heartbeat for %s failed after %d attempts: %v", ch.channelLogin, attempt+1, err)
 	}
 }
 
@@ -264,8 +232,12 @@ func (s *SpadeTracker) fetchSpadeURL() (string, error) {
 
 	pageBody := string(bodyBytes)
 
-	// Try to find spade URL directly in the HTML first
+	// Look for beacon_url first (modern, drop-credit honored), spade_url as
+	// secondary. TDM channel.py:300 uses `beacon_?url` for the same reason —
+	// only beacon heartbeats actually credit drops on stricter campaigns.
 	spadePatterns := []string{
+		`"beacon_url"\s*:\s*"(https://[^"]+)"`,
+		`"beaconUrl"\s*:\s*"(https://[^"]+)"`,
 		`"spade_url"\s*:\s*"(https://[^"]+)"`,
 		`"spadeUrl"\s*:\s*"(https://[^"]+)"`,
 	}

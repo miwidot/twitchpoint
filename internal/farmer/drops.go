@@ -37,6 +37,27 @@ type ActiveDrop struct {
 // retrying, short enough to recover from temporary Twitch hiccups.
 const stallCooldownDuration = 30 * time.Minute
 
+// cooldownReason explains why a channel is currently in cooldown. It matters
+// because applyStallDetection clears cooldowns when a channel credits new
+// minutes — but that recovery logic must NOT clear cooldowns set deliberately
+// by other paths (game change, ID mismatch) that have their own expiry.
+type cooldownReason int
+
+const (
+	// cooldownStall — set by applyStallDetection when no minutes were credited
+	// in the previous cycle. Clearable by applyStallDetection on credit.
+	cooldownStall cooldownReason = iota
+	// cooldownManual — set deliberately by handleChannelGameChange or the
+	// applySelectorPick guards (wrong game, id mismatch). NOT clearable by
+	// applyStallDetection — only the timeout removes them.
+	cooldownManual
+)
+
+type cooldownEntry struct {
+	expires time.Time
+	reason  cooldownReason
+}
+
 // dropState holds internal state for the drop tracker.
 type dropState struct {
 	mu            sync.RWMutex
@@ -54,7 +75,7 @@ type dropState struct {
 	lastPickChannelID  string
 	lastPickCampaignID string
 	lastPickProgress   int
-	stallCooldown      map[string]time.Time // channelID → cooldown end
+	stallCooldown      map[string]cooldownEntry // channelID → cooldown entry (expiry + reason)
 
 	// lastProgressUpdate tracks when applyDropProgressUpdate last fired
 	// (from either WebSocket or poll). pollDropProgressOnce skips its GQL
@@ -211,9 +232,18 @@ func (f *Farmer) processDrops() {
 	}
 
 	// 5. Apply pick: register channel as temp if new, set HasActiveDrop.
-	f.applySelectorPick(pick, campaigns)
+	pickApplied := f.applySelectorPick(pick, campaigns)
 
-	// 6. Store rows + cache atomically.
+	// 6. If the pick was NOT applied (refresh failed for the new pick), bail
+	//    out without committing anything — rows, currentPickID, cleanup, and
+	//    snapshot all use the previous pick's state which is still valid.
+	//    Next cycle will retry with fresh inventory.
+	if !pickApplied {
+		f.addLog("[Drops/Pool] skipping commit — pick refresh failed, previous state preserved")
+		return
+	}
+
+	// 7. Pick applied successfully — commit the new state atomically.
 	f.drops.mu.Lock()
 	f.drops.activeDrops = active
 	f.drops.queuedDrops = queued
@@ -226,10 +256,10 @@ func (f *Farmer) processDrops() {
 	}
 	f.drops.mu.Unlock()
 
-	// 7. Drop existing temp channels that are no longer the pick.
+	// 8. Drop existing temp channels that are no longer the pick.
 	f.cleanupNonPickedTempChannels(pick)
 
-	// 8. Trigger rotation so Spade slot 1 reflects the new pick.
+	// 9. Trigger rotation so Spade slot 1 reflects the new pick.
 	f.rotateChannels()
 
 	if pick != nil {
@@ -242,8 +272,8 @@ func (f *Farmer) processDrops() {
 		f.addLog("[Drops/Pool] empty pool — drops idle, slots free for points")
 	}
 
-	// 9. Snapshot the picked channel's current drop progress so the next cycle
-	//    can detect whether Twitch credited any minutes.
+	// 10. Snapshot the picked channel's current drop progress so the next cycle
+	//     can detect whether Twitch credited any minutes.
 	f.snapshotPickProgress(pick, campaigns)
 }
 
@@ -289,18 +319,41 @@ func (f *Farmer) applyStallDetection(campaigns []twitch.DropCampaign) {
 
 	if currentProgress > prevProgress {
 		// Twitch credited at least one minute — channel is healthy.
-		// If it had a stale cooldown from earlier, clear it.
-		delete(f.drops.stallCooldown, prevChID)
+		// Clear ONLY a stall-reason cooldown. Manual cooldowns (game-change,
+		// id-mismatch) must run their own timer so user-deliberate skips
+		// aren't undone by a single credited minute.
+		if cd, ok := f.drops.stallCooldown[prevChID]; ok && cd.reason == cooldownStall {
+			delete(f.drops.stallCooldown, prevChID)
+		}
 		return
 	}
 
-	// No credit since last cycle.
+	// No credit since last cycle — record a stall-reason cooldown.
 	if f.drops.stallCooldown == nil {
-		f.drops.stallCooldown = make(map[string]time.Time)
+		f.drops.stallCooldown = make(map[string]cooldownEntry)
 	}
-	f.drops.stallCooldown[prevChID] = time.Now().Add(stallCooldownDuration)
+	f.drops.stallCooldown[prevChID] = cooldownEntry{
+		expires: time.Now().Add(stallCooldownDuration),
+		reason:  cooldownStall,
+	}
 	f.addLog("[Drops/Pool] no credit on %s (progress stuck at %d/%d) — %v cooldown",
 		prevChID, currentProgress, prevProgress, stallCooldownDuration)
+}
+
+// setManualCooldown adds a manual-reason cooldown for the given channel.
+// Manual cooldowns are NOT cleared by applyStallDetection on credit — only
+// the timeout removes them. Used by handleChannelGameChange and the
+// applySelectorPick guards (wrong game, id mismatch).
+func (f *Farmer) setManualCooldown(channelID string, dur time.Duration) {
+	f.drops.mu.Lock()
+	defer f.drops.mu.Unlock()
+	if f.drops.stallCooldown == nil {
+		f.drops.stallCooldown = make(map[string]cooldownEntry)
+	}
+	f.drops.stallCooldown[channelID] = cooldownEntry{
+		expires: time.Now().Add(dur),
+		reason:  cooldownManual,
+	}
 }
 
 // activeStallSkipSet returns channelIDs currently in cooldown, expiring entries
@@ -311,8 +364,8 @@ func (f *Farmer) activeStallSkipSet() map[string]bool {
 
 	skip := make(map[string]bool, len(f.drops.stallCooldown))
 	now := time.Now()
-	for chID, until := range f.drops.stallCooldown {
-		if now.Before(until) {
+	for chID, cd := range f.drops.stallCooldown {
+		if now.Before(cd.expires) {
 			skip[chID] = true
 		} else {
 			delete(f.drops.stallCooldown, chID)
@@ -622,10 +675,44 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 	}
 }
 
+// pickGameMatches returns true if the freshly-fetched game equals (case-
+// insensitive) any of the pick's campaign games. Used as a guard before
+// committing the watcher to a channel — streamer may have switched games
+// between selector run and now.
+func pickGameMatches(pick *PoolEntry, currentGame string) bool {
+	for _, c := range pick.Campaigns {
+		if strings.EqualFold(c.GameName, currentGame) {
+			return true
+		}
+	}
+	return false
+}
+
+// pickCampaignGames returns a comma-separated list of distinct game names
+// across the pick's campaigns. Diagnostic only.
+func pickCampaignGames(pick *PoolEntry) string {
+	seen := make(map[string]bool, len(pick.Campaigns))
+	out := make([]string, 0, len(pick.Campaigns))
+	for _, c := range pick.Campaigns {
+		key := strings.ToLower(c.GameName)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c.GameName)
+	}
+	return strings.Join(out, ",")
+}
+
 // applySelectorPick registers the picked channel as a temp channel if not
 // already tracked, sets HasActiveDrop=true on it, and clears HasActiveDrop on
 // any other channel that was the previous pick.
-func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampaign) {
+//
+// Returns true on success (state mutated, Watcher started OR pick==nil cleared
+// state cleanly). Returns false when the metadata refresh failed for a non-nil
+// pick — callers must NOT commit currentPickID in that case, otherwise we
+// end up with state believing "drop is running" while no Watcher is active.
+func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampaign) bool {
 	f.drops.mu.RLock()
 	prevPickID := f.drops.currentPickID
 	f.drops.mu.RUnlock()
@@ -637,12 +724,70 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 			f.mu.RUnlock()
 			if ok {
 				ch.ClearDropInfo()
+				// Clear IsWatching so rotation can pick this channel up
+				// again as a normal Spade slot.
+				ch.SetWatching(false)
 			}
 			f.unsubscribeBroadcastSettings(prevPickID)
 		}
-		return
+		if f.dropWatch != nil {
+			f.dropWatch.Stop()
+		}
+		return true
 	}
 
+	// 1. SINGLE source of truth for metadata: fetch upfront BEFORE any state
+	//    mutation. If this fails, NO channel is added, NO drop info changes,
+	//    NO previous pick is released, NO topics are subscribed. The next
+	//    cycle retries cleanly with the existing pick still in effect.
+	info, err := f.gql.GetChannelInfo(pick.ChannelLogin)
+	if err != nil || info == nil || !info.IsLive || info.BroadcastID == "" || info.GameID == "" {
+		liveStr := "false"
+		bidStr := ""
+		gidStr := ""
+		if info != nil {
+			if info.IsLive {
+				liveStr = "true"
+			}
+			bidStr = info.BroadcastID
+			gidStr = info.GameID
+		}
+		f.addLog("[Drops/Watch] skip %s — refresh failed (live=%s broadcast=%q game_id=%q)",
+			pick.ChannelLogin, liveStr, bidStr, gidStr)
+		return false
+	}
+
+	// 2. Game-match guard: streamer may have switched games between selector
+	//    run and now. If the freshly-fetched game doesn't match any of the
+	//    pick's campaigns, abort — sending sendSpadeEvents with a wrong
+	//    game_id makes Twitch silently drop credit.
+	if !pickGameMatches(pick, info.GameName) {
+		f.addLog("[Drops/Watch] skip %s — game changed to %q (expected one of %s)",
+			pick.ChannelLogin, info.GameName, pickCampaignGames(pick))
+		// Manual-reason cooldown so the selector doesn't immediately re-pick.
+		f.setManualCooldown(pick.ChannelID, 15*time.Minute)
+		return false
+	}
+
+	// 3. Channel-ID consistency: pick.ChannelID came from the selector pool
+	//    (built from directory or allowed_channels). info.ID came from a
+	//    direct user(login:) lookup just now. They MUST match — if they
+	//    don't, our internal channels[] map (keyed by ChannelID) will get
+	//    confused (e.g., create a temp with info.ID but later look it up
+	//    with pick.ChannelID and miss it, leaving an orphaned temp).
+	if info.ID != pick.ChannelID {
+		f.addLog("[Drops/Watch] skip %s — id mismatch (pick=%s info=%s) — cooldown",
+			pick.ChannelLogin, pick.ChannelID, info.ID)
+		// Cooldown the broken pool ID so the selector doesn't immediately
+		// re-pick the same wrong entry next cycle.
+		f.setManualCooldown(pick.ChannelID, 30*time.Minute)
+		return false
+	}
+
+	// 4. Resolve or create channel state, using the already-fetched info.
+	//    No second GetChannelInfo call — same data drives temp creation
+	//    AND watcher start, so we can't end up with a registered temp that
+	//    failed its refresh.
 	f.mu.RLock()
 	ch, exists := f.channels[pick.ChannelID]
 	f.mu.RUnlock()
@@ -652,18 +797,23 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 		if len(pick.Campaigns) > 0 {
 			primaryCampID = pick.Campaigns[0].ID
 		}
-		if err := f.addTemporaryChannel(pick.ChannelLogin, primaryCampID); err != nil {
+		if err := f.addTemporaryChannelFromInfo(info, primaryCampID); err != nil {
 			f.addLog("[Drops/Pool] failed to add %s: %v", pick.ChannelLogin, err)
-			return
+			return false
 		}
 		f.mu.RLock()
 		ch = f.channels[pick.ChannelID]
 		f.mu.RUnlock()
 		if ch == nil {
-			return
+			return false
 		}
+	} else {
+		// Existing channel — refresh its state with the verified metadata.
+		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 	}
+	snap := ch.Snapshot()
 
+	// 3. Metadata is valid — NOW it's safe to mutate state.
 	primaryCampID := ""
 	if len(pick.Campaigns) > 0 {
 		primaryCampID = pick.Campaigns[0].ID
@@ -689,19 +839,30 @@ func (f *Farmer) applySelectorPick(pick *PoolEntry, campaigns []twitch.DropCampa
 		break
 	}
 
+	// 4. Release previous pick (only if it's a different channel).
 	if prevPickID != "" && prevPickID != pick.ChannelID {
 		f.mu.RLock()
 		prevCh, ok := f.channels[prevPickID]
 		f.mu.RUnlock()
 		if ok {
 			prevCh.ClearDropInfo()
+			prevCh.SetWatching(false)
 		}
 		f.unsubscribeBroadcastSettings(prevPickID)
 	}
 
-	// v1.8.0: subscribe to broadcast-settings-update for the new pick so we get
-	// instant game-change notifications. Idempotent — Listen ignores duplicates.
+	// 5. Subscribe broadcast-settings-update for the new pick.
 	f.subscribeBroadcastSettings(pick.ChannelID)
+
+	// 6. Hand the channel to the drops Watcher.
+	if f.dropWatch != nil {
+		f.spade.StopWatching(snap.ChannelID)
+		f.prober.Stop(snap.Login)
+		ch.SetWatching(true) // for UI display
+		f.dropWatch.Start(snap.ChannelID, snap.Login, snap.BroadcastID, snap.GameName, snap.GameID)
+		f.addLog("[Drops/Watch] handing %s to drops Watcher (exclusive)", snap.DisplayName)
+	}
+	return true
 }
 
 // subscribeBroadcastSettings subscribes to broadcast-settings-update for one channel.
@@ -904,6 +1065,13 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 			data.CampaignID, data.DropID, data.CurrentMinutesWatched))
 
 		// Mirror to picked channel's drop info so TUI shows the live value.
+		// FIX: when the campaign advances to a new drop (e.g., drop 1 done →
+		// drop 2 starts), the resolved name/required from the payload differ
+		// from the channel's previously-stored snap.DropName/snap.DropRequired.
+		// Use the resolved values, not the stale snap values, so the TUI/
+		// channel view stays in sync with the activeDrops table.
+		nextName := resolvedName
+		nextRequired := resolvedRequired
 		f.drops.mu.RLock()
 		pickedCh := f.drops.currentPickID
 		f.drops.mu.RUnlock()
@@ -914,7 +1082,13 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 			if ok {
 				snap := ch.Snapshot()
 				if snap.HasActiveDrop {
-					ch.SetDropInfo(snap.DropName, data.CurrentMinutesWatched, snap.DropRequired)
+					if nextName == "" {
+						nextName = snap.DropName // fall back if cache miss
+					}
+					if nextRequired <= 0 {
+						nextRequired = snap.DropRequired
+					}
+					ch.SetDropInfo(nextName, data.CurrentMinutesWatched, nextRequired)
 				}
 			}
 		}
@@ -933,18 +1107,16 @@ func (f *Farmer) applyDropProgressUpdate(data twitch.DropProgressData) {
 // channel's actual current game; if the streamer has switched back to the
 // expected game by then, no action.
 func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChangeData) {
-	if data.OldGameName == data.NewGameName {
-		return
-	}
-
 	f.drops.mu.RLock()
 	currentPick := f.drops.currentPickID
 	pickCampaign := f.drops.lastPickCampaignID
 	f.drops.mu.RUnlock()
 
 	if channelID != currentPick {
-		f.writeLogFile(fmt.Sprintf("[Drops/WS] non-pick channel %s game changed: %s -> %s",
-			channelID, data.OldGameName, data.NewGameName))
+		if data.OldGameName != data.NewGameName {
+			f.writeLogFile(fmt.Sprintf("[Drops/WS] non-pick channel %s game changed: %s -> %s",
+				channelID, data.OldGameName, data.NewGameName))
+		}
 		return
 	}
 
@@ -965,9 +1137,20 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 		return
 	}
 
+	// FIX: same-game broadcast-settings-update events ALSO need to refresh
+	// the Watcher — the streamer may have restarted the broadcast (new
+	// broadcast_id with same game) or changed title/tags. Without this
+	// refresh, the Watcher keeps sending the old broadcast_id and Twitch
+	// silently drops credit until the next pick cycle.
+	if data.OldGameName == data.NewGameName {
+		go f.refreshWatcherBroadcast(channelID, pickedChannelLogin)
+		return
+	}
+
 	// Optimistic early-out: payload already shows we're back on the right game.
 	if strings.EqualFold(data.NewGameName, expectedGame) {
 		f.addLog("[Drops/WS] %s switched back to %q — keeping pick", channelID, expectedGame)
+		go f.refreshWatcherBroadcast(channelID, pickedChannelLogin)
 		return
 	}
 
@@ -992,18 +1175,43 @@ func (f *Farmer) handleChannelGameChange(channelID string, data twitch.GameChang
 			return
 		}
 
-		f.drops.mu.Lock()
-		if f.drops.stallCooldown == nil {
-			f.drops.stallCooldown = make(map[string]time.Time)
-		}
-		f.drops.stallCooldown[channelID] = time.Now().Add(15 * time.Minute)
-		f.drops.mu.Unlock()
+		f.setManualCooldown(channelID, 15*time.Minute)
 
 		f.addLog("[Drops/WS] %s changed game (%s -> %s); still wrong after 30s — 15min cooldown, re-picking",
 			channelID, data.OldGameName, data.NewGameName)
 
 		f.processDrops()
 	}()
+}
+
+// refreshWatcherBroadcast fetches the channel's current stream metadata and
+// pushes it into the running drops Watcher. Used when broadcast-settings-update
+// fires for the currently-picked channel and the streamer is still on the
+// expected game — Twitch may have issued a new broadcast_id mid-session
+// (stream restart, title change, etc.) and the Watcher must use the new one
+// in subsequent sendSpadeEvents heartbeats.
+func (f *Farmer) refreshWatcherBroadcast(channelID, login string) {
+	if f.dropWatch == nil {
+		return
+	}
+	info, err := f.gql.GetChannelInfo(login)
+	if err != nil || info == nil || !info.IsLive {
+		return
+	}
+	// FIX: don't push empty IDs into the Watcher. GetChannelInfo can
+	// momentarily return IsLive=true with an empty broadcast_id during a
+	// stream-restart transition; the Watcher would then send heartbeats
+	// with broadcast_id="" until the next refresh.
+	if info.BroadcastID == "" || info.GameID == "" {
+		return
+	}
+	f.mu.RLock()
+	ch, ok := f.channels[channelID]
+	f.mu.RUnlock()
+	if ok {
+		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+	}
+	f.dropWatch.UpdateBroadcast(channelID, info.BroadcastID, info.GameName, info.GameID)
 }
 
 // (scrubStaleCompleted was removed — it conflicted with the

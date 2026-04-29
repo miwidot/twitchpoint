@@ -22,6 +22,7 @@ type ChannelState struct {
 	IsWatching  bool // Spade heartbeat active
 	BroadcastID string
 	GameName    string
+	GameID      string
 	ViewerCount int
 
 	// Points
@@ -67,6 +68,21 @@ func (c *ChannelState) SetOnline(broadcastID, gameName string, viewers int) {
 	c.ViewerCount = viewers
 }
 
+// SetOnlineWithGameID is like SetOnline but also stores the game ID.
+// Used by the drops watcher payload (sendSpadeEvents requires real game_id).
+func (c *ChannelState) SetOnlineWithGameID(broadcastID, gameName, gameID string, viewers int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.IsOnline {
+		c.OnlineSince = time.Now()
+	}
+	c.IsOnline = true
+	c.BroadcastID = broadcastID
+	c.GameName = gameName
+	c.GameID = gameID
+	c.ViewerCount = viewers
+}
+
 // SetOffline marks the channel as offline.
 func (c *ChannelState) SetOffline() {
 	c.mu.Lock()
@@ -75,6 +91,7 @@ func (c *ChannelState) SetOffline() {
 	c.IsWatching = false
 	c.BroadcastID = ""
 	c.GameName = ""
+	c.GameID = ""
 	c.ViewerCount = 0
 }
 
@@ -154,6 +171,7 @@ type ChannelSnapshot struct {
 	IsWatching         bool
 	BroadcastID        string
 	GameName           string
+	GameID             string
 	ViewerCount        int
 	PointsBalance      int
 	PointsEarnedSession int
@@ -186,6 +204,7 @@ func (c *ChannelState) Snapshot() ChannelSnapshot {
 		IsWatching:          c.IsWatching,
 		BroadcastID:         c.BroadcastID,
 		GameName:            c.GameName,
+		GameID:              c.GameID,
 		ViewerCount:         c.ViewerCount,
 		PointsBalance:       c.PointsBalance,
 		PointsEarnedSession: c.PointsEarnedSession,

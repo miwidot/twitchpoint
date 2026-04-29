@@ -12,6 +12,10 @@ import (
 // streamSource is the minimal GQL interface the selector needs. Mocked in tests.
 type streamSource interface {
 	GetGameStreamsDropsEnabled(gameName string, limit int) ([]twitch.GameStream, error)
+	// GetChannelInfos resolves stream info for a batch of logins in parallel.
+	// Used for ACL campaigns: query the campaign's allowed_channels directly
+	// instead of relying on the (often too small) game-directory top 100.
+	GetChannelInfos(logins []string) []*twitch.ChannelInfo
 }
 
 // CampaignRef is a lightweight reference to a campaign that a pool entry serves.
@@ -132,44 +136,65 @@ func (s *DropSelector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 			IsPinned:      c.ID == pinnedID,
 		}
 		if c.GameName == "" {
-			continue // can't query directory without game name
+			continue // can't pick without a game
 		}
 
-		streams := getDir(c.GameName)
-		if len(streams) == 0 {
+		hasAllow := len(c.Channels) > 0
+
+		if hasAllow {
+			// ACL/Partner-Only campaigns (e.g., ABI Partner-Only Drops):
+			// query the allowed_channels DIRECTLY in parallel, instead of
+			// scanning the top-100 game directory and intersecting. The
+			// directory truncation regularly misses small partner streamers.
+			// This mirrors TDM core/client.py CHANNELS_FETCH for ACL channels.
+			logins := make([]string, 0, len(c.Channels))
+			loginToAllowed := make(map[string]twitch.DropChannel, len(c.Channels))
+			for _, ch := range c.Channels {
+				name := ch.Name
+				if name == "" {
+					continue
+				}
+				ll := strings.ToLower(name)
+				logins = append(logins, ll)
+				loginToAllowed[ll] = ch
+			}
+			infos := s.streams.GetChannelInfos(logins)
+			for i, info := range infos {
+				if info == nil || !info.IsLive {
+					continue
+				}
+				// Strict: must actually be streaming the campaign's game
+				if !strings.EqualFold(info.GameName, c.GameName) {
+					continue
+				}
+				login := logins[i]
+				entry, exists := byChannel[info.ID]
+				if !exists {
+					display := info.DisplayName
+					if display == "" {
+						if a, ok := loginToAllowed[login]; ok && a.DisplayName != "" {
+							display = a.DisplayName
+						} else {
+							display = login
+						}
+					}
+					entry = &PoolEntry{
+						ChannelID:    info.ID,
+						ChannelLogin: login,
+						DisplayName:  display,
+						ViewerCount:  info.ViewerCount,
+					}
+					byChannel[info.ID] = entry
+				}
+				entry.Campaigns = append(entry.Campaigns, ref)
+			}
 			continue
 		}
 
-		// Build allowed-channel lookup if campaign has restrictions
-		var allowedByID map[string]bool
-		var allowedByLogin map[string]bool
-		hasAllow := len(c.Channels) > 0
-		if hasAllow {
-			allowedByID = make(map[string]bool, len(c.Channels))
-			allowedByLogin = make(map[string]bool, len(c.Channels))
-			for _, ch := range c.Channels {
-				if ch.ID != "" {
-					allowedByID[ch.ID] = true
-				}
-				if ch.Name != "" {
-					allowedByLogin[strings.ToLower(ch.Name)] = true
-				}
-				if ch.DisplayName != "" {
-					allowedByLogin[strings.ToLower(ch.DisplayName)] = true
-				}
-			}
-		}
-
+		// No allow list — fall back to game-directory drops-enabled streams.
+		streams := getDir(c.GameName)
 		for _, st := range streams {
 			login := strings.ToLower(st.BroadcasterLogin)
-
-			if hasAllow {
-				// Skip if not in allow list
-				if !allowedByID[st.BroadcasterID] && !allowedByLogin[login] {
-					continue
-				}
-			}
-
 			entry, exists := byChannel[st.BroadcasterID]
 			if !exists {
 				entry = &PoolEntry{

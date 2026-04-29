@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/miwi/twitchpoint/internal/config"
+	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/twitch"
 )
 
@@ -22,11 +23,14 @@ type LogEntry struct {
 type Farmer struct {
 	cfg     *config.Config
 	version string
-	gql     *twitch.GQLClient
-	pubsub  *twitch.PubSubClient
-	spade   *twitch.SpadeTracker
-	irc     *twitch.IRCClient
-	events  chan twitch.FarmerEvent
+	gql        *twitch.GQLClient
+	pubsub     *twitch.PubSubClient
+	spade      *twitch.SpadeTracker
+	prober     *twitch.StreamProber
+	dropWatch  *drops.Watcher
+	dropProgC  chan drops.ProgressUpdate
+	irc        *twitch.IRCClient
+	events     chan twitch.FarmerEvent
 
 	user *twitch.UserInfo
 
@@ -111,10 +115,21 @@ func (f *Farmer) Start() error {
 	f.addLog("Logged in as %s (ID: %s)", user.DisplayName, user.ID)
 
 	// Initialize Spade tracker
-	f.spade = twitch.NewSpadeTracker(user.ID, f.cfg.AuthToken, f.addLog)
+	f.spade = twitch.NewSpadeTracker(user.ID, f.cfg.AuthToken, f.gql.DeviceID(), f.gql, f.addLog)
 	if err := f.spade.Start(); err != nil {
 		f.addLog("Spade initialization warning: %v", err)
 	}
+
+	// Initialize stream prober — fetches m3u8+chunk for picked channels so
+	// drop-credit anti-cheat sees us as a real viewer (not just heartbeats).
+	f.prober = twitch.NewStreamProber(f.gql, f.cfg.AuthToken, user.ID, f.gql.DeviceID(), f.debugLog)
+
+	// Initialize drops Watcher (TDM-style single-channel watch loop).
+	// Owns the picked drop channel exclusively — Spade tracker and rotation
+	// must skip whatever channel ID Watcher reports as current.
+	f.dropProgC = make(chan drops.ProgressUpdate, 16)
+	f.dropWatch = drops.NewWatcher(f.gql, user.ID, f.dropProgC, f.debugLog)
+	go f.dropProgressLoop()
 
 	// Initialize PubSub
 	f.pubsub = twitch.NewPubSubClient(f.cfg.AuthToken, f.events)
@@ -191,6 +206,12 @@ func (f *Farmer) Stop() {
 	if f.spade != nil {
 		f.spade.Stop()
 	}
+	if f.prober != nil {
+		f.prober.StopAll()
+	}
+	if f.dropWatch != nil {
+		f.dropWatch.StopAll()
+	}
 	if f.logFile != nil {
 		f.logFile.Close()
 	}
@@ -265,7 +286,7 @@ func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
 
 	// Check if live and start watching
 	if info.IsLive {
-		state.SetOnline(info.BroadcastID, info.GameName, info.ViewerCount)
+		state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 		f.addLog("%s is LIVE - %s (%d viewers)", info.DisplayName, info.GameName, info.ViewerCount)
 		f.tryStartWatching(state)
 	} else {
@@ -315,6 +336,15 @@ func (f *Farmer) addTemporaryChannel(login, campaignID string) error {
 		return fmt.Errorf("channel %s is not live", login)
 	}
 
+	return f.addTemporaryChannelFromInfo(info, campaignID)
+}
+
+// addTemporaryChannelFromInfo registers a temp drop channel using already-
+// fetched ChannelInfo. Used by applySelectorPick which does its own
+// GetChannelInfo upfront so it can validate metadata before any state
+// mutation. Avoids duplicate GQL calls and ensures the temp channel is
+// only registered when the metadata is provably valid.
+func (f *Farmer) addTemporaryChannelFromInfo(info *twitch.ChannelInfo, campaignID string) error {
 	state := NewChannelState(info.Login, info.DisplayName, info.ID)
 	state.Priority = 2 // temp channels use P2 (drops will promote to P0)
 	state.IsTemporary = true
@@ -331,7 +361,7 @@ func (f *Farmer) addTemporaryChannel(login, campaignID string) error {
 		fmt.Sprintf("raid.%s", info.ID),
 	}
 	if err := f.pubsub.Listen(topics); err != nil {
-		f.addLog("[Drops] PubSub subscribe error for temp channel %s: %v", login, err)
+		f.addLog("[Drops] PubSub subscribe error for temp channel %s: %v", info.Login, err)
 	}
 
 	// Join IRC
@@ -339,9 +369,13 @@ func (f *Farmer) addTemporaryChannel(login, campaignID string) error {
 		f.irc.Join(info.Login)
 	}
 
-	state.SetOnline(info.BroadcastID, info.GameName, info.ViewerCount)
+	state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 	f.addLog("[Drops] Auto-added temporary channel: %s (campaign: %s)", info.DisplayName, campaignID)
-	f.tryStartWatching(state)
+	// FIX #3: do NOT start Spade for temp drop channels — applySelectorPick
+	// (the caller of addTemporaryChannel) hands the channel directly to the
+	// drops Watcher which manages it exclusively. Calling tryStartWatching
+	// here would briefly start Spade only to have applySelectorPick stop it
+	// 1 ms later, wasting an HTTP request and creating cross-talk.
 
 	return nil
 }
@@ -362,6 +396,7 @@ func (f *Farmer) removeTemporaryChannel(channelID string) {
 	f.mu.Unlock()
 
 	f.spade.StopWatching(channelID)
+	f.prober.Stop(login)
 
 	f.pubsub.Unlisten([]string{
 		fmt.Sprintf("video-playback-by-id.%s", channelID),
@@ -444,6 +479,7 @@ func (f *Farmer) RemoveChannelLive(login string) error {
 
 	// Stop watching
 	f.spade.StopWatching(channelID)
+	f.prober.Stop(login)
 
 	// Unsubscribe PubSub
 	f.pubsub.Unlisten([]string{
@@ -501,9 +537,54 @@ func (f *Farmer) SetPriorityLive(login string, priority int) error {
 	return nil
 }
 
+// dropProgressLoop drains drops.Watcher progress events and forwards them
+// to the existing applyDropProgressUpdate (which knows how to resolve the
+// drop_id back to a campaign and update the channel state).
+func (f *Farmer) dropProgressLoop() {
+	for {
+		select {
+		case ev := <-f.dropProgC:
+			// We get drop_id but applyDropProgressUpdate wants
+			// (campaign_id, drop_id). Resolve via the campaign cache.
+			campID := f.lookupCampaignByDropID(ev.DropID)
+			if campID == "" {
+				continue // Unknown drop — fresh inventory cycle will catch it
+			}
+			f.applyDropProgressUpdate(twitch.DropProgressData{
+				CampaignID:             campID,
+				DropID:                 ev.DropID,
+				CurrentMinutesWatched:  ev.CurrentMin,
+				RequiredMinutesWatched: ev.RequiredMin,
+			})
+		case <-f.stopCh:
+			return
+		}
+	}
+}
+
+// lookupCampaignByDropID searches the cached campaigns for the drop and
+// returns its campaign ID. Empty string if unknown.
+func (f *Farmer) lookupCampaignByDropID(dropID string) string {
+	f.drops.mu.RLock()
+	defer f.drops.mu.RUnlock()
+	for _, c := range f.drops.campaignCache {
+		for _, d := range c.Drops {
+			if d.ID == dropID {
+				return c.ID
+			}
+		}
+	}
+	return ""
+}
+
 func (f *Farmer) tryStartWatching(state *ChannelState) {
 	snap := state.Snapshot()
 	if !snap.IsOnline || snap.IsWatching {
+		return
+	}
+
+	// v2.0: drops Watcher owns its channel — Spade must not double-track it.
+	if f.dropWatch != nil && f.dropWatch.CurrentChannelID() == snap.ChannelID {
 		return
 	}
 
@@ -512,8 +593,9 @@ func (f *Farmer) tryStartWatching(state *ChannelState) {
 		return
 	}
 
-	if f.spade.StartWatching(snap.ChannelID, snap.Login, snap.BroadcastID) {
+	if f.spade.StartWatching(snap.ChannelID, snap.Login, snap.BroadcastID, snap.GameName, snap.GameID) {
 		state.SetWatching(true)
+		f.prober.Start(snap.Login)
 		f.addLog("Started watching %s (Spade active, broadcast=%s)", snap.DisplayName, snap.BroadcastID)
 	}
 }
@@ -614,7 +696,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 						f.addLog("Error fetching stream info for %s (attempt %d): %v", ch.Login, attempt+1, err)
 						continue
 					}
-					ch.SetOnline(info.BroadcastID, info.GameName, info.ViewerCount)
+					ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 					broadcastID = info.BroadcastID
 					gameName = info.GameName
 					if broadcastID != "" && gameName != "" {
@@ -637,6 +719,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 			ch.SetOffline()
 			f.spade.StopWatching(ch.ChannelID)
+			f.prober.Stop(ch.Login)
 			f.addLog("%s went OFFLINE", ch.DisplayName)
 
 			// v1.8.0 (per spec section 2): if the picked drop channel just went
@@ -648,6 +731,14 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 				f.drops.mu.RLock()
 				isCurrentPick := f.drops.currentPickID == ch.ChannelID
 				f.drops.mu.RUnlock()
+				// FIX: stop the drops Watcher RIGHT NOW for the pick — don't wait
+				// for processDrops to finish (which may hang on a slow Inventory
+				// fetch). Otherwise the Watcher keeps sending sendSpadeEvents
+				// for an offline broadcast for 5-30s, which Twitch interprets
+				// as suspicious activity.
+				if isCurrentPick && f.dropWatch != nil {
+					f.dropWatch.Stop()
+				}
 				if isCurrentPick {
 					go f.processDrops()
 				}
@@ -785,7 +876,7 @@ func (f *Farmer) refreshBalances() {
 		if snap.IsOnline {
 			info, err := f.gql.GetChannelInfo(ch.Login)
 			if err == nil && info.IsLive {
-				ch.SetOnline(info.BroadcastID, info.GameName, info.ViewerCount)
+				ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 			}
 		}
 
@@ -812,6 +903,14 @@ func (f *Farmer) rotationLoop() {
 }
 
 func (f *Farmer) rotateChannels() {
+	// v2.0: drops Watcher owns the picked drop channel exclusively. Rotation
+	// must skip it so we don't double-up Spade heartbeats on the same channel
+	// (Twitch dedups but it muddies signal + may flag the user as suspicious).
+	dropChanID := ""
+	if f.dropWatch != nil {
+		dropChanID = f.dropWatch.CurrentChannelID()
+	}
+
 	f.mu.RLock()
 	var priority0 []*ChannelState // P0: active drop (auto-promoted)
 	var priority1 []*ChannelState
@@ -820,6 +919,9 @@ func (f *Farmer) rotateChannels() {
 		snap := ch.Snapshot()
 		if !snap.IsOnline {
 			continue
+		}
+		if snap.ChannelID == dropChanID {
+			continue // drops Watcher owns this — don't add to Spade rotation
 		}
 		if snap.HasActiveDrop {
 			priority0 = append(priority0, ch)
@@ -901,6 +1003,7 @@ func (f *Farmer) rotateChannels() {
 				if _, keep := desired[ch.ChannelID]; !keep {
 					// Channel should stop watching
 					f.spade.StopWatching(ch.ChannelID)
+					f.prober.Stop(ch.Login)
 					ch.SetWatching(false)
 				} else {
 					// Channel stays — update broadcast ID in case it changed
@@ -923,8 +1026,9 @@ func (f *Farmer) rotateChannels() {
 			go f.fetchAndStartWatching(ch)
 			continue
 		}
-		if f.spade.StartWatching(snap.ChannelID, snap.Login, broadcastID) {
+		if f.spade.StartWatching(snap.ChannelID, snap.Login, broadcastID, snap.GameName, snap.GameID) {
 			ch.SetWatching(true)
+			f.prober.Start(snap.Login)
 			f.addLog("Started watching %s (broadcast=%s, via rotation)", snap.DisplayName, broadcastID)
 		} else {
 			f.addLog("[Spade] StartWatching for %s returned false (capacity full)", snap.DisplayName)
@@ -943,9 +1047,10 @@ func (f *Farmer) fetchAndStartWatching(ch *ChannelState) {
 		f.addLog("[Spade] %s has empty broadcast ID, skipping", ch.DisplayName)
 		return
 	}
-	ch.SetOnline(info.BroadcastID, info.GameName, info.ViewerCount)
-	if f.spade.StartWatching(ch.ChannelID, ch.Login, info.BroadcastID) {
+	ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+	if f.spade.StartWatching(ch.ChannelID, ch.Login, info.BroadcastID, info.GameName, info.GameID) {
 		ch.SetWatching(true)
+		f.prober.Start(ch.Login)
 		f.addLog("Started watching %s (broadcast=%s)", ch.DisplayName, info.BroadcastID)
 	}
 }

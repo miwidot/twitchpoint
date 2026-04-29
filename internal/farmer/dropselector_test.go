@@ -130,8 +130,9 @@ func TestFilterEligibleCampaigns(t *testing.T) {
 
 // fakeStreamSource is a deterministic in-memory stream source for tests.
 type fakeStreamSource struct {
-	byGame map[string][]twitch.GameStream
-	calls  map[string]int // game name → how often queried
+	byGame  map[string][]twitch.GameStream
+	calls   map[string]int                     // game name → how often queried
+	byLogin map[string]*twitch.ChannelInfo     // login → ChannelInfo for ACL lookups
 }
 
 func (f *fakeStreamSource) GetGameStreamsDropsEnabled(gameName string, limit int) ([]twitch.GameStream, error) {
@@ -146,6 +147,14 @@ func (f *fakeStreamSource) GetGameStreamsDropsEnabled(gameName string, limit int
 	return streams, nil
 }
 
+func (f *fakeStreamSource) GetChannelInfos(logins []string) []*twitch.ChannelInfo {
+	out := make([]*twitch.ChannelInfo, len(logins))
+	for i, l := range logins {
+		out[i] = f.byLogin[l]
+	}
+	return out
+}
+
 func newSelectorWithStreams(cfg *config.Config, src *fakeStreamSource) *DropSelector {
 	return &DropSelector{
 		cfg:     cfg,
@@ -156,13 +165,22 @@ func newSelectorWithStreams(cfg *config.Config, src *fakeStreamSource) *DropSele
 
 func TestBuildPool_AllowListIntersection(t *testing.T) {
 	cfg := &config.Config{}
-	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
-		"Arena Breakout: Infinite": {
-			{BroadcasterID: "1", BroadcasterLogin: "buggy", DisplayName: "Buggy", ViewerCount: 700},
-			{BroadcasterID: "2", BroadcasterLogin: "kritikal", DisplayName: "kritikal", ViewerCount: 200},
-			{BroadcasterID: "3", BroadcasterLogin: "randomdude", DisplayName: "RandomDude", ViewerCount: 100},
+	src := &fakeStreamSource{
+		byGame: map[string][]twitch.GameStream{
+			"Arena Breakout: Infinite": {
+				{BroadcasterID: "1", BroadcasterLogin: "buggy", DisplayName: "Buggy", ViewerCount: 700},
+				{BroadcasterID: "2", BroadcasterLogin: "kritikal", DisplayName: "kritikal", ViewerCount: 200},
+				{BroadcasterID: "3", BroadcasterLogin: "randomdude", DisplayName: "RandomDude", ViewerCount: 100},
+			},
 		},
-	}}
+		// v2.0: ACL campaigns now resolve allowed_channels directly via
+		// GetChannelInfos, so the test must populate live ChannelInfos.
+		byLogin: map[string]*twitch.ChannelInfo{
+			"buggy":            {ID: "1", Login: "buggy", DisplayName: "Buggy", IsLive: true, GameName: "Arena Breakout: Infinite", ViewerCount: 700},
+			"kritikal":         {ID: "2", Login: "kritikal", DisplayName: "kritikal", IsLive: true, GameName: "Arena Breakout: Infinite", ViewerCount: 200},
+			"offline_streamer": {ID: "999", Login: "offline_streamer", DisplayName: "Offline", IsLive: false},
+		},
+	}
 	sel := newSelectorWithStreams(cfg, src)
 
 	camp := twitch.DropCampaign{
@@ -218,11 +236,14 @@ func TestBuildPool_UnrestrictedCampaign(t *testing.T) {
 
 func TestBuildPool_DedupesAcrossCampaigns(t *testing.T) {
 	cfg := &config.Config{}
-	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
-		"ABI": {
-			{BroadcasterID: "1", BroadcasterLogin: "buggy", ViewerCount: 700},
+	src := &fakeStreamSource{
+		byGame: map[string][]twitch.GameStream{
+			"ABI": {{BroadcasterID: "1", BroadcasterLogin: "buggy", ViewerCount: 700}},
 		},
-	}}
+		byLogin: map[string]*twitch.ChannelInfo{
+			"buggy": {ID: "1", Login: "buggy", DisplayName: "buggy", IsLive: true, GameName: "ABI", ViewerCount: 700},
+		},
+	}
 	sel := newSelectorWithStreams(cfg, src)
 
 	c1 := twitch.DropCampaign{

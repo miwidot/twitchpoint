@@ -2,13 +2,17 @@ package twitch
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -23,7 +27,7 @@ const (
 	queryGetChannelInfo = `query GetChannelInfo($login: String!) {
 		user(login: $login) {
 			id login displayName
-			stream { id viewersCount game { displayName } }
+			stream { id viewersCount game { id displayName } }
 		}
 	}`
 
@@ -35,6 +39,7 @@ const (
 						id
 						broadcaster { id login displayName }
 						viewersCount
+						game { id name }
 					}
 				}
 			}
@@ -52,6 +57,7 @@ const (
 						id
 						broadcaster { id login displayName }
 						viewersCount
+						game { id name }
 					}
 				}
 			}
@@ -65,7 +71,7 @@ const (
 	queryGetChannelInfoByID = `query GetChannelInfoByID($id: ID!) {
 		user(id: $id) {
 			id login displayName
-			stream { id viewersCount game { displayName } }
+			stream { id viewersCount game { id displayName } }
 		}
 	}`
 
@@ -113,6 +119,125 @@ type CurrentDropSession struct {
 	RequiredMinutesWatched int
 }
 
+// SendMinuteWatched sends a minute-watched event via the sendSpadeEvents GQL
+// mutation. This is the modern (and only working) way to credit drop minutes
+// — POST to the legacy spade.twitch.tv/track endpoint silently fails on
+// stricter campaigns (ABI Partner-Only, etc.). DevilXD's TwitchDropsMiner
+// uses this same path; see channel.py:_gql_payload + send_watch.
+func (g *GQLClient) SendMinuteWatched(channelID, channelLogin, broadcastID, gameName, gameID, userID string) error {
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	// CRITICAL: user_id must be sent as INT, not string. TDM payload (verified
+	// against the live container running ABI Partner-Only Drops on the same
+	// account) sends `"user_id": 86551629` not `"user_id": "86551629"`. Twitch's
+	// drop-credit pipeline validates the type — string user_id returns 204
+	// (request accepted) but the credit is silently dropped.
+	uidInt, _ := strconv.ParseInt(userID, 10, 64)
+	payload := []map[string]interface{}{
+		{
+			"event": "minute-watched",
+			"properties": map[string]interface{}{
+				"broadcast_id":   broadcastID,
+				"channel_id":     channelID,
+				"channel":        channelLogin,
+				"client_time":    now,
+				"game":           gameName,
+				"game_id":        gameID,
+				"hidden":         false,
+				"is_live":        true,
+				"live":           true,
+				"logged_in":      true,
+				"minutes_logged": 1,
+				"muted":          false,
+				"user_id":        uidInt,
+			},
+		},
+	}
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal spade payload: %w", err)
+	}
+	var gz bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	if _, err := gw.Write(jsonBytes); err != nil {
+		return fmt.Errorf("gzip spade payload: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		return fmt.Errorf("close gzip: %w", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(gz.Bytes())
+
+	req := &GQLRequest{
+		OperationName: "SendEvents",
+		Query: "mutation SendEvents($input: SendSpadeEventsInput!) {" +
+			" sendSpadeEvents(input: $input) { statusCode }" +
+			" }",
+		Variables: map[string]interface{}{
+			"input": map[string]interface{}{
+				"data":       encoded,
+				"repository": "twilight",
+				"encoding":   "GZIP_B64",
+			},
+		},
+	}
+
+	resp, err := g.do(req)
+	if err != nil {
+		return fmt.Errorf("send minute watched: %w", err)
+	}
+	sse, ok := resp.Data["sendSpadeEvents"].(map[string]interface{})
+	if !ok || sse == nil {
+		return fmt.Errorf("no sendSpadeEvents in response")
+	}
+	status := getInt(sse, "statusCode")
+	if status != 204 {
+		return fmt.Errorf("sendSpadeEvents returned statusCode %d (need 204)", status)
+	}
+	return nil
+}
+
+const queryPlaybackAccessToken = `query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) {
+	streamPlaybackAccessToken(channelName: $login, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isLive) {
+		value
+		signature
+	}
+	videoPlaybackAccessToken(id: $vodID, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isVod) {
+		value
+		signature
+	}
+}`
+
+// GetPlaybackAccessToken returns the HLS sig+token for a live channel. Used by
+// StreamProber to fetch the m3u8 playlist so Twitch counts us as a real viewer
+// for drop-credit purposes (Spade heartbeats alone are silently rejected by
+// some campaigns — notably ABI Partner-Only and other anti-cheat-flagged ones).
+func (g *GQLClient) GetPlaybackAccessToken(login string) (value, signature string, err error) {
+	req := &GQLRequest{
+		OperationName: "PlaybackAccessToken_Template",
+		Query:         queryPlaybackAccessToken,
+		Variables: map[string]interface{}{
+			"login":      strings.ToLower(login),
+			"isLive":     true,
+			"vodID":      "",
+			"isVod":      false,
+			"playerType": "site",
+		},
+	}
+	resp, err := g.do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("playback access token: %w", err)
+	}
+	spat, ok := resp.Data["streamPlaybackAccessToken"].(map[string]interface{})
+	if !ok || spat == nil {
+		return "", "", fmt.Errorf("no streamPlaybackAccessToken in response")
+	}
+	value = getString(spat, "value")
+	signature = getString(spat, "signature")
+	if value == "" || signature == "" {
+		return "", "", fmt.Errorf("empty token or signature")
+	}
+	return value, signature, nil
+}
+
 // GQLClient handles all Twitch GQL API calls.
 type GQLClient struct {
 	authToken       string
@@ -122,13 +247,52 @@ type GQLClient struct {
 }
 
 // NewGQLClient creates a new GQL client with the given auth token.
+// Tries to fetch a real unique_id from Twitch's Set-Cookie header at startup
+// (matches TDM auth_state.py behavior). If the fetch fails, falls back to a
+// locally-generated random id.
 func NewGQLClient(authToken string) *GQLClient {
+	deviceID := fetchTwitchUniqueID()
+	if deviceID == "" {
+		deviceID = generateDeviceID()
+	}
 	return &GQLClient{
 		authToken:       authToken,
 		httpClient:      &http.Client{},
-		deviceID:        generateDeviceID(),
+		deviceID:        deviceID,
 		clientSessionID: generateSessionID(),
 	}
+}
+
+// fetchTwitchUniqueID does what TDM does at auth: GET twitch.tv and read the
+// `unique_id` cookie that Twitch sets in the response. Drop anti-cheat trusts
+// IDs that Twitch itself issued — locally-generated random ones get flagged.
+func fetchTwitchUniqueID() string {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", "https://www.twitch.tv", nil)
+	if err != nil {
+		return ""
+	}
+	// Use the same Android UA as the rest of our requests.
+	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024))
+	for _, c := range resp.Cookies() {
+		if c.Name == "unique_id" && c.Value != "" {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+// DeviceID returns the random 32-char fingerprint sent as X-Device-Id on GQL
+// requests. Spade and other components reuse this so Twitch sees one session.
+func (g *GQLClient) DeviceID() string {
+	return g.deviceID
 }
 
 func (g *GQLClient) do(req *GQLRequest) (*GQLResponse, error) {
@@ -235,6 +399,45 @@ func (g *GQLClient) GetUserInfo() (*UserInfo, error) {
 	}, nil
 }
 
+// GetChannelInfos resolves stream info for a batch of logins in parallel.
+// Used by the drops selector to check online status of an ACL campaign's
+// allowed_channels without going through the (often too small) game-directory
+// top-100 — that's how TDM does it (services/channel_service.bulk_check_online).
+//
+// Logins are queried in goroutines; chunked to stay under typical GQL rate
+// limits. Returns ChannelInfo entries only for channels that successfully
+// resolved (network errors / not-found are silently skipped).
+func (g *GQLClient) GetChannelInfos(logins []string) []*ChannelInfo {
+	if len(logins) == 0 {
+		return nil
+	}
+	const concurrency = 8
+	type res struct {
+		idx  int
+		info *ChannelInfo
+	}
+	results := make([]*ChannelInfo, len(logins))
+	sem := make(chan struct{}, concurrency)
+	resCh := make(chan res, len(logins))
+	for i, login := range logins {
+		sem <- struct{}{}
+		go func(idx int, login string) {
+			defer func() { <-sem }()
+			info, err := g.GetChannelInfo(login)
+			if err != nil {
+				resCh <- res{idx: idx, info: nil}
+				return
+			}
+			resCh <- res{idx: idx, info: info}
+		}(i, login)
+	}
+	for range logins {
+		r := <-resCh
+		results[r.idx] = r.info
+	}
+	return results
+}
+
 // GetChannelInfo returns channel info including live status.
 func (g *GQLClient) GetChannelInfo(login string) (*ChannelInfo, error) {
 	login = strings.ToLower(login)
@@ -274,6 +477,7 @@ func (g *GQLClient) GetChannelInfo(login string) (*ChannelInfo, error) {
 			if game, ok := streamMap["game"]; ok && game != nil {
 				if gameMap, ok := game.(map[string]interface{}); ok {
 					info.GameName = getString(gameMap, "displayName")
+					info.GameID = getString(gameMap, "id")
 				}
 			}
 		}
@@ -320,6 +524,7 @@ func (g *GQLClient) GetChannelInfoByID(channelID string) (*ChannelInfo, error) {
 			if game, ok := streamMap["game"]; ok && game != nil {
 				if gameMap, ok := game.(map[string]interface{}); ok {
 					info.GameName = getString(gameMap, "displayName")
+					info.GameID = getString(gameMap, "id")
 				}
 			}
 		}
@@ -679,6 +884,12 @@ func (g *GQLClient) fetchGameStreams(gameName string, limit int, query string) (
 				gs.DisplayName = getString(bMap, "displayName")
 			}
 		}
+		if game, ok := nMap["game"]; ok && game != nil {
+			if gMap, ok := game.(map[string]interface{}); ok {
+				gs.GameID = getString(gMap, "id")
+				gs.GameName = getString(gMap, "name")
+			}
+		}
 
 		if gs.BroadcasterLogin != "" {
 			result = append(result, gs)
@@ -689,12 +900,26 @@ func (g *GQLClient) fetchGameStreams(gameName string, limit int, query string) (
 }
 
 // setHeaders sets all required headers for TV Client-ID GQL requests.
+// Header set matches TDM (TwitchDropsMiner) gql_client.py exactly — captured
+// from a working TDM session on the same account. Drop anti-cheat checks
+// Origin + Referer in addition to client-id/UA correlation; without these
+// the sendSpadeEvents mutation returns 204 but the credit pipeline ignores it.
 func (g *GQLClient) setHeaders(req *http.Request) {
+	req.Header.Set("Accept", "*/*")
+	// NOTE: Don't set Accept-Encoding manually — Go's transport handles gzip
+	// transparently only when WE don't set the header. Setting it ourselves
+	// returns a raw gzipped body that breaks json.Unmarshal everywhere.
+	req.Header.Set("Accept-Language", "en-US")
+	req.Header.Set("Pragma", "no-cache")
+	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Client-Id", TVClientID)
+	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("Client-Session-Id", g.clientSessionID)
+	req.Header.Set("X-Device-Id", g.deviceID)
+	req.Header.Set("Origin", "https://www.twitch.tv")
+	req.Header.Set("Referer", "https://www.twitch.tv")
 	req.Header.Set("Authorization", "OAuth "+g.authToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Device-Id", g.deviceID)
-	req.Header.Set("Client-Session-Id", g.clientSessionID)
 }
 
 // generateDeviceID returns 32 random alphanumeric characters for X-Device-Id.

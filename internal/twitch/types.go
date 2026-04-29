@@ -157,6 +157,7 @@ type ChannelInfo struct {
 	IsLive      bool
 	BroadcastID string
 	GameName    string
+	GameID      string
 	ViewerCount int
 }
 
@@ -221,6 +222,8 @@ type GameStream struct {
 	BroadcasterLogin string
 	DisplayName     string
 	ViewerCount     int
+	GameID          string
+	GameName        string
 }
 
 // DropProgressData is the payload for EventDropProgress (v1.8.0 WebSocket).
