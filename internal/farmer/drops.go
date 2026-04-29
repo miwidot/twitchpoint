@@ -80,7 +80,7 @@ func (f *Farmer) pollDropProgressOnce() {
 		f.writeLogFile(fmt.Sprintf("[Drops/Poll] drop complete on campaign %s (%d/%d)",
 			pickedCampID, session.CurrentMinutesWatched, session.RequiredMinutesWatched))
 		go func() {
-			f.markCompletedIfFinishedExternally(pickedCampID)
+			f.drops.MarkCompletedIfFinishedExternally(pickedCampID)
 			f.processDrops()
 		}()
 	}
@@ -132,7 +132,7 @@ func (f *Farmer) processDrops() {
 	// Removed: poll is the authoritative completion source now.
 
 	// 1. Auto-claim any drops that are complete and have an instance ID.
-	f.autoClaimAndMarkCompleted(campaigns)
+	f.drops.AutoClaimAndMarkCompleted(campaigns)
 
 	// 2a. Compare the previous pick's drop progress against this cycle's
 	//     inventory. If Twitch did not credit any new minutes, put the channel
@@ -200,63 +200,6 @@ func (f *Farmer) processDrops() {
 	f.drops.Stall.SnapshotPick(pick, campaigns)
 }
 
-// autoClaimAndMarkCompleted handles drop claims and marks fully-claimed
-// campaigns as completed in config.
-func (f *Farmer) autoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
-	for _, c := range campaigns {
-		if c.Status != "" && c.Status != "ACTIVE" {
-			continue
-		}
-		if !c.IsAccountConnected {
-			continue
-		}
-		if f.cfg.IsCampaignCompleted(c.ID) {
-			continue
-		}
-
-		allClaimed := true
-		hasWatchable := false
-		for _, d := range c.Drops {
-			if d.RequiredMinutesWatched <= 0 {
-				continue
-			}
-			hasWatchable = true
-			if d.IsClaimed {
-				continue
-			}
-			allClaimed = false
-			if d.IsComplete() && d.DropInstanceID != "" {
-				name := d.BenefitName
-				if name == "" {
-					name = d.Name
-				}
-				instanceID := d.DropInstanceID
-				dropName := name
-				campaignName := c.Name
-				go func() {
-					if err := f.gql.ClaimDrop(instanceID); err != nil {
-						f.addLog("[Drops] Failed to claim %s: %v", dropName, err)
-					} else {
-						f.addLog("[Drops] Claimed: %s (%s)", dropName, campaignName)
-					}
-				}()
-			}
-		}
-
-		if hasWatchable && allClaimed {
-			f.cfg.MarkCampaignCompleted(c.ID)
-			f.cfg.Save()
-			f.addLog("[Drops] Campaign %q fully claimed — marked as completed", c.Name)
-		}
-		// NOTE: don't auto-mark on !c.InInventory alone — that signal is
-		// ambiguous (could be "user finished externally" OR "user never started").
-		// Instead pollDropProgressOnce handles "finished externally" by polling
-		// DropCurrentSession on the picked channel — when the channel IS picked
-		// AND poll says current >= required AND inventory shows !InInventory,
-		// THAT combination is reliable. See markCompletedIfFinishedExternally.
-	}
-}
-
 // handleDropClaim is the sequential, TDM-aligned drop-claim flow. It:
 //  1. Claims the drop (synchronous — must succeed before we re-evaluate state)
 //  2. Sleeps 4s (Twitch's backend takes a moment to advance the drop session)
@@ -299,36 +242,6 @@ func (f *Farmer) handleDropClaim(data twitch.DropClaimData) {
 	}
 
 	f.processDrops()
-}
-
-// markCompletedIfFinishedExternally is called by pollDropProgressOnce when the
-// poll says the picked channel's drop is at 100%. It re-fetches inventory and
-// confirms the campaign is no longer in dropCampaignsInProgress before marking
-// completed. This combo is reliable: poll says "Twitch credited me past
-// required" + inventory says "campaign no longer in progress list" =
-// genuinely done. Avoids the false-positive of marking never-started
-// campaigns as completed just because they aren't in the inventory yet.
-func (f *Farmer) markCompletedIfFinishedExternally(campaignID string) {
-	campaigns, err := f.gql.GetDropsInventory()
-	if err != nil {
-		return
-	}
-	for _, c := range campaigns {
-		if c.ID != campaignID {
-			continue
-		}
-		if c.InInventory {
-			// Still in progress — has more drops to farm. Don't mark.
-			return
-		}
-		if f.cfg.IsCampaignCompleted(c.ID) {
-			return
-		}
-		f.cfg.MarkCampaignCompleted(c.ID)
-		_ = f.cfg.Save()
-		f.addLog("[Drops] Campaign %q finished externally (poll: complete + not in inventory) — marked completed", c.Name)
-		return
-	}
 }
 
 // applySelectorPick registers the picked channel as a temp channel if not

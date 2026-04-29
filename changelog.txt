@@ -1,3 +1,49 @@
+== 2026-04-29 22:16 == Refactor: Phase 2e (1/2) — inventory helpers to Service ==
+
+Two self-contained inventory-side helpers move from farmer to
+drops.Service methods. No farmer-side dependencies beyond gql, cfg,
+and log — the easiest pair of the four 2e migrations.
+
+What changed:
+- New internal/drops/inventory.go (~95 lines) hosts:
+  - Service.AutoClaimAndMarkCompleted(campaigns) — walks an
+    inventory list, fires off async ClaimDrop calls for every
+    complete-but-unclaimed drop instance, and marks campaigns
+    completed once every watchable drop is observably claimed.
+    Was farmer.autoClaimAndMarkCompleted.
+  - Service.MarkCompletedIfFinishedExternally(campaignID) —
+    re-fetches inventory and marks the campaign completed only
+    when both "current >= required" AND "!InInventory" hold.
+    Avoids the false positive of marking never-started campaigns
+    completed. Was farmer.markCompletedIfFinishedExternally.
+- Both call sites in farmer/drops.go now call f.drops.X(...).
+- farmer/drops.go shrinks ~85 lines (the two function bodies plus
+  their doc comments).
+- The cooldown-style note at the bottom of AutoClaimAndMarkCompleted
+  was rewritten to point at the Service method names instead of the
+  now-deleted farmer methods.
+
+Why these first: both are pure consumers of (gql, cfg, log) — none
+of the harder deps (channels.Registry mutation, watcher start/stop,
+PubSub subscribe, applySelectorPick callback) come into play.
+Migrating them first is the lowest-risk way to validate the Service
+shape before tackling handleDropClaim (which calls back into
+processDrops) and processDrops itself (which orchestrates everything).
+
+drops.go shrinkage tracker (post-Phase-1 baseline 1221 lines):
+  Phase 2a:  1199  (Selector moved)
+  Phase 2b:  1153  (pick helpers moved)
+  Phase 2c:  1007  (StallTracker extracted)
+  Phase 2d:   849  (rows + ActiveDrop moved)
+  Phase 2e-prep:  825  (dropState struct moved into Service)
+  Phase 2e (1/2): 738  (two inventory helpers moved to Service)
+  Total:    −483 / −40%
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — channels, drops, config all pass.
+
 == 2026-04-29 22:14 == Refactor: Phase 2e-prep — drops.Service skeleton ==
 
 Container for the drops domain orchestrator. Phase 2e proper will
