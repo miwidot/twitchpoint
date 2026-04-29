@@ -11,6 +11,29 @@ import (
 	"github.com/miwi/twitchpoint/internal/farmer"
 )
 
+// renderTabBar renders the top-level tab navigation strip. The active tab
+// gets the purple background; inactive tabs are grey. Number prefix is
+// the direct-jump key (1/2/3); Tab/Shift-Tab also cycles.
+func renderTabBar(active tabID) string {
+	tabs := []struct {
+		id    tabID
+		label string
+	}{
+		{tabChannels, "1 Channels"},
+		{tabDrops, "2 Drops"},
+		{tabHelp, "3 Help"},
+	}
+	var rendered []string
+	for _, t := range tabs {
+		if t.id == active {
+			rendered = append(rendered, tabActiveStyle.Render(t.label))
+		} else {
+			rendered = append(rendered, tabInactiveStyle.Render(t.label))
+		}
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+}
+
 // renderHeader renders the top header bar.
 func renderHeader(username string, uptime time.Duration) string {
 	title := headerStyle.Render(" TwitchPoint Farmer ")
@@ -296,16 +319,17 @@ func renderEventLog(logs []farmer.LogEntry, height, width int) string {
 	return title + "\n" + logBorderStyle.Width(width - 2).Height(visibleLines).Render(content)
 }
 
-// renderHelpBar renders the bottom help bar.
+// renderHelpBar renders the Channels-tab footer help line. Drops-tab
+// has its own per-panel footer (renderDropsHelpFooter) and Help-tab
+// is itself the keybind reference, so this is Channels-only.
 func renderHelpBar() string {
 	keys := []struct{ key, desc string }{
-		{"q", "quit"},
 		{"a", "add channel"},
 		{"d", "remove channel"},
 		{"p", "set priority"},
-		{"t", "toggle campaign"},
-		{"g", "wanted games"},
 		{"↑↓", "scroll"},
+		{"1/2/3", "tab"},
+		{"q", "quit"},
 	}
 
 	var parts []string
@@ -370,48 +394,3 @@ func renderUpdateBanner(info farmer.UpdateInfo) string {
 	return updateBannerStyle.Render(text)
 }
 
-// renderGameListEditor draws the v1.8.0 wanted-games modal overlay.
-// Called when m.inputMode == inputGameList (or inputAddGameName for the
-// add-prompt overlay layered on top).
-func renderGameListEditor(games []string, cursor int) string {
-	header := titleStyle.Render(" Wanted Games (priority order) ")
-
-	if len(games) == 0 {
-		body := tableCellStyle.Render("  (empty — press '+' to add games)")
-		footer := helpStyle.Render("  " +
-			helpKeyStyle.Render("+") + helpStyle.Render(" add") +
-			"  " + helpKeyStyle.Render("enter") + helpStyle.Render(" close") +
-			"  " + helpKeyStyle.Render("esc") + helpStyle.Render(" close"))
-		return header + "\n" + body + "\n" + footer
-	}
-
-	var rows []string
-	for i, g := range games {
-		marker := "  "
-		if i == cursor {
-			marker = "▸ "
-		}
-		row := fmt.Sprintf("%s%2d. %s", marker, i+1, g)
-		if i == cursor {
-			rows = append(rows, dropStyle.Render(row))
-		} else {
-			rows = append(rows, tableCellStyle.Render(row))
-		}
-	}
-
-	keys := []struct{ key, desc string }{
-		{"↑↓", "navigate"},
-		{"+", "add"},
-		{"-", "remove"},
-		{"u", "up"},
-		{"d", "down"},
-		{"enter", "close"},
-	}
-	var helpParts []string
-	for _, k := range keys {
-		helpParts = append(helpParts, helpKeyStyle.Render(k.key)+helpStyle.Render(" "+k.desc))
-	}
-	footer := helpStyle.Render("  " + strings.Join(helpParts, "  |  "))
-
-	return header + "\n" + strings.Join(rows, "\n") + "\n\n" + footer
-}

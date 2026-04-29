@@ -89,4 +89,36 @@ var (
 	updateBannerStyle = lipgloss.NewStyle().
 				Foreground(colorYellow).
 				Bold(true)
+
+	// Tab bar
+	tabActiveStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorWhite).
+			Background(colorPurple).
+			Padding(0, 2)
+
+	tabInactiveStyle = lipgloss.NewStyle().
+				Foreground(colorGray).
+				Padding(0, 2)
+
+	// Drops-tab cursor + sections
+	cursorStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorPurple)
+
+	sectionTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorPurple).
+				BorderBottom(true).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderForeground(colorDarkGray)
+
+	sectionTitleActiveStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(colorWhite).
+				Background(colorPurple).
+				BorderBottom(true).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderForeground(colorPurple).
+				Padding(0, 1)
 )

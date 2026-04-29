@@ -14,21 +14,42 @@ import (
 // tickMsg is sent periodically to refresh the UI.
 type tickMsg time.Time
 
+// tabID identifies the top-level tab the user is currently viewing.
+type tabID int
+
+const (
+	tabChannels tabID = iota
+	tabDrops
+	tabHelp
+)
+
 // Model is the Bubbletea app model.
 type Model struct {
 	farmer *farmer.Farmer
 	width  int
 	height int
 
-	// Channel table scroll
+	// Active tab — switched via 1/2/3 number keys or Tab/Shift-Tab.
+	activeTab tabID
+
+	// Channel table scroll (tab 1).
 	channelScroll int
 
-	// Input mode
+	// Drops tab cursor state. focusedPanel selects which of the three
+	// stacked panels (campaigns / wanted-games / settings) currently
+	// receives j/k navigation. The per-panel cursors track row position
+	// inside that panel.
+	dropsFocusedPanel   dropsPanel
+	dropsCampaignCursor int
+	dropsGameCursor     int
+	dropsSettingsCursor int
+
+	// Input mode (text-input modals — channel add/remove/priority + game
+	// name prompt). Drops-tab inline interaction does NOT use this; only
+	// the channels-tab text-input flows still go through it.
 	inputMode  inputState
 	inputValue string
 
-	// v1.8.0 game-list editor state
-	gameListCursor int
 
 	// Error display
 	errMsg    string
@@ -41,6 +62,21 @@ type Model struct {
 	quitting bool
 }
 
+// dropsPanel identifies which of the drops-tab sub-panels has the cursor.
+type dropsPanel int
+
+const (
+	dropsPanelCampaigns dropsPanel = iota
+	dropsPanelGames
+	dropsPanelSettings
+)
+
+// inputState tracks which (if any) text-input modal is currently
+// capturing keypresses. Channels tab uses the channel/priority modals;
+// Drops tab uses inputAddGameName when the user presses '+' on the
+// Wanted Games panel. The old inputGameList (modal-style game editor)
+// and inputToggleCampaign (text-typed campaign-name toggle) are gone —
+// the Drops tab handles both inline.
 type inputState int
 
 const (
@@ -48,10 +84,7 @@ const (
 	inputAddChannel
 	inputRemoveChannel
 	inputSetPriority
-	inputToggleCampaign
-	inputPinCampaign  // v1.7.0 — kept for back-compat in switch cases (no longer dispatched)
-	inputGameList     // v1.8.0 modal wanted-games editor
-	inputAddGameName  // v1.8.0 prompt overlay inside the editor for new-game name
+	inputAddGameName
 )
 
 // NewModel creates a new UI model.
@@ -96,11 +129,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// v1.8.0: modal game-list editor uses its own keymap (not text input)
-	if m.inputMode == inputGameList {
-		return m.handleGameListKey(msg)
-	}
-	// If in input mode, handle text input
+	// If a text-input modal is active (channel add/remove/priority or
+	// game-name prompt from Drops tab), capture the keys.
 	if m.inputMode != inputNone {
 		switch msg.Type {
 		case tea.KeyEnter:
@@ -122,7 +152,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Normal mode
+	// Tab navigation works regardless of which tab is currently active.
 	switch msg.String() {
 	case "q", "ctrl+c":
 		if m.OnQuit != nil {
@@ -132,6 +162,42 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		m.farmer.Stop()
 		return m, tea.Quit
+	case "1":
+		m.activeTab = tabChannels
+		return m, nil
+	case "2":
+		m.activeTab = tabDrops
+		return m, nil
+	case "3":
+		m.activeTab = tabHelp
+		return m, nil
+	case "tab":
+		m.activeTab = (m.activeTab + 1) % 3
+		return m, nil
+	case "shift+tab":
+		m.activeTab = (m.activeTab + 2) % 3
+		return m, nil
+	}
+
+	// Per-tab key handling.
+	switch m.activeTab {
+	case tabChannels:
+		return m.handleChannelsKey(msg)
+	case tabDrops:
+		return m.handleDropsKey(msg)
+	case tabHelp:
+		// No interactive keys yet — Help tab is read-only.
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleChannelsKey dispatches keys for the Channels tab — text-input
+// modal triggers (a/d/p) and channel-table scroll (j/k/home/end). The
+// old 'g' (wanted-games modal) and 't' (toggle campaign modal) keys
+// are gone — both flows live in the Drops tab now as inline panels.
+func (m Model) handleChannelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
 	case "a":
 		m.inputMode = inputAddChannel
 		m.inputValue = ""
@@ -143,14 +209,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		m.inputMode = inputSetPriority
 		m.inputValue = ""
-		return m, nil
-	case "t":
-		m.inputMode = inputToggleCampaign
-		m.inputValue = ""
-		return m, nil
-	case "g":
-		m.inputMode = inputGameList
-		m.gameListCursor = 0
 		return m, nil
 	case "up", "k":
 		if m.channelScroll > 0 {
@@ -167,62 +225,180 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.channelScroll = 9999 // clamped in View
 		return m, nil
 	}
-
 	return m, nil
 }
 
-// handleGameListKey dispatches keys while the wanted-games modal editor is open.
-// v1.8.0.
-func (m Model) handleGameListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// handleDropsKey dispatches keys for the Drops tab. The cursor is
+// unified across the three stacked panels (Drop Campaigns, Wanted
+// Games, Settings) — j/k overflows panel boundaries so the user
+// navigates the whole tab body as one continuous list. Per-panel
+// action keys (Space, +, -, u, d) operate on the row currently under
+// the cursor and only do something meaningful when the focused panel
+// supports that action.
+//
+// If the user presses '+' to add a game, we delegate to the legacy
+// inputAddGameName modal — the only text-input flow Drops tab needs
+// (everything else is selection or boolean toggle).
+func (m Model) handleDropsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	drops := m.farmer.GetActiveDrops()
 	games := m.farmer.Config().GetGamesToWatch()
+	settings := dropsSettings(m.farmer.Config())
 
 	switch msg.String() {
-	case "esc", "enter":
-		m.inputMode = inputNone
-		_ = m.farmer.Config().Save()
-		return m, nil
-
-	case "up", "k":
-		if m.gameListCursor > 0 {
-			m.gameListCursor--
-		}
-		return m, nil
-
 	case "down", "j":
-		if m.gameListCursor < len(games)-1 {
-			m.gameListCursor++
+		m = m.dropsCursorDown(len(drops), len(games), len(settings))
+		return m, nil
+	case "up", "k":
+		m = m.dropsCursorUp(len(drops), len(games), len(settings))
+		return m, nil
+	case " ", "space":
+		return m.dropsToggle(drops, settings), nil
+	case "+":
+		// Only the wanted-games panel honors '+' (add game).
+		if m.dropsFocusedPanel == dropsPanelGames {
+			m.inputMode = inputAddGameName
+			m.inputValue = ""
 		}
 		return m, nil
-
-	case "u":
-		if m.gameListCursor > 0 && m.gameListCursor < len(games) {
-			m.farmer.Config().MoveGameToWatch(games[m.gameListCursor], -1)
-			m.gameListCursor--
-		}
-		return m, nil
-
-	case "d":
-		if m.gameListCursor < len(games)-1 {
-			m.farmer.Config().MoveGameToWatch(games[m.gameListCursor], +1)
-			m.gameListCursor++
-		}
-		return m, nil
-
 	case "-":
-		if m.gameListCursor < len(games) {
-			m.farmer.Config().RemoveGameFromWatch(games[m.gameListCursor])
-			if m.gameListCursor > 0 && m.gameListCursor >= len(games)-1 {
-				m.gameListCursor--
+		if m.dropsFocusedPanel == dropsPanelGames && m.dropsGameCursor < len(games) {
+			m.farmer.Config().RemoveGameFromWatch(games[m.dropsGameCursor])
+			_ = m.farmer.Config().Save()
+			if m.dropsGameCursor > 0 && m.dropsGameCursor >= len(games)-1 {
+				m.dropsGameCursor--
 			}
 		}
 		return m, nil
-
-	case "+":
-		m.inputMode = inputAddGameName
-		m.inputValue = ""
+	case "u":
+		if m.dropsFocusedPanel == dropsPanelGames && m.dropsGameCursor > 0 && m.dropsGameCursor < len(games) {
+			m.farmer.Config().MoveGameToWatch(games[m.dropsGameCursor], -1)
+			_ = m.farmer.Config().Save()
+			m.dropsGameCursor--
+		}
+		return m, nil
+	case "d":
+		if m.dropsFocusedPanel == dropsPanelGames && m.dropsGameCursor < len(games)-1 {
+			m.farmer.Config().MoveGameToWatch(games[m.dropsGameCursor], +1)
+			_ = m.farmer.Config().Save()
+			m.dropsGameCursor++
+		}
 		return m, nil
 	}
 	return m, nil
+}
+
+// dropsCursorDown advances the unified cursor by one row, overflowing
+// to the next panel when the current panel's last row is already
+// active. Wraps around from Settings → Campaigns.
+func (m Model) dropsCursorDown(nCampaigns, nGames, nSettings int) Model {
+	switch m.dropsFocusedPanel {
+	case dropsPanelCampaigns:
+		if m.dropsCampaignCursor < nCampaigns-1 {
+			m.dropsCampaignCursor++
+		} else if nGames > 0 {
+			m.dropsFocusedPanel = dropsPanelGames
+			m.dropsGameCursor = 0
+		} else if nSettings > 0 {
+			m.dropsFocusedPanel = dropsPanelSettings
+			m.dropsSettingsCursor = 0
+		}
+	case dropsPanelGames:
+		if m.dropsGameCursor < nGames-1 {
+			m.dropsGameCursor++
+		} else if nSettings > 0 {
+			m.dropsFocusedPanel = dropsPanelSettings
+			m.dropsSettingsCursor = 0
+		}
+	case dropsPanelSettings:
+		if m.dropsSettingsCursor < nSettings-1 {
+			m.dropsSettingsCursor++
+		} else if nCampaigns > 0 {
+			m.dropsFocusedPanel = dropsPanelCampaigns
+			m.dropsCampaignCursor = 0
+		}
+	}
+	return m
+}
+
+// dropsCursorUp is the inverse — moves up, overflowing to the previous
+// panel's last row. Wraps from Campaigns → Settings.
+func (m Model) dropsCursorUp(nCampaigns, nGames, nSettings int) Model {
+	switch m.dropsFocusedPanel {
+	case dropsPanelCampaigns:
+		if m.dropsCampaignCursor > 0 {
+			m.dropsCampaignCursor--
+		} else if nSettings > 0 {
+			m.dropsFocusedPanel = dropsPanelSettings
+			m.dropsSettingsCursor = nSettings - 1
+		} else if nGames > 0 {
+			m.dropsFocusedPanel = dropsPanelGames
+			m.dropsGameCursor = nGames - 1
+		}
+	case dropsPanelGames:
+		if m.dropsGameCursor > 0 {
+			m.dropsGameCursor--
+		} else if nCampaigns > 0 {
+			m.dropsFocusedPanel = dropsPanelCampaigns
+			m.dropsCampaignCursor = nCampaigns - 1
+		}
+	case dropsPanelSettings:
+		if m.dropsSettingsCursor > 0 {
+			m.dropsSettingsCursor--
+		} else if nGames > 0 {
+			m.dropsFocusedPanel = dropsPanelGames
+			m.dropsGameCursor = nGames - 1
+		} else if nCampaigns > 0 {
+			m.dropsFocusedPanel = dropsPanelCampaigns
+			m.dropsCampaignCursor = nCampaigns - 1
+		}
+	}
+	return m
+}
+
+// dropsToggle handles the Space key. In the Campaigns panel it flips
+// the campaign's enabled/disabled state. In the Settings panel it
+// toggles the boolean setting. In the Games panel Space is a no-op
+// (use +/-/u/d there).
+func (m Model) dropsToggle(drops []drops.ActiveDrop, settings []dropsSetting) Model {
+	switch m.dropsFocusedPanel {
+	case dropsPanelCampaigns:
+		if m.dropsCampaignCursor < len(drops) {
+			d := drops[m.dropsCampaignCursor]
+			// Compute new state: COMPLETED rows stay completed (toggle no-op),
+			// DISABLED → enabled, anything else → disabled.
+			newEnabled := !d.IsEnabled
+			switch d.Status {
+			case "DISABLED":
+				newEnabled = true
+			case "ACTIVE", "QUEUED", "IDLE":
+				newEnabled = false
+			case "COMPLETED":
+				m.errMsg = "campaign already COMPLETED — cannot toggle"
+				m.errExpiry = time.Now().Add(3 * time.Second)
+				return m
+			}
+			if err := m.farmer.SetCampaignEnabled(d.CampaignID, newEnabled); err != nil {
+				m.errMsg = fmt.Sprintf("Error: %v", err)
+				m.errExpiry = time.Now().Add(5 * time.Second)
+			} else {
+				word := "disabled"
+				if newEnabled {
+					word = "enabled"
+				}
+				m.errMsg = fmt.Sprintf("%s %q", word, d.CampaignName)
+				m.errExpiry = time.Now().Add(3 * time.Second)
+			}
+		}
+	case dropsPanelSettings:
+		if m.dropsSettingsCursor < len(settings) {
+			s := settings[m.dropsSettingsCursor]
+			s.toggle(m.farmer.Config())
+			_ = m.farmer.Config().Save()
+			m.errMsg = fmt.Sprintf("%s — restart required", s.label)
+			m.errExpiry = time.Now().Add(3 * time.Second)
+		}
+	}
+	return m
 }
 
 func (m Model) submitInput() (tea.Model, tea.Cmd) {
@@ -262,105 +438,87 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-	case inputToggleCampaign:
-		// Partial campaign name → toggle disabled state (idempotent flip).
-		if value != "" {
-			drop, err := m.findCampaignByPartial(value)
-			if err != nil {
-				m.errMsg = err.Error()
-				m.errExpiry = time.Now().Add(5 * time.Second)
-			} else {
-				// Flip current state: enabled drops become disabled and vice versa.
-				newEnabled := !drop.IsEnabled
-				if drop.Status == "DISABLED" {
-					newEnabled = true
-				} else if drop.Status == "ACTIVE" || drop.Status == "QUEUED" || drop.Status == "IDLE" {
-					newEnabled = false
-				}
-				if err := m.farmer.SetCampaignEnabled(drop.CampaignID, newEnabled); err != nil {
-					m.errMsg = fmt.Sprintf("Error: %v", err)
-					m.errExpiry = time.Now().Add(5 * time.Second)
-				} else {
-					word := "disabled"
-					if newEnabled {
-						word = "enabled"
-					}
-					m.errMsg = fmt.Sprintf("%s %q", word, drop.CampaignName)
-					m.errExpiry = time.Now().Add(3 * time.Second)
-				}
-			}
-		}
 	case inputAddGameName:
-		// v1.8.0: add a game to the wanted-games list and return to the editor.
+		// User typed a game name on the Wanted Games panel. Persist it
+		// and exit the modal — cursor stays where it was so the user
+		// can immediately reorder / delete the freshly-added entry.
 		if value != "" {
 			m.farmer.Config().AddGameToWatch(value)
 			_ = m.farmer.Config().Save()
 		}
-		m.inputMode = inputGameList
-		return m, nil
 	}
 
-	// inputAddGameName routes back to the modal editor (handled above);
-	// every other input mode closes back to normal mode.
-	if m.inputMode != inputGameList {
-		m.inputMode = inputNone
-	}
+	m.inputMode = inputNone
 	return m, nil
 }
 
-// View implements tea.Model.
+// View implements tea.Model. Renders the persistent header + tab bar,
+// then dispatches to the tab-specific view.
 func (m Model) View() string {
 	if m.quitting {
 		return "Shutting down...\n"
 	}
 
-	var sections []string
-
-	// Header
+	// Header (visible in every tab)
 	username := "..."
-	uptime := time.Duration(0)
 	if user := m.farmer.GetUser(); user != nil {
 		username = user.DisplayName
 	}
 	stats := m.farmer.GetStats()
-	uptime = stats.Uptime
 
-	sections = append(sections, renderHeader(username, uptime))
-	sections = append(sections, "") // spacer
-
-	// Update banner (if available)
-	updateInfo := m.farmer.GetUpdateInfo()
-	updateBanner := renderUpdateBanner(updateInfo)
-	hasUpdateBanner := updateBanner != ""
-	if hasUpdateBanner {
-		sections = append(sections, updateBanner)
-		sections = append(sections, "") // spacer
+	header := []string{
+		renderHeader(username, stats.Uptime),
+		renderTabBar(m.activeTab),
+		"",
 	}
 
-	// Gather data
+	// Optional update banner above the tab body.
+	if banner := renderUpdateBanner(m.farmer.GetUpdateInfo()); banner != "" {
+		header = append(header, banner, "")
+	}
+
+	headerStr := strings.Join(header, "\n")
+
+	switch m.activeTab {
+	case tabChannels:
+		return headerStr + "\n" + m.viewChannelsTab(stats)
+	case tabDrops:
+		return headerStr + "\n" + m.viewDropsTab()
+	case tabHelp:
+		return headerStr + "\n" + m.viewHelpTab()
+	}
+	return headerStr
+}
+
+// viewChannelsTab renders the original channel-list / stats / drops-mini-
+// table / event-log layout. The math for available-line allocation is
+// the same as the pre-tab single-screen view; only the per-tab "header
+// overhead" differs (header line + tab bar = 3 lines).
+func (m Model) viewChannelsTab(stats farmer.Stats) string {
+	var sections []string
+
 	channels := m.farmer.GetChannels()
 	drops := m.farmer.GetActiveDrops()
 	dropsTable := renderDropsTable(drops, m.width)
 	hasDropsTable := dropsTable != ""
 
-	// Fixed overhead: everything except channel rows and event log content
-	// header(1) + spacer(1) + ch_header(1) + spacer(1) + stats_border(3) + spacer(1)
-	// + log_title(1) + log_border(2) + help(1) = 12, plus 2 buffer for join newlines
-	overhead := 14
-	if hasUpdateBanner {
-		overhead += 2 // banner + spacer
+	// Header overhead: header(1) + tab_bar(1) + spacer(1) = 3 lines
+	// already consumed before this tab body. Tab body overhead:
+	// ch_header(1) + spacer(1) + stats_border(3) + spacer(1) +
+	// log_title(1) + log_border(2) + help(1) = 10, plus 2 buffer.
+	overhead := 12 + 3
+	if banner := renderUpdateBanner(m.farmer.GetUpdateInfo()); banner != "" {
+		overhead += 2
 	}
 	if hasDropsTable {
-		overhead += len(drops) + 3 // title + header + rows + spacer
+		overhead += len(drops) + 3
 	}
 
-	// Available lines for channel rows + event log content
 	available := m.height - overhead
 	if available < 10 {
 		available = 10
 	}
 
-	// Channel table gets at most half the screen, event log gets the rest
 	maxChannelRows := m.height / 2
 	minLogContent := 4
 
@@ -376,7 +534,6 @@ func (m Model) View() string {
 		channelRows = maxChannelRows
 	}
 
-	// Clamp scroll offset
 	maxScroll := len(channels) - channelRows
 	if maxScroll < 0 {
 		maxScroll = 0
@@ -386,23 +543,17 @@ func (m Model) View() string {
 		scroll = maxScroll
 	}
 
-	// Channel table (with scroll)
 	sections = append(sections, renderChannelTableScrollable(channels, m.width, channelRows, scroll))
-	sections = append(sections, "") // spacer
-
-	// Stats bar
+	sections = append(sections, "")
 	sections = append(sections, renderStatsBar(stats, m.width))
-	sections = append(sections, "") // spacer
+	sections = append(sections, "")
 
-	// Drops table (if any active campaigns)
 	if hasDropsTable {
 		sections = append(sections, dropsTable)
-		sections = append(sections, "") // spacer
+		sections = append(sections, "")
 	}
 
-	// Event log gets remaining space
 	logContent := available - channelRows
-	// Account for scroll indicator lines
 	if scroll > 0 {
 		logContent--
 	}
@@ -412,19 +563,11 @@ func (m Model) View() string {
 	if logContent < minLogContent {
 		logContent = minLogContent
 	}
-	// logHeight = content lines + 2 (for border accounting in renderEventLog)
 	logHeight := logContent + 2
 
 	logs := m.farmer.GetLogs()
 	sections = append(sections, renderEventLog(logs, logHeight, m.width))
 
-	// v1.8.0 wanted-games modal — render above the help bar when open.
-	if m.inputMode == inputGameList || m.inputMode == inputAddGameName {
-		games := m.farmer.Config().GetGamesToWatch()
-		sections = append(sections, "", renderGameListEditor(games, m.gameListCursor))
-	}
-
-	// Input or error or help bar
 	if m.inputMode != inputNone {
 		sections = append(sections, m.renderInput())
 	} else if m.errMsg != "" && time.Now().Before(m.errExpiry) {
@@ -436,40 +579,64 @@ func (m Model) View() string {
 	return strings.Join(sections, "\n")
 }
 
-// findCampaignByPartial does a case-insensitive substring match against the
-// current ActiveDrops snapshot. Returns the unique match or an error if not
-// found / multiple matches.
-func (m Model) findCampaignByPartial(query string) (*drops.ActiveDrop, error) {
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
-		return nil, fmt.Errorf("empty query")
-	}
+// viewDropsTab renders the three stacked Drops-tab panels (Drop
+// Campaigns / Wanted Games / Settings) with the unified cursor + per-
+// panel help footer.
+func (m Model) viewDropsTab() string {
 	rows := m.farmer.GetActiveDrops()
-	var matches []drops.ActiveDrop
-	for _, d := range rows {
-		if strings.Contains(strings.ToLower(d.CampaignName), query) {
-			matches = append(matches, d)
-		}
+	games := m.farmer.Config().GetGamesToWatch()
+	settings := dropsSettings(m.farmer.Config())
+
+	// Clamp cursors so a stale state from a previous render doesn't
+	// point past the end of the panel's data (e.g., user removed a
+	// game between renders).
+	if m.dropsCampaignCursor >= len(rows) {
+		m.dropsCampaignCursor = max0(len(rows) - 1)
 	}
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("no campaign matches %q", query)
-	case 1:
-		return &matches[0], nil
-	default:
-		// Prefer exact match if there is one
-		for i, d := range matches {
-			if strings.EqualFold(d.CampaignName, query) {
-				return &matches[i], nil
-			}
-		}
-		names := make([]string, 0, len(matches))
-		for _, d := range matches {
-			names = append(names, d.CampaignName)
-		}
-		return nil, fmt.Errorf("ambiguous %q matches: %s", query, strings.Join(names, ", "))
+	if m.dropsGameCursor >= len(games) {
+		m.dropsGameCursor = max0(len(games) - 1)
 	}
+	if m.dropsSettingsCursor >= len(settings) {
+		m.dropsSettingsCursor = max0(len(settings) - 1)
+	}
+
+	var sections []string
+	sections = append(sections,
+		renderDropsCampaignsPanel(rows, m.dropsCampaignCursor, m.dropsFocusedPanel == dropsPanelCampaigns),
+		"",
+		renderDropsGamesPanel(games, m.dropsGameCursor, m.dropsFocusedPanel == dropsPanelGames),
+		"",
+		renderDropsSettingsPanel(m.farmer.Config(), settings, m.dropsSettingsCursor, m.dropsFocusedPanel == dropsPanelSettings),
+		"",
+	)
+
+	if m.inputMode == inputAddGameName {
+		sections = append(sections, m.renderInput())
+	} else if m.errMsg != "" && time.Now().Before(m.errExpiry) {
+		sections = append(sections, lipgloss.NewStyle().Foreground(colorRed).Render("  "+m.errMsg))
+	} else {
+		sections = append(sections, renderDropsHelpFooter(m.dropsFocusedPanel))
+	}
+
+	return strings.Join(sections, "\n")
 }
+
+// viewHelpTab renders a static reference of all keybinds + a brief
+// explainer of the two credit pipelines (drops vs channel-points) so a
+// first-time user understands what the tool actually does.
+func (m Model) viewHelpTab() string {
+	return renderHelpScreen()
+}
+
+// max0 clamps n to >= 0. Used by viewDropsTab for cursor clamping when
+// the underlying data shrank between renders.
+func max0(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 
 func (m Model) renderInput() string {
 	var prompt, hint string
@@ -483,9 +650,6 @@ func (m Model) renderInput() string {
 	case inputSetPriority:
 		prompt = "Set priority (name 1|2): "
 		hint = "  (1=always watch, 2=rotate)"
-	case inputToggleCampaign:
-		prompt = "Toggle campaign (partial name): "
-		hint = "  (toggles disabled state)"
 	case inputAddGameName:
 		prompt = "Add game name: "
 		hint = "  (Enter to confirm, Esc to cancel)"

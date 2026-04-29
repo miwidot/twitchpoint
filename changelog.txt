@@ -1,3 +1,39 @@
+== 2026-04-30 02:22 == Feature: TUI tab system (Channels / Drops / Help) ==
+
+Top-level tab navigation introduced. The single-screen TUI is now
+split into three tabs:
+
+- Tab 1 "Channels" — unchanged from before. Channel table + stats bar
+  + small drops mini-table + event log + Channels-tab help footer.
+  Keys: a/d/p (add/remove/priority modal), j/k scroll, home/end.
+
+- Tab 2 "Drops" — three stacked inline panels with a unified j/k
+  cursor that overflows between panels:
+  • Drop Campaigns: cursor + Space toggles enable/disable on the
+    current row (replaces the old 't' partial-name modal).
+  • Wanted Games: priority-ordered list, +/- to add/remove, u/d to
+    reorder. The '+' opens a single-line text-input prompt with
+    fuzzy match against current eligible games (replaces the old
+    'g' full-screen modal).
+  • Settings: toggle DropsEnabled / IrcEnabled / WebEnabled with
+    Space (all three persist immediately, restart-required hint
+    shown).
+
+- Tab 3 "Help" — static reference: tab nav, per-tab keybinds, and a
+  4-line drops-vs-channel-points explainer for first-time users.
+
+Tab nav: 1/2/3 jumps directly, Tab/Shift+Tab cycles. The active tab
+is highlighted with the purple Twitch background; inactive tabs are
+grey.
+
+Removed: legacy modal code (handleGameListKey, renderGameListEditor,
+findCampaignByPartial, inputGameList + inputToggleCampaign enum
+values, gameListCursor field). Dead code from the v1.8.0 modal-only
+era.
+
+Files: internal/ui/drops_tab.go (new), internal/ui/help_tab.go (new),
+internal/ui/{app,components,styles}.go.
+
 == 2026-04-30 01:52 == Refactor: Phase 4e — IRC lifecycle + Farmer.mu → atomic.Bool ==
 
 Phase 4 final cleanup:
