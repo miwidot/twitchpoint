@@ -1,3 +1,19 @@
+== 2026-04-30 03:01 == Cleanup: hide temp drop channels from Channels tab ==
+
+The drops Watcher's auto-picked temp channel (e.g. "skinnycheeks"
+when farming Night Market) was showing up in the Channels-tab
+channel list with a [TEMP] suffix even though it's not user-added.
+Same info already lives in:
+- the Channels-tab mini-drops-table (Channel column)
+- the Drops-tab Drop Campaigns panel (full ACTIVE row)
+
+Fix: filter IsTemporary=true rows from the Channels-tab list. Stats
+counters (Watching: 3/2) still include them since they ARE
+genuinely being watched — this is a display-only filter.
+
+farmer.GetChannels() and the /api/channels web response are
+unchanged; the filter is local to viewChannelsTab.
+
 == 2026-04-30 02:55 == Feature: [AUTO] tag for auto-discovered campaigns ==
 
 Drop campaigns whose GameName is NOT in the user's wanted_games

@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/miwi/twitchpoint/internal/channels"
 	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/farmer"
 )
@@ -615,7 +616,20 @@ func (m Model) View() string {
 func (m Model) viewChannelsTab(stats farmer.Stats) string {
 	var sections []string
 
-	channels := m.farmer.GetChannels()
+	allChannels := m.farmer.GetChannels()
+	// Hide temp drop-pick channels from the user's channel list — they
+	// were never added by the user and surface anyway in the mini-drops
+	// table below + the Drops tab. Stats counters (Watching: 3/2) still
+	// include them since they ARE genuinely being watched; this is a
+	// pure display filter, no behavior change.
+	visibleChannels := make([]channels.Snapshot, 0, len(allChannels))
+	for _, c := range allChannels {
+		if c.IsTemporary {
+			continue
+		}
+		visibleChannels = append(visibleChannels, c)
+	}
+
 	// Channels tab only surfaces the actively-farming drop(s) — the full
 	// table (including COMPLETED + QUEUED + IDLE rows) lives on the
 	// Drops tab. Filter here so the channels view stays focused on
@@ -657,12 +671,12 @@ func (m Model) viewChannelsTab(stats farmer.Stats) string {
 		maxChannelRows = 3
 	}
 
-	channelRows := len(channels)
+	channelRows := len(visibleChannels)
 	if channelRows > maxChannelRows {
 		channelRows = maxChannelRows
 	}
 
-	maxScroll := len(channels) - channelRows
+	maxScroll := len(visibleChannels) - channelRows
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -671,7 +685,7 @@ func (m Model) viewChannelsTab(stats farmer.Stats) string {
 		scroll = maxScroll
 	}
 
-	sections = append(sections, renderChannelTableScrollable(channels, m.width, channelRows, scroll))
+	sections = append(sections, renderChannelTableScrollable(visibleChannels, m.width, channelRows, scroll))
 	sections = append(sections, "")
 	sections = append(sections, renderStatsBar(stats, m.width))
 	sections = append(sections, "")
