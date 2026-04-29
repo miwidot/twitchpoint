@@ -193,22 +193,35 @@ func (s *DropSelector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 }
 
 // sortPool sorts entries in priority order:
-//   1. Channels serving any pinned campaign first
-//   2. Then by earliest endAt across the channel's campaigns (closest expiry wins)
-//   3. Then by viewer count desc (stability tie-break, mild preference for popular streams)
+//   1. wanted_games rank (lower index = higher priority; channels not in wanted go to end)
+//   2. earliest endAt across the channel's campaigns
+//   3. viewer count desc (tie-break)
+//
+// Empty wanted_games falls back to the v1.7.0 (endAt, viewers) ordering — fully
+// backward compatible. Pin (v1.7.0 PinnedCampaignID) is silently ignored in v1.8.0.
 func (s *DropSelector) sortPool(pool []*PoolEntry) {
-	// Pre-compute earliest end and pin status per entry for stable comparison
+	wanted := s.cfg.GetGamesToWatch()
+	gameRanks := make(map[string]int, len(wanted))
+	for i, g := range wanted {
+		gameRanks[strings.ToLower(strings.TrimSpace(g))] = i
+	}
+	useGameSort := len(wanted) > 0
+	notWantedRank := len(wanted)
+
 	type cached struct {
-		hasPinned bool
-		minEnd    time.Time
+		gameRank int
+		minEnd   time.Time
 	}
 	keys := make(map[*PoolEntry]cached, len(pool))
 	for _, e := range pool {
 		var c cached
+		c.gameRank = notWantedRank
 		first := true
 		for _, ref := range e.Campaigns {
-			if ref.IsPinned {
-				c.hasPinned = true
+			if useGameSort {
+				if r, ok := gameRanks[strings.ToLower(ref.GameName)]; ok && r < c.gameRank {
+					c.gameRank = r
+				}
 			}
 			if first || ref.EndAt.Before(c.minEnd) {
 				c.minEnd = ref.EndAt
@@ -220,27 +233,19 @@ func (s *DropSelector) sortPool(pool []*PoolEntry) {
 
 	sort.SliceStable(pool, func(i, j int) bool {
 		ki, kj := keys[pool[i]], keys[pool[j]]
-		// Pinned first
-		if ki.hasPinned != kj.hasPinned {
-			return ki.hasPinned
+		if useGameSort && ki.gameRank != kj.gameRank {
+			return ki.gameRank < kj.gameRank
 		}
-		// Earlier endAt first
 		if !ki.minEnd.Equal(kj.minEnd) {
 			return ki.minEnd.Before(kj.minEnd)
 		}
-		// Higher viewers first
 		return pool[i].ViewerCount > pool[j].ViewerCount
 	})
 
-	// Also reorder each entry's own Campaigns list by (pinned, endAt) so
-	// callers can index Campaigns[0] for "primary campaign of this channel".
+	// Reorder each entry's Campaigns list by endAt only (pin support removed in v1.8.0).
 	for _, e := range pool {
 		sort.SliceStable(e.Campaigns, func(i, j int) bool {
-			a, b := e.Campaigns[i], e.Campaigns[j]
-			if a.IsPinned != b.IsPinned {
-				return a.IsPinned
-			}
-			return a.EndAt.Before(b.EndAt)
+			return e.Campaigns[i].EndAt.Before(e.Campaigns[j].EndAt)
 		})
 	}
 }

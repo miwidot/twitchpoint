@@ -271,22 +271,67 @@ func TestBuildPool_DirectoryQueriedOncePerGame(t *testing.T) {
 	}
 }
 
-func TestSortPool_PinnedFirst(t *testing.T) {
+func TestSortPool_WantedGamesPriority(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.PinnedCampaignID = "pinned-camp"
+	cfg.GamesToWatch = []string{"Game A", "Game B"} // A=rank 0, B=rank 1
 	sel := newTestSelector(cfg)
 
-	a := &PoolEntry{ChannelLogin: "a", Campaigns: []CampaignRef{
-		{ID: "other", EndAt: testNow.Add(1 * time.Hour), IsPinned: false},
+	a := &PoolEntry{ChannelLogin: "for-a", ViewerCount: 100, Campaigns: []CampaignRef{
+		{GameName: "Game A", EndAt: testNow.Add(20 * time.Hour)},
 	}}
-	b := &PoolEntry{ChannelLogin: "b", Campaigns: []CampaignRef{
-		{ID: "pinned-camp", EndAt: testNow.Add(10 * time.Hour), IsPinned: true},
+	b := &PoolEntry{ChannelLogin: "for-b", ViewerCount: 1000, Campaigns: []CampaignRef{
+		{GameName: "Game B", EndAt: testNow.Add(2 * time.Hour)}, // closer expiry but lower-priority game
 	}}
 
-	pool := []*PoolEntry{a, b}
+	pool := []*PoolEntry{b, a}
 	sel.sortPool(pool)
-	if pool[0].ChannelLogin != "b" {
-		t.Fatalf("pinned channel should sort first, got %s", pool[0].ChannelLogin)
+
+	if pool[0].ChannelLogin != "for-a" {
+		t.Fatalf("Game A channel should win regardless of viewers/expiry, got %s", pool[0].ChannelLogin)
+	}
+}
+
+func TestSortPool_NotInWantedSortsLast(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.GamesToWatch = []string{"Wanted Game"}
+	sel := newTestSelector(cfg)
+
+	wanted := &PoolEntry{ChannelLogin: "wanted", Campaigns: []CampaignRef{
+		{GameName: "Wanted Game", EndAt: testNow.Add(20 * time.Hour)},
+	}}
+	other := &PoolEntry{ChannelLogin: "other", Campaigns: []CampaignRef{
+		{GameName: "Some Other Game", EndAt: testNow.Add(2 * time.Hour)},
+	}}
+
+	pool := []*PoolEntry{other, wanted}
+	sel.sortPool(pool)
+
+	if pool[0].ChannelLogin != "wanted" {
+		t.Fatalf("wanted-game channel should sort first, got %s", pool[0].ChannelLogin)
+	}
+	if pool[1].ChannelLogin != "other" {
+		t.Fatalf("non-wanted should sort after wanted, got %s", pool[1].ChannelLogin)
+	}
+}
+
+func TestSortPool_MultiCampaignChannelUsesBestGameRank(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.GamesToWatch = []string{"High", "Low"}
+	sel := newTestSelector(cfg)
+
+	multi := &PoolEntry{ChannelLogin: "multi", Campaigns: []CampaignRef{
+		{GameName: "Low", EndAt: testNow.Add(5 * time.Hour)},
+		{GameName: "High", EndAt: testNow.Add(20 * time.Hour)}, // best game-rank for this channel
+	}}
+	lowOnly := &PoolEntry{ChannelLogin: "lowOnly", Campaigns: []CampaignRef{
+		{GameName: "Low", EndAt: testNow.Add(2 * time.Hour)},
+	}}
+
+	pool := []*PoolEntry{lowOnly, multi}
+	sel.sortPool(pool)
+
+	if pool[0].ChannelLogin != "multi" {
+		t.Fatalf("multi-campaign channel should win because it covers High game, got %s", pool[0].ChannelLogin)
 	}
 }
 
@@ -342,9 +387,10 @@ func TestSelect_EmptyPoolReturnsNil(t *testing.T) {
 	}
 }
 
-func TestSelect_PinForcesNonClosestExpiry(t *testing.T) {
+func TestSelect_WantedGamesForcesNonClosestExpiry(t *testing.T) {
+	// v1.8.0 equivalent of the old pin test: wanted_games priority overrides remaining_time.
 	cfg := &config.Config{}
-	cfg.PinnedCampaignID = "pinned-far"
+	cfg.GamesToWatch = []string{"GameB"} // only GameB is wanted
 	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
 		"GameA": {{BroadcasterID: "1", BroadcasterLogin: "near_streamer"}},
 		"GameB": {{BroadcasterID: "2", BroadcasterLogin: "far_streamer"}},
@@ -356,15 +402,15 @@ func TestSelect_PinForcesNonClosestExpiry(t *testing.T) {
 		EndAt: testNow.Add(2 * time.Hour),
 		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
 	}
-	pinnedFar := twitch.DropCampaign{
-		ID: "pinned-far", Status: "ACTIVE", IsAccountConnected: true, GameName: "GameB",
+	wantedFar := twitch.DropCampaign{
+		ID: "wanted-far", Status: "ACTIVE", IsAccountConnected: true, GameName: "GameB",
 		EndAt: testNow.Add(20 * time.Hour),
 		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
 	}
 
-	pick, _ := sel.Select([]twitch.DropCampaign{near, pinnedFar}, nil)
+	pick, _ := sel.Select([]twitch.DropCampaign{near, wantedFar}, nil)
 	if pick == nil || pick.ChannelLogin != "far_streamer" {
-		t.Fatalf("pin should override closest-expiry sort, picked %v", pick)
+		t.Fatalf("wanted_games should override closest-expiry sort, picked %v", pick)
 	}
 }
 
