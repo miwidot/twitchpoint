@@ -119,9 +119,10 @@ func (f *Farmer) Start() error {
 	// Initialize PubSub
 	f.pubsub = twitch.NewPubSubClient(f.cfg.AuthToken, f.events)
 
-	// Subscribe to user-level community points topic
+	// Subscribe to user-level PubSub topics: community points + v1.8.0 drop events
 	if err := f.pubsub.Listen([]string{
 		fmt.Sprintf("community-points-user-v1.%s", user.ID),
+		fmt.Sprintf("user-drop-events.%s", user.ID),
 	}); err != nil {
 		f.addLog("PubSub user topic error: %v", err)
 	}

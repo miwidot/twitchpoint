@@ -58,7 +58,9 @@ type dropState struct {
 	selector *DropSelector
 }
 
-// dropCheckLoop polls the drops inventory every 10 minutes.
+// dropCheckLoop polls the drops inventory periodically as a safety net for
+// missed WebSocket events. v1.8.0 reduced the cadence from 5 to 15 min because
+// user-drop-events PubSub now delivers progress in real-time.
 func (f *Farmer) dropCheckLoop() {
 	// Initial check shortly after startup (give channels time to initialize)
 	timer := time.NewTimer(30 * time.Second)
@@ -70,7 +72,7 @@ func (f *Farmer) dropCheckLoop() {
 		return
 	}
 
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(15 * time.Minute) // v1.8.0: WebSocket carries the real-time load
 	defer ticker.Stop()
 
 	for {
