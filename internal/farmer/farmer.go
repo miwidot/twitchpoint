@@ -131,16 +131,20 @@ func (f *Farmer) Start() error {
 	f.pubsub = twitch.NewPubSubClient(f.cfg.AuthToken, f.events)
 
 	// Initialize drops Service now that all of its deps exist (gql, spade,
-	// pubsub, watcher, channels registry already populated, log).
+	// prober, pubsub, watcher, channels registry already populated, log).
 	f.drops = drops.NewService(drops.ServiceDeps{
-		Cfg:               f.cfg,
-		GQL:               f.gql,
-		PubSub:            f.pubsub,
-		Spade:             f.spade,
-		Channels:          f.channels,
-		Watcher:           f.dropWatch,
-		Log:               f.addLog,
-		RemoveTempChannel: f.removeTemporaryChannel,
+		Cfg:                    f.cfg,
+		GQL:                    f.gql,
+		PubSub:                 f.pubsub,
+		Spade:                  f.spade,
+		Prober:                 f.prober,
+		Channels:               f.channels,
+		Watcher:                f.dropWatch,
+		Log:                    f.addLog,
+		WriteLogFile:           f.writeLogFile,
+		RemoveTempChannel:      f.removeTemporaryChannel,
+		AddTempChannelFromInfo: f.addTemporaryChannelFromInfo,
+		TriggerProcessDrops:    f.processDrops,
 	})
 
 	// Subscribe to user-level PubSub topics: community points + v1.8.0 drop events
@@ -782,7 +786,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 
 	case twitch.EventGameChange:
 		data := evt.Data.(twitch.GameChangeData)
-		f.handleChannelGameChange(evt.ChannelID, data)
+		f.drops.HandleGameChange(evt.ChannelID, data)
 	}
 }
 

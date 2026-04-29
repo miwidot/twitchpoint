@@ -1,3 +1,85 @@
+== 2026-04-29 22:59 == Refactor: Phase 2f — applySelectorPick + game-change handlers to Service ==
+
+The ABI-credit-critical pick path moves from farmer to drops.Service.
+This is the biggest single move of the v2.0 refactor — the function
+where 6 hours of last session's debugging ended up (user_id-as-int
++ game_id required for sendSpadeEvents). Live smoketest before this
+commit confirmed 24 minutes of uninterrupted 1 min/min credit on
+QuattroAce/ABI Partner-Only Drops with the new Service plumbing.
+
+What changed:
+- New internal/drops/apply.go (~278 lines):
+  - Service.ApplyPick(pick, campaigns) — was farmer.applySelectorPick.
+    All 8 numbered guard steps preserved verbatim:
+      (1) upfront GetChannelInfo (refresh-fail = no state mutation)
+      (2) PickGameMatches guard (game switch → 15min manual cooldown)
+      (3) ChannelID consistency (id mismatch → 30min manual cooldown)
+      (4) channels.Get-or-AddTempChannelFromInfo
+      (5) SetDropInfo + SetCampaignID for primary campaign
+      (6) Release previous pick (clear drop info, unsubscribe topic)
+      (7) Subscribe broadcast-settings-update for new pick
+      (8) Hand to Watcher (Spade.Stop + prober.Stop + watcher.Start)
+  - Service.RefreshWatcherBroadcast(channelID, login) — was
+    farmer.refreshWatcherBroadcast. Pushes fresh broadcast/game IDs
+    into the running Watcher when the streamer restarts mid-session.
+  - Service.HandleGameChange(channelID, data) — was
+    farmer.handleChannelGameChange. 30s debounce, optimistic flap
+    detection, 15min cooldown + processDrops trigger if the streamer
+    settled on a wrong game.
+- drops/service.go gains 4 new dependencies:
+  - Prober *twitch.StreamProber — needed by ApplyPick step 8 to stop
+    probing the channel before the Watcher takes over.
+  - WriteLogFile func(string) — file-only noise log used by
+    HandleGameChange for the per-event "non-pick channel %s game
+    changed" line. Bypasses the visible UI feed.
+  - AddTempChannelFromInfo func(*twitch.ChannelInfo, string) error —
+    farmer-side temp-channel registration (channels.Add + PubSub
+    Listen + IRC Join). ApplyPick uses it when the picked channel
+    isn't tracked yet.
+  - TriggerProcessDrops func() — out-of-band processDrops re-run
+    after HandleGameChange's 30s debounce settles on a wrong game.
+    processDrops still lives in farmer until Phase 2g.
+- farmer.Start: NewService call wires the four new deps via
+  f.prober / f.writeLogFile / f.addTemporaryChannelFromInfo /
+  f.processDrops.
+- farmer/drops.go shrinks ~262 lines (the three function bodies +
+  their doc comments), down to 433 — a 65% reduction from the
+  post-Phase-1 baseline of 1221.
+- Two call sites migrated:
+    farmer.processDrops:    f.applySelectorPick(...) → f.drops.ApplyPick(...)
+    farmer.handleEvent:     f.handleChannelGameChange(...) → f.drops.HandleGameChange(...)
+  RefreshWatcherBroadcast was only called from inside HandleGameChange,
+  so its call sites moved with it.
+
+Why this together: HandleGameChange invokes RefreshWatcherBroadcast
+directly, and ApplyPick is HandleGameChange's natural follow-up
+trigger (post-debounce → cooldown → processDrops → ApplyPick). They
+form one cohesive sub-system; splitting the move would leave a
+half-migrated state where two of the three functions point to the
+old farmer methods. Keeping them together preserves the call graph.
+
+drops.go shrinkage tracker (post-Phase-1 baseline 1221 lines):
+  Phase 2a:        1199
+  Phase 2b:        1153
+  Phase 2c:        1007
+  Phase 2d:         849
+  Phase 2e-prep:    825
+  Phase 2e (1/2):   738
+  Phase 2e (2/2):   695
+  Phase 2f:         433
+  Total:          −788 / −65%
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — all packages pass.
+- Pre-Phase-2f live smoketest (logs/debug-2026-04-29.log lines
+  9116-9466): 24 min of 1 min/min credit on QuattroAce, two pick
+  cycles via the new Service plumbing, no panics, no claim failures.
+  Phase 2f preserves the same call paths so the smoketest result
+  carries forward; a fresh ./bin/twitchpoint-macos run is the
+  authoritative confirmation.
+
 == 2026-04-29 22:19 == Refactor: Phase 2e (2/2) — broadcast helpers + cleanup to Service ==
 
 Three more drops helpers move into drops.Service. The broadcast-

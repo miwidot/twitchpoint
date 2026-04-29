@@ -22,14 +22,18 @@ import (
 // unexported.
 type Service struct {
 	// Dependencies (set at construction).
-	cfg               *config.Config
-	gql               *twitch.GQLClient
-	pubsub            *twitch.PubSubClient
-	spade             *twitch.SpadeTracker
-	channels          *channels.Registry
-	watcher           *Watcher
-	log               func(string, ...interface{})
-	removeTempChannel func(channelID string) // farmer callback: full temp-channel teardown (channels + spade + prober + pubsub + irc)
+	cfg                     *config.Config
+	gql                     *twitch.GQLClient
+	pubsub                  *twitch.PubSubClient
+	spade                   *twitch.SpadeTracker
+	prober                  *twitch.StreamProber
+	channels                *channels.Registry
+	watcher                 *Watcher
+	log                     func(string, ...interface{}) // visible UI + file
+	writeLogFile            func(string)                 // file-only noise log
+	removeTempChannel       func(channelID string)
+	addTempChannelFromInfo  func(info *twitch.ChannelInfo, campaignID string) error
+	triggerProcessDrops     func()
 
 	// Subordinate services (built by NewService).
 	Selector *Selector
@@ -53,31 +57,49 @@ type ServiceDeps struct {
 	GQL      *twitch.GQLClient
 	PubSub   *twitch.PubSubClient
 	Spade    *twitch.SpadeTracker
+	Prober   *twitch.StreamProber
 	Channels *channels.Registry
 	Watcher  *Watcher
-	Log      func(string, ...interface{})
+	Log      func(string, ...interface{}) // visible UI + file
+	// WriteLogFile writes file-only debug entries (used for noisy events
+	// that shouldn't flood the UI feed — non-pick game-change PubSub
+	// notifications, every WS drop-progress event, etc.).
+	WriteLogFile func(string)
 	// RemoveTempChannel is the farmer's full temp-channel teardown
 	// (channels.Remove + Spade.StopWatching + prober.Stop + PubSub
 	// Unlisten + IRC Part). Service calls it from CleanupNonPickedTemps;
 	// owning prober/irc inside Service just for this one path would
 	// expand its dep surface for no benefit.
 	RemoveTempChannel func(channelID string)
+	// AddTempChannelFromInfo is the farmer's temp-channel registration
+	// (channels.Add + PubSub Listen + IRC Join). ApplyPick calls it
+	// when the picked channel isn't tracked yet.
+	AddTempChannelFromInfo func(info *twitch.ChannelInfo, campaignID string) error
+	// TriggerProcessDrops re-runs the inventory cycle out-of-band. Used
+	// by HandleGameChange after the 30s debounce when the picked
+	// streamer settled on a wrong game and we need a fresh selector
+	// pass. processDrops still lives in farmer until Phase 2g.
+	TriggerProcessDrops func()
 }
 
 // NewService constructs a Service with its subordinate Selector and
 // StallTracker pre-built.
 func NewService(deps ServiceDeps) *Service {
 	return &Service{
-		cfg:               deps.Cfg,
-		gql:               deps.GQL,
-		pubsub:            deps.PubSub,
-		spade:             deps.Spade,
-		channels:          deps.Channels,
-		watcher:           deps.Watcher,
-		log:               deps.Log,
-		removeTempChannel: deps.RemoveTempChannel,
-		Selector:          NewSelector(deps.Cfg, deps.GQL),
-		Stall:             NewStallTracker(deps.Log),
+		cfg:                    deps.Cfg,
+		gql:                    deps.GQL,
+		pubsub:                 deps.PubSub,
+		spade:                  deps.Spade,
+		prober:                 deps.Prober,
+		channels:               deps.Channels,
+		watcher:                deps.Watcher,
+		log:                    deps.Log,
+		writeLogFile:           deps.WriteLogFile,
+		removeTempChannel:      deps.RemoveTempChannel,
+		addTempChannelFromInfo: deps.AddTempChannelFromInfo,
+		triggerProcessDrops:    deps.TriggerProcessDrops,
+		Selector:               NewSelector(deps.Cfg, deps.GQL),
+		Stall:                  NewStallTracker(deps.Log),
 	}
 }
 
