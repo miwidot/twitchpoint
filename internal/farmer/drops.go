@@ -161,8 +161,11 @@ func (f *Farmer) processDrops() {
 
 	f.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
 
-	// 0. v1.8.0: scrub stale CompletedCampaigns entries (daily-rolling reset detection).
-	f.scrubStaleCompleted(campaigns)
+	// v1.8.0 had a scrubStaleCompleted call here that read dashboard's
+	// claimed=false to un-mark completed campaigns. It fought our poll-based
+	// completion (DropCurrentSessionContext: 744/720 = done) because Twitch's
+	// dashboard often lies (claimed:false even after user claimed via web).
+	// Removed: poll is the authoritative completion source now.
 
 	// 1. Auto-claim any drops that are complete and have an instance ID.
 	f.autoClaimAndMarkCompleted(campaigns)
