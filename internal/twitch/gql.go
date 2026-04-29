@@ -41,6 +41,23 @@ const (
 		}
 	}`
 
+	// Same as queryGetGameStreams but filters for streams with the Drops Enabled
+	// system filter — used when auto-selecting a channel for an unrestricted drop
+	// campaign so we don't pick a streamer who isn't running drops.
+	queryGetGameStreamsDropsEnabled = `query DirectoryPage_Game($name: String!, $first: Int!) {
+		game(name: $name) {
+			streams(first: $first, options: { sort: VIEWER_COUNT, systemFilters: [DROPS_ENABLED] }) {
+				edges {
+					node {
+						id
+						broadcaster { id login displayName }
+						viewersCount
+					}
+				}
+			}
+		}
+	}`
+
 	queryGetChannelNameByID = `query GetChannelNameByID($id: ID!) {
 		user(id: $id) { displayName }
 	}`
@@ -450,9 +467,80 @@ func (g *GQLClient) GetChannelPointsBalance(channelLogin string) (int, error) {
 
 // GetGameStreams queries the game directory for live streams.
 func (g *GQLClient) GetGameStreams(gameName string, limit int) ([]GameStream, error) {
+	return g.fetchGameStreams(gameName, limit, queryGetGameStreams)
+}
+
+// GetGameStreamsDropsEnabled is like GetGameStreams but filters for streams
+// that have the Drops Enabled system filter set — i.e. streamers actually
+// running the drop campaign. Use this when auto-selecting a temp channel for
+// an unrestricted drop campaign so we don't pick a streamer who is in the
+// game category but not participating in drops.
+func (g *GQLClient) GetGameStreamsDropsEnabled(gameName string, limit int) ([]GameStream, error) {
+	return g.fetchGameStreams(gameName, limit, queryGetGameStreamsDropsEnabled)
+}
+
+// SearchGameCategories proxies Twitch's searchCategories GQL — used for
+// wanted-games autocomplete. Returns up to `limit` matching game category
+// names (e.g. query="tarkov" -> ["Escape from Tarkov", "Escape from Tarkov: Arena", ...]).
+func (g *GQLClient) SearchGameCategories(query string, limit int) ([]string, error) {
+	if limit <= 0 || limit > 25 {
+		limit = 10
+	}
+	req := &GQLRequest{
+		Query: `query SearchCategories($query: String!, $first: Int!) {
+			searchCategories(query: $query, first: $first) {
+				edges { node { id name } }
+			}
+		}`,
+		Variables: map[string]interface{}{
+			"query": query,
+			"first": limit,
+		},
+	}
+
+	resp, err := g.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("search categories: %w", err)
+	}
+
+	sc, ok := resp.Data["searchCategories"]
+	if !ok || sc == nil {
+		return nil, nil
+	}
+	scMap, ok := sc.(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+	edgesRaw, ok := scMap["edges"]
+	if !ok || edgesRaw == nil {
+		return nil, nil
+	}
+	edges, ok := edgesRaw.([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	var out []string
+	for _, e := range edges {
+		em, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		node, ok := em["node"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, ok := node["name"].(string); ok && name != "" {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+func (g *GQLClient) fetchGameStreams(gameName string, limit int, query string) ([]GameStream, error) {
 	req := &GQLRequest{
 		OperationName: "DirectoryPage_Game",
-		Query:         queryGetGameStreams,
+		Query:         query,
 		Variables: map[string]interface{}{
 			"name":  gameName,
 			"first": limit,

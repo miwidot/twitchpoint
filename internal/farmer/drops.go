@@ -615,71 +615,15 @@ func (f *Farmer) GetActiveDrops() []ActiveDrop {
 	return out
 }
 
-// knownPopularDropsGames is a hardcoded list of game names that frequently run
-// Twitch Drops campaigns, included in autocomplete even when the user has no
-// current campaign for them. Lets users forward-queue games like "Escape from
-// Tarkov" before a fresh campaign goes live. Order doesn't matter — final list
-// is sorted before return.
-var knownPopularDropsGames = []string{
-	"Arena Breakout: Infinite",
-	"Escape from Tarkov",
-	"Escape from Tarkov: Arena",
-	"Marvel Rivals",
-	"Honkai: Star Rail",
-	"Genshin Impact",
-	"Tom Clancy's Rainbow Six Siege",
-	"Tom Clancy's The Division 2",
-	"Tom Clancy's The Division: Resurgence",
-	"Rocket League",
-	"Apex Legends",
-	"VALORANT",
-	"Counter-Strike",
-	"Dota 2",
-	"League of Legends",
-	"Fortnite",
-	"PUBG: BATTLEGROUNDS",
-	"NARAKA: BLADEPOINT",
-	"Black Desert",
-	"World of Warships",
-	"World of Tanks",
-	"World of Warcraft",
-	"Final Fantasy XIV Online",
-	"Lost Ark",
-	"Path of Exile",
-	"Path of Exile 2",
-	"Diablo IV",
-	"Once Human",
-	"Throne and Liberty",
-	"ARC Raiders",
-	"Marbles on Stream",
-	"For Honor",
-	"Brawlhalla",
-	"Dead by Daylight",
-	"Hunt: Showdown 1896",
-	"Battlefield 2042",
-	"Helldivers 2",
-	"Naraka: Bladepoint",
-	"V Rising",
-	"Albion Online",
-	"New World: Aeternum",
-	"DayZ",
-	"Star Citizen",
-	"EVE Online",
-	"WUTHERING WAVES",
-	"Infinity Nikki",
-	"Zenless Zone Zero",
-	"Wuthering Waves",
-}
-
-// GetEligibleGames returns the unique sorted list of game names usable for
-// wanted_games autocomplete. Combines:
-//   - current cycle's inventory games (live data, includes whatever Twitch
-//     currently shows for this account)
-//   - knownPopularDropsGames (hardcoded fallback so users can forward-queue
-//     games whose campaigns aren't in the inventory right now — e.g. EFT
-//     between drop seasons)
+// GetEligibleGames returns the unique sorted list of game names from the
+// current cycle's inventory (account's currently-known campaigns). Used as
+// the default autocomplete pool. For free-text search across ALL Twitch
+// categories (e.g. "tarkov" before any EFT campaign appears in inventory),
+// callers should additionally hit /api/games/search backed by SearchGameCategories.
 func (f *Farmer) GetEligibleGames() []string {
 	f.drops.mu.RLock()
+	defer f.drops.mu.RUnlock()
+
 	seen := make(map[string]bool)
 	var out []string
 	for _, c := range f.drops.campaignCache {
@@ -693,19 +637,18 @@ func (f *Farmer) GetEligibleGames() []string {
 		seen[key] = true
 		out = append(out, c.GameName)
 	}
-	f.drops.mu.RUnlock()
-
-	for _, g := range knownPopularDropsGames {
-		key := strings.ToLower(g)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, g)
-	}
-
 	sort.Strings(out)
 	return out
+}
+
+// SearchGameCategories proxies to Twitch's searchCategories GQL — used by the
+// web/TUI autocomplete to resolve game names that aren't in the user's current
+// inventory. Returns up to `limit` matching game name strings.
+func (f *Farmer) SearchGameCategories(query string, limit int) ([]string, error) {
+	if limit <= 0 || limit > 25 {
+		limit = 10
+	}
+	return f.gql.SearchGameCategories(query, limit)
 }
 
 // applyDropProgressUpdate handles a WebSocket drop-progress event by updating

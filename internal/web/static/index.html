@@ -1053,25 +1053,49 @@
                 const res = await fetch(API + '/api/wanted_games');
                 const data = await res.json();
                 renderWantedGames(data.games || []);
-                renderWantedGameSuggestions(data.suggestions || []);
             } catch (e) {
                 console.error('Failed to fetch wanted games:', e);
             }
         }
 
-        // Populate the <datalist> backing the input autocomplete with the
-        // current cycle's eligible games (built via createElement so any
-        // future Twitch-supplied weirdness is escaped automatically).
-        function renderWantedGameSuggestions(games) {
+        // Live-search Twitch's full game directory via /api/games/search and
+        // populate the <datalist>. Debounced 250ms to avoid hammering the API
+        // on every keystroke. Falls back to current-inventory games if the
+        // search query is empty.
+        let _wantedGamesSearchTimer = null;
+        async function searchWantedGameSuggestions(query) {
             const dl = document.getElementById('wanted-games-suggestions');
             if (!dl) return;
-            while (dl.firstChild) dl.removeChild(dl.firstChild);
-            for (const g of games) {
-                const opt = document.createElement('option');
-                opt.value = g;
-                dl.appendChild(opt);
+            if (!query || query.trim().length < 2) {
+                while (dl.firstChild) dl.removeChild(dl.firstChild);
+                return;
+            }
+            try {
+                const res = await fetch(API + '/api/games/search?q=' + encodeURIComponent(query));
+                const data = await res.json();
+                while (dl.firstChild) dl.removeChild(dl.firstChild);
+                for (const g of (data.games || [])) {
+                    const opt = document.createElement('option');
+                    opt.value = g;
+                    dl.appendChild(opt);
+                }
+            } catch (e) {
+                console.error('Game search failed:', e);
             }
         }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const inp = document.getElementById('wanted-games-input');
+            if (inp) {
+                inp.addEventListener('input', (e) => {
+                    clearTimeout(_wantedGamesSearchTimer);
+                    _wantedGamesSearchTimer = setTimeout(
+                        () => searchWantedGameSuggestions(e.target.value),
+                        250
+                    );
+                });
+            }
+        });
 
         // Build the wanted-games list with createElement + textContent so user-supplied
         // game names can never inject markup. No template-string assignment to .innerHTML.

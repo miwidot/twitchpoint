@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/drops", s.handleDrops)
 	s.mux.HandleFunc("/api/drops/", s.handleDropAction)
 	s.mux.HandleFunc("/api/wanted_games", s.handleWantedGames)
+	s.mux.HandleFunc("/api/games/search", s.handleGamesSearch)
 
 	// Static files (embedded)
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -374,6 +376,32 @@ func formatDuration(d time.Duration) string {
 	m := int(d.Minutes()) % 60
 	s := int(d.Seconds()) % 60
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+}
+
+// handleGamesSearch proxies Twitch's searchCategories for autocomplete.
+// GET /api/games/search?q=tarkov[&limit=10] -> {"games": ["Escape from Tarkov", ...]}
+func (s *Server) handleGamesSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		jsonResponse(w, map[string]interface{}{"games": []string{}})
+		return
+	}
+	limit := 10
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil {
+			limit = n
+		}
+	}
+	games, err := s.farmer.SearchGameCategories(q, limit)
+	if err != nil {
+		jsonError(w, "search failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	jsonResponse(w, map[string]interface{}{"games": games})
 }
 
 // handleWantedGames serves GET (list) and PUT (atomic replace) for the
