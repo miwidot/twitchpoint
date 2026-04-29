@@ -36,7 +36,7 @@ type Farmer struct {
 
 	user *twitch.UserInfo
 
-	mu       sync.RWMutex // protects: stopped, rotationIndex (rotationIndex moves with Phase 4 batch 3)
+	mu       sync.RWMutex // protects: stopped (last remaining field — Phase 4 batch 6 will swap to atomic.Bool)
 	channels *channels.Registry
 
 	logMu      sync.RWMutex
@@ -47,11 +47,6 @@ type Farmer struct {
 	startTime time.Time
 	stopCh    chan struct{}
 	stopped   bool
-
-	// Rotation cursor — moves to points.Service when rotateChannels is moved
-	// across in Phase 4 batch 3. For now still here because farmer.rotateChannels
-	// reads/writes it under f.mu.
-	rotationIndex int
 
 	// Drops
 	drops *drops.Service
@@ -139,7 +134,9 @@ func (f *Farmer) Start() error {
 		WriteLogFile:           f.writeLogFile,
 		RemoveTempChannel:      f.removeTemporaryChannel,
 		AddTempChannelFromInfo: f.addTemporaryChannelFromInfo,
-		TriggerRotation:        f.rotateChannels,
+		// Closure binds late — f.points is constructed AFTER drops, so we
+		// can't pass f.points.Rotate directly here (it would capture nil).
+		TriggerRotation: func() { f.points.Rotate() },
 	})
 
 	// Subscribe to user-level PubSub topics: community points + v1.8.0 drop events
@@ -196,7 +193,7 @@ func (f *Farmer) Start() error {
 	go f.balanceRefreshLoop()
 
 	// Start channel rotation (Twitch only credits points for 2 channels at a time)
-	go f.rotationLoop()
+	go f.points.RotationLoop(f.stopCh)
 
 	// Start drop mining if enabled
 	if f.cfg.DropsEnabled {
@@ -312,7 +309,7 @@ func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
 	if info.IsLive {
 		state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
 		f.addLog("%s is LIVE - %s (%d viewers)", info.DisplayName, info.GameName, info.ViewerCount)
-		f.tryStartWatching(state)
+		f.points.TryStartWatching(state)
 	} else {
 		f.addLog("%s is offline", info.DisplayName)
 	}
@@ -520,7 +517,7 @@ func (f *Farmer) SetPriorityLive(login string, priority int) error {
 	}
 
 	// Trigger immediate rotation to apply new priority
-	go f.rotateChannels()
+	go f.points.Rotate()
 
 	return nil
 }
@@ -549,29 +546,6 @@ func (f *Farmer) dropProgressLoop() {
 		case <-f.stopCh:
 			return
 		}
-	}
-}
-
-func (f *Farmer) tryStartWatching(state *channels.State) {
-	snap := state.Snapshot()
-	if !snap.IsOnline || snap.IsWatching {
-		return
-	}
-
-	// v2.0: drops Watcher owns its channel — Spade must not double-track it.
-	if f.dropWatch != nil && f.dropWatch.CurrentChannelID() == snap.ChannelID {
-		return
-	}
-
-	if snap.BroadcastID == "" {
-		f.addLog("[Spade] skipping %s — no broadcast ID", snap.DisplayName)
-		return
-	}
-
-	if f.spade.StartWatching(snap.ChannelID, snap.Login, snap.BroadcastID, snap.GameName, snap.GameID) {
-		state.SetWatching(true)
-		f.prober.Start(snap.Login)
-		f.addLog("Started watching %s (Spade active, broadcast=%s)", snap.DisplayName, snap.BroadcastID)
 	}
 }
 
@@ -646,7 +620,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 				} else {
 					f.addLog("%s went LIVE! %s (broadcast=%s)", ch.DisplayName, gameName, broadcastID)
 				}
-				f.tryStartWatching(ch)
+				f.points.TryStartWatching(ch)
 			}()
 		}
 
@@ -681,7 +655,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 			}
 
 			// Try to fill freed Spade slot
-			f.fillSpadeSlots()
+			f.points.FillSpadeSlots()
 		}
 
 	case twitch.EventRaid:
@@ -744,29 +718,6 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 	}
 }
 
-// fillSpadeSlots tries to fill open Spade slots with online channels.
-func (f *Farmer) fillSpadeSlots() {
-	var candidates []*channels.State
-	for _, ch := range f.channels.States() {
-		snap := ch.Snapshot()
-		if snap.IsOnline && !snap.IsWatching {
-			candidates = append(candidates, ch)
-		}
-	}
-
-	// Sort by viewer count descending (prioritize popular channels)
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Snapshot().ViewerCount > candidates[j].Snapshot().ViewerCount
-	})
-
-	for _, ch := range candidates {
-		if f.spade.ActiveSlots() <= 0 {
-			break
-		}
-		f.tryStartWatching(ch)
-	}
-}
-
 func (f *Farmer) balanceRefreshLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -799,170 +750,6 @@ func (f *Farmer) refreshBalances() {
 
 		// Small delay between API calls
 		time.Sleep(500 * time.Millisecond)
-	}
-}
-
-// rotationLoop rotates which 2 channels are actively watched every 5 minutes.
-// Twitch only credits watch points for 2 channels at a time, so we cycle through
-// all online channels to give each one watch time.
-func (f *Farmer) rotationLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			f.rotateChannels()
-		case <-f.stopCh:
-			return
-		}
-	}
-}
-
-func (f *Farmer) rotateChannels() {
-	// v2.0: drops Watcher owns the picked drop channel exclusively. Rotation
-	// must skip it so we don't double-up Spade heartbeats on the same channel
-	// (Twitch dedups but it muddies signal + may flag the user as suspicious).
-	dropChanID := ""
-	if f.dropWatch != nil {
-		dropChanID = f.dropWatch.CurrentChannelID()
-	}
-
-	var priority0 []*channels.State // P0: active drop (auto-promoted)
-	var priority1 []*channels.State
-	var priority2 []*channels.State
-	for _, ch := range f.channels.States() {
-		snap := ch.Snapshot()
-		if !snap.IsOnline {
-			continue
-		}
-		if snap.ChannelID == dropChanID {
-			continue // drops Watcher owns this — don't add to Spade rotation
-		}
-		if snap.HasActiveDrop {
-			priority0 = append(priority0, ch)
-		} else if snap.Priority == 1 {
-			priority1 = append(priority1, ch)
-		} else {
-			priority2 = append(priority2, ch)
-		}
-	}
-
-	// Sort P0 by campaign end time (soonest expiring first gets the Spade slot)
-	sort.Slice(priority0, func(i, j int) bool {
-		ei := f.drops.CampaignEndAt(priority0[i].Snapshot().CampaignID)
-		ej := f.drops.CampaignEndAt(priority0[j].Snapshot().CampaignID)
-		if ei.IsZero() {
-			return false
-		}
-		if ej.IsZero() {
-			return true
-		}
-		if ei.Equal(ej) {
-			return priority0[i].ChannelID < priority0[j].ChannelID
-		}
-		return ei.Before(ej)
-	})
-	sort.Slice(priority1, func(i, j int) bool {
-		return priority1[i].ChannelID < priority1[j].ChannelID
-	})
-	sort.Slice(priority2, func(i, j int) bool {
-		return priority2[i].ChannelID < priority2[j].ChannelID
-	})
-
-	// Build the desired set of channels to watch
-	// P0 (drop active) → P1 (always watch) → P2 (rotate)
-	const maxSlots = 2
-	desired := make(map[string]*channels.State) // channelID -> state
-
-	slotsUsed := 0
-	for _, ch := range priority0 {
-		if slotsUsed >= maxSlots {
-			break
-		}
-		desired[ch.ChannelID] = ch
-		slotsUsed++
-	}
-
-	for _, ch := range priority1 {
-		if slotsUsed >= maxSlots {
-			break
-		}
-		desired[ch.ChannelID] = ch
-		slotsUsed++
-	}
-
-	remainingSlots := maxSlots - slotsUsed
-	if remainingSlots > 0 && len(priority2) > 0 {
-		f.mu.Lock()
-		idx := f.rotationIndex % len(priority2)
-		f.rotationIndex = (f.rotationIndex + remainingSlots) % len(priority2)
-		f.mu.Unlock()
-
-		for i := 0; i < remainingSlots && i < len(priority2); i++ {
-			ch := priority2[(idx+i)%len(priority2)]
-			desired[ch.ChannelID] = ch
-		}
-	}
-
-	// Compute diff: stop channels no longer desired, keep channels that stay
-	currentlyWatching := make(map[string]bool)
-	for _, list := range [][]*channels.State{priority0, priority1, priority2} {
-		for _, ch := range list {
-			if ch.Snapshot().IsWatching {
-				currentlyWatching[ch.ChannelID] = true
-				if _, keep := desired[ch.ChannelID]; !keep {
-					// Channel should stop watching
-					f.spade.StopWatching(ch.ChannelID)
-					f.prober.Stop(ch.Login)
-					ch.SetWatching(false)
-				} else {
-					// Channel stays — update broadcast ID in case it changed
-					snap := ch.Snapshot()
-					f.spade.UpdateBroadcastID(snap.ChannelID, snap.BroadcastID)
-				}
-			}
-		}
-	}
-
-	// Start channels that are newly desired (not currently watching)
-	for chID, ch := range desired {
-		if currentlyWatching[chID] {
-			continue // Already watching, kept running
-		}
-		snap := ch.Snapshot()
-		// Ensure broadcast ID is set — fetch from GQL if empty
-		broadcastID := snap.BroadcastID
-		if broadcastID == "" {
-			go f.fetchAndStartWatching(ch)
-			continue
-		}
-		if f.spade.StartWatching(snap.ChannelID, snap.Login, broadcastID, snap.GameName, snap.GameID) {
-			ch.SetWatching(true)
-			f.prober.Start(snap.Login)
-			f.addLog("Started watching %s (broadcast=%s, via rotation)", snap.DisplayName, broadcastID)
-		} else {
-			f.addLog("[Spade] StartWatching for %s returned false (capacity full)", snap.DisplayName)
-		}
-	}
-}
-
-// fetchAndStartWatching fetches broadcast ID via GQL and starts Spade for a channel.
-func (f *Farmer) fetchAndStartWatching(ch *channels.State) {
-	info, err := f.gql.GetChannelInfo(ch.Login)
-	if err != nil {
-		f.addLog("[Spade] failed to fetch broadcast ID for %s: %v", ch.DisplayName, err)
-		return
-	}
-	if info.BroadcastID == "" {
-		f.addLog("[Spade] %s has empty broadcast ID, skipping", ch.DisplayName)
-		return
-	}
-	ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
-	if f.spade.StartWatching(ch.ChannelID, ch.Login, info.BroadcastID, info.GameName, info.GameID) {
-		ch.SetWatching(true)
-		f.prober.Start(ch.Login)
-		f.addLog("Started watching %s (broadcast=%s)", ch.DisplayName, info.BroadcastID)
 	}
 }
 

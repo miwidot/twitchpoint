@@ -1,3 +1,27 @@
+== 2026-04-30 01:42 == Refactor: Phase 4c — rotation moves to points.Service ==
+
+5-min Spade rotation extracted from Farmer into internal/points/rotation.go:
+- RotationLoop (5-min ticker, started by Farmer.Start as a goroutine)
+- Rotate (the P0/P1/P2 priority allocation, drop-pick skip, diff vs
+  currently-watching, fetch-or-start cycle)
+- TryStartWatching (single-channel start used by addChannelWithInfo
+  and EventStreamUp)
+- FillSpadeSlots (post-EventStreamDown top-up with viewer-count sort)
+- fetchAndStartWatching (broadcast-id fallback, package-private)
+
+drops.ServiceDeps.TriggerRotation now wraps f.points.Rotate via a
+late-binding closure (drops is constructed before points so we can't
+pass the method value directly). SetPriorityLive's "go f.rotateChannels"
+becomes "go f.points.Rotate". EventStreamUp/Down delegates to
+TryStartWatching / FillSpadeSlots.
+
+farmer.go is down from 1145 to 876 lines. Farmer.mu now only protects
+`stopped` — Phase 4 batch 6 will swap it for atomic.Bool.
+
+Files: internal/points/rotation.go (new), internal/farmer/farmer.go
+(deletes rotationLoop / rotateChannels / fillSpadeSlots /
+tryStartWatching / fetchAndStartWatching + rotationIndex field).
+
 == 2026-04-30 01:30 == Refactor: Phase 4b — dedup/stats/naming move to points.Service ==
 
 PubSub-event helpers extracted from farmer.handleEvent:
