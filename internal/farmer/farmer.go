@@ -923,6 +923,9 @@ func (f *Farmer) rotateChannels() {
 		}
 		if f.spade.StartWatching(snap.ChannelID, snap.Login, broadcastID) {
 			ch.SetWatching(true)
+			f.addLog("Started watching %s (broadcast=%s, via rotation)", snap.DisplayName, broadcastID)
+		} else {
+			f.addLog("[Spade] StartWatching for %s returned false (capacity full)", snap.DisplayName)
 		}
 	}
 }
