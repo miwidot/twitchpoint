@@ -1,10 +1,14 @@
 package twitch
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -190,17 +194,87 @@ func (s *SpadeTracker) heartbeatLoop(ch *spadeChannel) {
 
 const heartbeatMaxRetries = 2
 
+// sendHeartbeat posts the minute-watched event for channel-points credit.
+//
+// Twitch has TWO separate credit pipelines and they verify differently:
+//
+//   - Channel-points WATCH credit goes through the legacy
+//     spade.twitch.tv/track (or beacon.twitch.tv/track) POST endpoint
+//     with `player: "site"` / `location: "channel"`. Drops do NOT credit
+//     through this path — that was the v1.5/v1.6 confusion.
+//   - Drop-minute credit goes through the `sendSpadeEvents` GraphQL
+//     mutation with `game_id` and INT user_id. drops.Watcher uses that
+//     path independently.
+//
+// SpadeTracker only handles channel-points farming, so it sticks with
+// POST. The drops Watcher takes its picked channel exclusively (Spade
+// skips it) so there's no double-credit risk.
+//
+// Restored 2026-04-29 after the v2.0 ABI fix accidentally collapsed both
+// pipelines onto sendSpadeEvents — drops kept crediting, but channel-
+// points went silent for hours until the user noticed (real Twitch web
+// session re-credited cpt_blackshark immediately, confirming the bot
+// alone wasn't reaching the WATCH-credit pipeline).
 func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
+	payload := []map[string]interface{}{
+		{
+			"event": "minute-watched",
+			"properties": map[string]interface{}{
+				"channel_id":   ch.channelID,
+				"broadcast_id": ch.broadcastID,
+				"player":       "site",
+				"user_id":      s.userID,
+				"channel":      ch.channelLogin,
+				"hidden":       false,
+				"live":         true,
+				"location":     "channel",
+				"logged_in":    true,
+				"muted":        false,
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(jsonData)
+	body := url.Values{"data": {encoded}}.Encode()
+
 	for attempt := range heartbeatMaxRetries + 1 {
-		err := s.gql.SendMinuteWatched(ch.channelID, ch.channelLogin, ch.broadcastID, ch.gameName, ch.gameID, s.userID)
-		if err == nil {
+		req, err := http.NewRequest("POST", s.spadeURL, strings.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("User-Agent", browserUserAgent)
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			if attempt < heartbeatMaxRetries {
+				time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
+				continue
+			}
+			s.log("[Spade] heartbeat failed for %s after %d attempts: %v", ch.channelLogin, attempt+1, err)
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		// Per TDM (channel.py:483): only 204 means accepted. Twitch
+		// returns 200 with an error body when the heartbeat is
+		// technically valid but the credit subsystem rejected it
+		// (anti-cheat). Treating that as success would mask failures.
+		if resp.StatusCode == http.StatusNoContent {
 			return
 		}
 		if attempt < heartbeatMaxRetries {
 			time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
 			continue
 		}
-		s.log("[Spade] heartbeat for %s failed after %d attempts: %v", ch.channelLogin, attempt+1, err)
+		s.log("[Spade] heartbeat for %s returned HTTP %d after %d attempts", ch.channelLogin, resp.StatusCode, attempt+1)
+		return
 	}
 }
 

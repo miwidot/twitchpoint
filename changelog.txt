@@ -1,3 +1,52 @@
+== 2026-04-29 23:57 == Fix: SpadeTracker reverts to legacy POST for channel-points credit ==
+
+Twitch has TWO separate credit pipelines that verify differently:
+
+  Drop-minute credit  → sendSpadeEvents GraphQL mutation (game_id +
+                        INT user_id required). Strict anti-cheat.
+  Channel-points WATCH credit → legacy POST to spade.twitch.tv/track
+                        (or beacon.twitch.tv/track) with the lighter
+                        payload (player: "site" / location: "channel").
+
+The v2.0 ABI fix (commit 2cf90a3, earlier today) collapsed both onto
+sendSpadeEvents because the comment in the old code said "POST still
+returns 204 but no longer credits drops". That was true for drops —
+but the inverse half was missed: the GQL mutation does NOT credit
+WATCH points. After the switch, drops kept crediting reliably (we
+verified extensively for ABI Partner-Only Drops) but channel-points
+WATCH credits went silent across all Spade-tracked channels.
+
+Symptom: 484 WATCH credit events from 00:08 to 17:53 today (running
+the old code), then 0 WATCH credits for ~6 hours after the bot was
+rebuilt with the new code. Drops still fine throughout. The user
+opened a real Twitch web tab on cpt_blackshark at 23:51 and credits
+resumed within seconds (web session uses POST under the hood) —
+proving the account is healthy and the bot's GQL-only path was the
+gap.
+
+Fix:
+- Restore the legacy POST in internal/twitch/spade.go's sendHeartbeat.
+  Uses the pre-2cf90a3 payload (player/location/hidden/live/logged_in/
+  muted) and posts as application/x-www-form-urlencoded with the
+  Dalvik UA + Spade URL fetched at startup.
+- The drops.Watcher (in internal/drops/watch.go) is unchanged — it
+  still uses gql.SendMinuteWatched for drop credit. SpadeTracker
+  skips whatever channel the Watcher owns, so there's no double-
+  heartbeat on the drop channel.
+- gql.SendMinuteWatched stays in place; it's still the right call for
+  drop credit and may be useful in future for non-Spade flows.
+
+Architecture after this fix (clean separation):
+  drops.Watcher    → 1 channel,   sendSpadeEvents GQL,   drop credit
+  twitch.SpadeTracker → 2 channels, POST spade.twitch,  channel-points
+
+Verification:
+- go build ./... clean.
+- go vet ./... clean.
+- go test -race -count=1 ./... — channels, drops, config all pass.
+- Live re-run of the bot expected to resume WATCH credits without a
+  browser tab being open (this was the original v1.x behavior).
+
 == 2026-04-29 23:36 == Refactor: Phase 2g — progress poller + claim flow to Service ==
 
 The four progress-pipeline functions move into drops.Service. After
