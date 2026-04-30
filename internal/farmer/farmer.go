@@ -39,10 +39,18 @@ type Farmer struct {
 
 	channels *channels.Registry
 
-	logMu      sync.RWMutex
+	logMu      sync.RWMutex // protects logEntries (UI buffer)
 	logEntries []LogEntry
-	logFile    *os.File
-	logDate    string // current log file date (YYYY-MM-DD) for rotation
+
+	// fileLogMu serializes ALL writes/rotations/closes of logFile.
+	// Many goroutines log concurrently; without this lock writeLogFile
+	// could race against itself (rotation interleaving with a write)
+	// or write to a logFile that Stop() has already closed. The
+	// stopped guard inside writeLogFile uses f.stopped.Load() to
+	// drop late writes silently after shutdown.
+	fileLogMu sync.Mutex
+	logFile   *os.File
+	logDate   string // current log file date (YYYY-MM-DD) for rotation
 
 	startTime time.Time
 	stopCh    chan struct{}
@@ -212,13 +220,19 @@ func (f *Farmer) Start() error {
 }
 
 // Stop shuts down the farmer. Idempotent — calling twice is a no-op.
+//
+// Shutdown ordering matters: stopped flag is set FIRST so writeLogFile
+// drops late goroutine writes; subsystems get their Close/Stop next so
+// no new events get queued; THEN we hold fileLogMu while writing the
+// final "stopped" line and closing the log file. Holding the mutex
+// during close serializes with any in-flight writeLogFile call that
+// observed stopped=false before our CAS — they finish their write,
+// release the mutex, and we close cleanly without racing.
 func (f *Farmer) Stop() {
 	if !f.stopped.CompareAndSwap(false, true) {
 		return
 	}
 	close(f.stopCh)
-
-	f.writeLogFile("=== TwitchPoint Farmer stopped ===")
 
 	if f.pubsub != nil {
 		f.pubsub.Close()
@@ -235,9 +249,16 @@ func (f *Farmer) Stop() {
 	if f.dropWatch != nil {
 		f.dropWatch.StopAll()
 	}
+
+	// Drain any in-flight log write, emit the final marker, close.
+	f.fileLogMu.Lock()
 	if f.logFile != nil {
-		f.logFile.Close()
+		line := fmt.Sprintf("[%s] === TwitchPoint Farmer stopped ===\n", time.Now().Format("2006-01-02 15:04:05"))
+		_, _ = f.logFile.WriteString(line)
+		_ = f.logFile.Close()
+		f.logFile = nil
 	}
+	f.fileLogMu.Unlock()
 }
 
 // Done returns a channel that is closed when the farmer stops.
@@ -740,11 +761,21 @@ func (f *Farmer) addLog(format string, args ...interface{}) {
 }
 
 func (f *Farmer) writeLogFile(msg string) {
+	// Drop late writes after Stop() so we don't WriteString to a
+	// closed *os.File (panics on POSIX, NPE on Windows). Reads atomic
+	// — no need to hold fileLogMu for the check.
+	if f.stopped.Load() {
+		return
+	}
+
+	f.fileLogMu.Lock()
+	defer f.fileLogMu.Unlock()
+
 	if f.logFile == nil {
 		return
 	}
 
-	// Daily rotation: check if we've crossed midnight
+	// Daily rotation: check if we've crossed midnight.
 	today := time.Now().Format("2006-01-02")
 	if today != f.logDate {
 		newPath := fmt.Sprintf("logs/debug-%s.log", today)
