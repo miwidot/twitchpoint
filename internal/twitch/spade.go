@@ -216,15 +216,27 @@ const heartbeatMaxRetries = 2
 // session re-credited cpt_blackshark immediately, confirming the bot
 // alone wasn't reaching the WATCH-credit pipeline).
 func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
+	// Snapshot the mutable fields under s.mu. UpdateBroadcastID and
+	// StartWatching write to ch.broadcastID/gameName/gameID under the
+	// same lock; without snapshotting we'd race against them on every
+	// heartbeat. channelID/channelLogin are technically write-once (set
+	// in StartWatching, never mutated) but we snapshot them too so the
+	// payload assembly works on a consistent struct.
+	s.mu.Lock()
+	channelID := ch.channelID
+	channelLogin := ch.channelLogin
+	broadcastID := ch.broadcastID
+	s.mu.Unlock()
+
 	payload := []map[string]interface{}{
 		{
 			"event": "minute-watched",
 			"properties": map[string]interface{}{
-				"channel_id":   ch.channelID,
-				"broadcast_id": ch.broadcastID,
+				"channel_id":   channelID,
+				"broadcast_id": broadcastID,
 				"player":       "site",
 				"user_id":      s.userID,
-				"channel":      ch.channelLogin,
+				"channel":      channelLogin,
 				"hidden":       false,
 				"live":         true,
 				"location":     "channel",
@@ -256,7 +268,7 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 				time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
 				continue
 			}
-			s.log("[Spade] heartbeat failed for %s after %d attempts: %v", ch.channelLogin, attempt+1, err)
+			s.log("[Spade] heartbeat failed for %s after %d attempts: %v", channelLogin, attempt+1, err)
 			return
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -273,7 +285,7 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 			time.Sleep(time.Duration(attempt+1) * 3 * time.Second)
 			continue
 		}
-		s.log("[Spade] heartbeat for %s returned HTTP %d after %d attempts", ch.channelLogin, resp.StatusCode, attempt+1)
+		s.log("[Spade] heartbeat for %s returned HTTP %d after %d attempts", channelLogin, resp.StatusCode, attempt+1)
 		return
 	}
 }
