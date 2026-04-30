@@ -90,33 +90,53 @@ func (s *Service) ProcessDrops() {
 	//     channel into stall cooldown so the selector skips it next time.
 	s.Stall.Apply(campaigns)
 
-	// 2b. Build the active skip-set from the cooldown map (filtering
-	//     expired entries).
-	skipChannels := s.Stall.ActiveSkipSet()
+	// 2b–2d. Select + apply with bounded retry. ApplyPick can reject the
+	//        pick for recoverable reasons (game-mismatch, id-mismatch)
+	//        — both set a manual cooldown on the bad channel. Without
+	//        the retry, the wrong pick stays visible in UI/Watcher
+	//        state until the next ProcessDrops trigger (could be 15
+	//        min if no other path fires). With the retry, we re-fetch
+	//        the skip-set + Selector.Select with the updated cooldown
+	//        and try the next-best candidate inline.
+	const maxApplyRetries = 3
+	var pick *PoolEntry
+	var pool []*PoolEntry
+	applied := false
 
-	// 2c. Run the selector on the (now-updated) inventory, with stalled
-	//     channels skipped.
-	pick, pool := s.Selector.Select(campaigns, skipChannels)
+	for attempt := 0; attempt < maxApplyRetries; attempt++ {
+		skipChannels := s.Stall.ActiveSkipSet()
+		pick, pool = s.Selector.Select(campaigns, skipChannels)
 
-	// 3. Build per-campaign UI rows.
+		switch s.ApplyPick(pick, campaigns) {
+		case ApplyApplied:
+			applied = true
+		case ApplyRetry:
+			// Cooldown was set on the rejected channel; the next
+			// Stall.ActiveSkipSet() call will include it. Loop back
+			// to re-select.
+			s.log("[Drops/Pool] pick rejected (retry %d/%d); re-selecting with updated skip-set",
+				attempt+1, maxApplyRetries)
+			continue
+		case ApplyBail:
+			s.log("[Drops/Pool] skipping commit — pick refresh failed, previous state preserved")
+			return
+		}
+		break
+	}
+
+	if !applied {
+		s.log("[Drops/Pool] all %d retry attempts hit retryable failures; preserving previous state",
+			maxApplyRetries)
+		return
+	}
+
+	// 3. Build per-campaign UI rows from the FINAL committed pick.
 	active, queued, idle := BuildRows(s.cfg, campaigns, pick, pool)
 
 	// 4. Rebuild campaign cache (for web UI endAt lookups).
 	newCache := make(map[string]twitch.DropCampaign, len(campaigns))
 	for _, c := range campaigns {
 		newCache[c.ID] = c
-	}
-
-	// 5. Apply pick: register channel as temp if new, set HasActiveDrop.
-	pickApplied := s.ApplyPick(pick, campaigns)
-
-	// 6. If the pick was NOT applied (refresh failed for the new pick),
-	//    bail out without committing anything — rows, currentPickID,
-	//    cleanup, and snapshot all use the previous pick's state which
-	//    is still valid. Next cycle will retry with fresh inventory.
-	if !pickApplied {
-		s.log("[Drops/Pool] skipping commit — pick refresh failed, previous state preserved")
-		return
 	}
 
 	// 7. Pick applied successfully — commit the new state atomically.
