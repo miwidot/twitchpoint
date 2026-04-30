@@ -176,7 +176,7 @@ func runHeadless(f *farmer.Farmer, cfg *config.Config) {
 	}()
 
 	fmt.Printf("TwitchPoint Farmer v%s (headless)\n", appVersion)
-	fmt.Printf("Web UI: http://localhost:%d\n", port)
+	fmt.Printf("Web UI: http://%s\n", webServer.Addr())
 	fmt.Println("Press Ctrl+C to stop.")
 
 	// Block until SIGINT or SIGTERM

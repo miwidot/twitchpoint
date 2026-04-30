@@ -34,6 +34,7 @@ type Config struct {
 	ChannelConfigs     []ChannelEntry `json:"channel_configs,omitempty"`     // new: with priority
 	WebEnabled         bool           `json:"web_enabled"`                   // enable web UI
 	WebPort            int            `json:"web_port"`                      // web server port (default 8080)
+	WebBind            string         `json:"web_bind,omitempty"`            // web bind address (default 127.0.0.1; set to 0.0.0.0 for LAN access)
 	IrcEnabled         bool           `json:"irc_enabled"`                   // enable IRC for viewer presence (default true)
 	DropsEnabled       bool           `json:"drops_enabled"`                 // enable drop mining (default true)
 	DisabledCampaigns  []string       `json:"disabled_campaigns,omitempty"`  // campaign IDs to skip
@@ -64,10 +65,11 @@ func Load(path string) (*Config, error) {
 
 	cfg := &Config{
 		path:         path,
-		WebEnabled:   true, // default
-		WebPort:      8080, // default
-		IrcEnabled:   true, // default
-		DropsEnabled: true, // default
+		WebEnabled:   true,        // default
+		WebPort:      8080,        // default
+		WebBind:      "127.0.0.1", // default — localhost-only; set "0.0.0.0" for LAN
+		IrcEnabled:   true,        // default
+		DropsEnabled: true,        // default
 	}
 
 	data, err := os.ReadFile(path)
@@ -101,6 +103,9 @@ func Load(path string) (*Config, error) {
 	}
 	if _, hasDrops := raw["drops_enabled"]; !hasDrops {
 		cfg.DropsEnabled = true
+	}
+	if _, hasBind := raw["web_bind"]; !hasBind || strings.TrimSpace(cfg.WebBind) == "" {
+		cfg.WebBind = "127.0.0.1"
 	}
 
 	// Migrate legacy channels and detect if new fields need to be written.

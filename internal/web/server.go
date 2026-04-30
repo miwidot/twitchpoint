@@ -23,19 +23,33 @@ var Version = "dev"
 // Server is the HTTP server for the web UI.
 type Server struct {
 	farmer *farmer.Farmer
+	bind   string // host portion (default 127.0.0.1, configurable via web_bind)
 	port   int
 	mux    *http.ServeMux
 }
 
-// New creates a new web server.
+// New creates a new web server. The bind host comes from
+// cfg.WebBind (default 127.0.0.1 — localhost-only); set
+// "web_bind": "0.0.0.0" in config to expose on the LAN.
 func New(f *farmer.Farmer, port int) *Server {
+	bind := f.Config().WebBind
+	if strings.TrimSpace(bind) == "" {
+		bind = "127.0.0.1"
+	}
 	s := &Server{
 		farmer: f,
+		bind:   bind,
 		port:   port,
 		mux:    http.NewServeMux(),
 	}
 	s.setupRoutes()
 	return s
+}
+
+// Addr returns the configured bind address as host:port for display
+// in startup banners.
+func (s *Server) Addr() string {
+	return fmt.Sprintf("%s:%d", s.bind, s.port)
 }
 
 func (s *Server) setupRoutes() {
@@ -54,10 +68,25 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("/", http.FileServer(http.FS(staticFS)))
 }
 
-// Start starts the HTTP server (blocking).
+// Start starts the HTTP server (blocking). Uses an explicit
+// http.Server with header/idle timeouts — naked ListenAndServe
+// has no timeouts and would let a slowloris-style attacker (or
+// just a buggy client) tie up goroutines indefinitely.
 func (s *Server) Start() error {
-	addr := fmt.Sprintf(":%d", s.port)
-	return http.ListenAndServe(addr, s.mux)
+	srv := &http.Server{
+		Addr:    s.Addr(),
+		Handler: s.mux,
+		// Slowloris protection: cap how long the server waits for
+		// the request line + headers. Far above any reasonable
+		// browser/curl, well below "wedged forever".
+		ReadHeaderTimeout: 10 * time.Second,
+		// Keep-alives time out after 120s of idle. Modern browsers
+		// rotate connections fast enough that this won't disturb
+		// anyone; it caps the cost of an attacker holding a million
+		// idle keep-alives open.
+		IdleTimeout: 120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 // jsonResponse writes a JSON response with proper headers.

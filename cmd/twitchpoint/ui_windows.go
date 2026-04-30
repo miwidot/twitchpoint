@@ -34,7 +34,7 @@ func runUI(f *farmer.Farmer, cfg *config.Config) {
 	if cfg.WebEnabled {
 		webServer := web.New(f, webPort)
 		go func() {
-			fmt.Printf("Web UI available at http://localhost:%d\n", webPort)
+			fmt.Printf("Web UI available at http://%s\n", webServer.Addr())
 			if err := webServer.Start(); err != nil {
 				fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
 			}

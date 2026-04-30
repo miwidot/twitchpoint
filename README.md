@@ -78,6 +78,7 @@ Config file `config.json` is created automatically on first run.
 | `channel_configs` | `[]` | Channels to watch with priority (1 or 2) |
 | `web_enabled` | `true` | Enable web dashboard |
 | `web_port` | `8080` | Web server port |
+| `web_bind` | `127.0.0.1` | Web server bind address. Defaults to localhost-only — set to `0.0.0.0` to expose on the LAN, or a specific interface IP to restrict the listener. **Behavior change in v2.0.0-beta.3+**: previous versions bound to all interfaces by default. |
 | `irc_enabled` | `true` | IRC presence for active viewer status |
 | `drops_enabled` | `true` | Automatic drop campaign mining |
 | `disabled_campaigns` | `[]` | Campaign IDs to skip (managed via TUI Drops tab `Space` or Web UI toggle) |
