@@ -1,3 +1,38 @@
+== 2026-04-30 20:24 == Bump: v2.0.0-beta.2 → v2.0.0-beta.3 ==
+
+15 commits since v2.0.0-beta.2 across three reviewer iterations,
+all concurrency hardening + a couple of UX fixes:
+
+Concurrency / thread-safety:
+- cc7308a GQLClient 30s timeout (was unbounded — Twitch hang
+  blocked all drops/claim/startup paths)
+- 1194f07 farmer file-logging mutex + stopped guard
+- 8010b72 Config RWMutex on all accessors + atomic temp+rename Save
+- cdd1d14 SpadeTracker snapshot ch fields before heartbeat send
+- 8bb275d parallel channel resolve at startup + batched Save
+- c2a2534 ApplyPick tri-state result + bounded retry within
+  ProcessDrops
+- 0affed1 web bind 127.0.0.1 default + http.Server timeouts
+- 5393e71 ProcessDrops worker-queue (replaces TryLock+rerun flag
+  which had a Swap-vs-Unlock TOCTOU)
+- c2fbf81 Config.Save serialized via saveMu (was lost-update on
+  concurrent saves)
+- 097adaa boot-flag accessors GetDropsEnabled etc; drops_tab
+  toggles route through them
+- c089e48 sweep all direct cfg.* reads through accessors —
+  windows tray race vs TUI Settings panel was the real one
+- 1d4f106 SpadeTracker.StartWatching rejects after Stop() —
+  late rotation goroutine couldn't re-add a channel anymore
+
+Build hygiene:
+- 85f0c5e untrack committed bin/ artifacts (gitignore already
+  covered them; were committed before the rule was effective)
+
+UX:
+- 3b15251 web channel-names clickable again (regression from
+  v2.0.0-beta web redesign — opens twitch.tv/<login> in new tab,
+  proper rel="noopener noreferrer" + URL-encoded login)
+
 == 2026-04-30 12:05 == Bump: v2.0.0-beta → v2.0.0-beta.2 ==
 
 5 commits since v2.0.0-beta, all bug fixes or rename-resilience:
