@@ -87,10 +87,21 @@ func (s *SpadeTracker) Start() error {
 }
 
 // StartWatching begins sending heartbeats for a channel.
-// Returns false if at max capacity.
+// Returns false if at max capacity OR after Stop() has been called.
 func (s *SpadeTracker) StartWatching(channelID, channelLogin, broadcastID, gameName, gameID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Reject late callers after Stop. Without this guard, a rotation
+	// or fetch goroutine that races with Farmer.Stop() could re-add a
+	// channel + spawn a heartbeatLoop AFTER Stop already drained the
+	// map and closed s.stopCh. The new goroutine would exit on its
+	// first select-on-stopCh iteration, but only after sending one
+	// stray heartbeat (heartbeatLoop sends immediately before
+	// entering the ticker loop).
+	if s.stopped {
+		return false
+	}
 
 	// Already watching this channel
 	if _, ok := s.channels[channelID]; ok {
