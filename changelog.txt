@@ -1,3 +1,34 @@
+== 2026-04-30 12:02 == CLI: --add-channel validates + stores ID; --remove-channel added ==
+
+The rename-resilience logic in addChannelFromEntry has always
+worked correctly for channels with an ID stored — it looks up by
+ID and silently updates the login if Twitch returns a different
+one. Problem: legacy entries with login-only (added via the old
+--add-channel CLI flag, or hand-edited into config.json before
+ID-tracking was implemented) had no ID to fall back on; once the
+streamer renamed/deleted, the entry was unrecoverable.
+
+Fixes:
+
+1. --add-channel now validates the login exists on Twitch via
+   GetChannelInfo before persisting, and stores BOTH the login
+   AND the resolved channel ID. Future startups can recover
+   from renames without user intervention.
+
+2. New --remove-channel flag for cleaning up orphan entries that
+   never managed to store an ID before going stale (legacy from
+   pre-ID-tracking versions, or hand-edited).
+
+3. Startup error message for orphan entries now hints at
+   --remove-channel:
+     channel "X" not found on Twitch and no ID stored to recover
+     from a rename — remove via `--remove-channel X`
+
+The runtime AddChannelLive (TUI 'a' key + Web Add Channel modal)
+was already correct on this — both validate via GetChannelInfo
+before persisting, so any channel added via the running bot
+already has its ID stored. Only the CLI flag was inconsistent.
+
 == 2026-04-30 03:32 == Bump: v1.8.0 → v2.0.0-beta ==
 
 Major version bump reflecting the v2.0 architecture split + the

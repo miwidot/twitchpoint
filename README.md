@@ -256,12 +256,15 @@ docker-compose up -d
 ```
 ./twitchpoint [flags]
 
-  --config string      Path to config file (default: config.json)
-  --add-channel string Add a channel and exit
-  --token string       Set auth token manually and exit
-  --login              Force re-login via Device Code OAuth
-  --headless           Run without TUI (for Docker/servers)
+  --config string         Path to config file (default: config.json)
+  --add-channel string    Add a channel (validates against Twitch + persists channel ID) and exit
+  --remove-channel string Remove a channel from config (use for renamed/deleted channels) and exit
+  --token string          Set auth token manually and exit
+  --login                 Force re-login via Device Code OAuth
+  --headless              Run without TUI (for Docker/servers)
 ```
+
+`--add-channel` always validates the channel exists on Twitch and persists both the login AND the channel ID. Storing the ID is what makes future startups rename-resilient — if a streamer renames their account, the next startup looks up by ID and silently updates the stored login. Without an ID (legacy entries from older versions, or hand-edited config) the bot falls back to login lookup, which fails permanently after a rename. Use `--remove-channel` to clean up such orphans.
 
 ## How It Works
 

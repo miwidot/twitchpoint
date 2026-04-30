@@ -263,7 +263,10 @@ func (f *Farmer) addChannelFromEntry(entry config.ChannelEntry) error {
 			f.cfg.Save()
 		}
 	} else {
-		// No ID stored — resolve by login and persist the ID
+		// No ID stored — resolve by login and persist the ID. This is the
+		// path that needs Twitch to still know the login; once we capture
+		// the ID, future startups become rename-resilient via the branch
+		// above.
 		info, err = f.gql.GetChannelInfo(entry.Login)
 		if err == nil {
 			f.cfg.SetChannelID(entry.Login, info.ID)
@@ -272,6 +275,10 @@ func (f *Farmer) addChannelFromEntry(entry config.ChannelEntry) error {
 	}
 
 	if err != nil {
+		if entry.ID == "" {
+			return fmt.Errorf("channel %q not found on Twitch and no ID stored to recover from a rename — remove via `--remove-channel %s`: %w",
+				entry.Login, entry.Login, err)
+		}
 		return fmt.Errorf("get channel info: %w", err)
 	}
 

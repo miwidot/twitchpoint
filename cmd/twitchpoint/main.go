@@ -20,7 +20,8 @@ const appVersion = "2.0.0-beta"
 func main() {
 	web.Version = appVersion
 	configPath := flag.String("config", "", "Path to config file (default: config.json)")
-	addChannel := flag.String("add-channel", "", "Add a channel to config and exit")
+	addChannel := flag.String("add-channel", "", "Add a channel to config (validates against Twitch + persists ID) and exit")
+	removeChannel := flag.String("remove-channel", "", "Remove a channel from config and exit (use for renamed/deleted channels)")
 	setToken := flag.String("token", "", "Set auth token and exit")
 	forceLogin := flag.Bool("login", false, "Force re-login via Twitch Device Code OAuth")
 	headless := flag.Bool("headless", false, "Run without TUI (for Docker/servers)")
@@ -42,16 +43,48 @@ func main() {
 		return
 	}
 
-	// Handle --add-channel flag
+	// Handle --add-channel flag — validates the channel exists on Twitch
+	// and persists BOTH login and ID. Storing the ID is critical: it
+	// makes future startups robust against the streamer renaming or
+	// briefly unpublishing the channel (rename-detection in
+	// addChannelFromEntry only works when the ID is known).
 	if *addChannel != "" {
 		channel := strings.ToLower(*addChannel)
-		if cfg.AddChannel(channel) {
+		if cfg.AuthToken == "" {
+			log.Fatalf("Cannot add channel: no auth token. Run --login first or set --token.")
+		}
+		gql := twitch.NewGQLClient(cfg.AuthToken)
+		info, err := gql.GetChannelInfo(channel)
+		if err != nil {
+			log.Fatalf("Channel %q not found on Twitch: %v", channel, err)
+		}
+		added := cfg.AddChannel(info.Login)
+		cfg.SetChannelID(info.Login, info.ID)
+		if err := cfg.Save(); err != nil {
+			log.Fatalf("Failed to save config: %v", err)
+		}
+		if added {
+			fmt.Printf("Added channel %s (id=%s) to config\n", info.Login, info.ID)
+		} else {
+			fmt.Printf("Channel %s already in config — ID refreshed to %s\n", info.Login, info.ID)
+		}
+		return
+	}
+
+	// Handle --remove-channel flag — drops a channel from config. Useful
+	// for cleaning up legacy entries (added before ID-tracking, where
+	// the streamer has since renamed/deleted) that fail to resolve at
+	// startup. Matches the case-insensitive login lookup the registry
+	// uses; takes effect on next start.
+	if *removeChannel != "" {
+		channel := strings.ToLower(*removeChannel)
+		if cfg.RemoveChannel(channel) {
 			if err := cfg.Save(); err != nil {
 				log.Fatalf("Failed to save config: %v", err)
 			}
-			fmt.Printf("Added channel %q to config\n", channel)
+			fmt.Printf("Removed channel %q from config\n", channel)
 		} else {
-			fmt.Printf("Channel %q already in config\n", channel)
+			fmt.Printf("Channel %q not found in config\n", channel)
 		}
 		return
 	}
