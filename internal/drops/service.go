@@ -2,7 +2,6 @@ package drops
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/miwi/twitchpoint/internal/channels"
@@ -48,16 +47,22 @@ type Service struct {
 	currentPickID      string                         // ChannelID currently assigned the drop slot, "" if none
 	lastProgressUpdate time.Time                      // when applyDropProgressUpdate last fired (WS or poll)
 
-	// processMu serializes ProcessDrops. The 15-min CheckLoop, the 60s
-	// progress poller's silent-pick path, the WS claim/game-change
-	// handlers, the EventStreamDown path, and the UI/Web campaign
-	// toggle all call ProcessDrops — without this lock they could
-	// stack up and commit stale inventory state on top of newer state.
-	// rerunRequested coalesces piled-up triggers into "exactly one
-	// extra pass" after the current run finishes; concurrent triggers
-	// after the rerun also get coalesced.
-	processMu      sync.Mutex
-	rerunRequested atomic.Bool
+	// processQueue is a 1-slot buffered channel that serializes
+	// processOnce(). Every trigger source (CheckLoop, claim handler,
+	// game-change, stream-down, UI/Web toggle, silent-pick path) calls
+	// ProcessDrops which does a non-blocking send into this channel:
+	// if the slot is empty, the trigger is queued; if it's full, the
+	// trigger coalesces with the already-queued one (since the worker
+	// will fetch fresh inventory + re-run the selector when it picks
+	// up the queued kick anyway).
+	//
+	// A single worker goroutine (ProcessLoop) drains this channel,
+	// running processOnce() per kick. This eliminates the TryLock +
+	// rerun-flag race the previous design had: there's no window
+	// between "consume the trigger" and "release the lock" because
+	// channel send/receive are themselves the synchronization
+	// primitive.
+	processQueue chan struct{}
 }
 
 // ServiceDeps bundles the external dependencies NewService needs. The
@@ -93,7 +98,10 @@ type ServiceDeps struct {
 }
 
 // NewService constructs a Service with its subordinate Selector and
-// StallTracker pre-built.
+// StallTracker pre-built. The processQueue is initialized here so
+// ProcessDrops() can safely send into it before ProcessLoop() is
+// spawned by farmer.Start — kicks queue up and the worker picks
+// them up once it starts.
 func NewService(deps ServiceDeps) *Service {
 	return &Service{
 		cfg:                    deps.Cfg,
@@ -110,6 +118,7 @@ func NewService(deps ServiceDeps) *Service {
 		triggerRotation:        deps.TriggerRotation,
 		Selector:               NewSelector(deps.Cfg, deps.GQL),
 		Stall:                  NewStallTracker(deps.Log),
+		processQueue:           make(chan struct{}, 1),
 	}
 }
 

@@ -38,40 +38,53 @@ func (s *Service) CheckLoop(stopCh <-chan struct{}) {
 	}
 }
 
-// ProcessDrops fetches the inventory, runs the selector, applies the
-// pick, and auto-claims any completed drops. Called every 15 min by
-// CheckLoop, plus out-of-band from PollProgressOnce (when poll says
-// the current drop hit 100%), HandleDropClaim (after a claim settles),
-// HandleGameChange (after a debounced wrong-game decision), and
-// SetCampaignEnabled (when the user toggles a campaign).
+// ProcessDrops kicks an inventory→selector→apply→commit cycle.
+// It's a non-blocking enqueue: if the worker is busy, the trigger
+// is coalesced with the already-queued kick (the worker re-fetches
+// fresh inventory on each pass, so multiple triggers during one
+// run all want "another pass with fresh data" — exactly one is
+// enough).
 //
-// Serialized via processMu+TryLock+rerunRequested: only one full
-// inventory→selector→apply→commit cycle runs at a time. Concurrent
-// triggers during a run flag rerunRequested, and ONE extra pass fires
-// after the current run completes (so newly-enabled campaigns or
-// streamer state changes that arrived mid-run don't get lost). The
-// goroutine spawn at the end is intentional — it lets the current
-// caller's defer-Unlock land BEFORE the next pass starts, so the
-// piggyback run sees a clean lock state.
+// Trigger sources: 15-min CheckLoop ticker, 60s PollProgressOnce
+// silent-pick path, HandleDropClaim, HandleGameChange (after the
+// 30s debounce), EventStreamDown when the picked drop channel
+// goes offline, and SetCampaignEnabled from TUI/Web toggles.
+//
+// Replaces the previous TryLock+rerunRequested design which had a
+// Swap-vs-Unlock TOCTOU race that could lose triggers fired
+// between the deferred Swap and the deferred Unlock.
 func (s *Service) ProcessDrops() {
-	if !s.processMu.TryLock() {
-		// Another ProcessDrops is mid-flight. Flag a rerun so the
-		// in-flight run picks up our trigger when it finishes.
-		s.rerunRequested.Store(true)
-		return
+	select {
+	case s.processQueue <- struct{}{}:
+		// Trigger queued; worker will pick it up.
+	default:
+		// Worker is already running OR has a kick queued — the
+		// in-flight + the queued kick together cover this trigger.
 	}
-	defer func() {
-		// Read the rerun flag while we still hold the lock — that way
-		// no other caller can have started a "fresh" run between our
-		// unlock and our swap (which would be benign but spawns an
-		// extra rerun goroutine for no useful work).
-		rerun := s.rerunRequested.Swap(false)
-		s.processMu.Unlock()
-		if rerun {
-			go s.ProcessDrops()
-		}
-	}()
+}
 
+// ProcessLoop drains processQueue, running one processOnce per
+// kick. Started as a goroutine by farmer.Start — there's exactly
+// one of these alive per Service, and processOnce is therefore
+// the single point of inventory mutation. No lock needed inside
+// processOnce because no other goroutine can be in it.
+func (s *Service) ProcessLoop(stopCh <-chan struct{}) {
+	for {
+		select {
+		case <-s.processQueue:
+			s.processOnce()
+		case <-stopCh:
+			return
+		}
+	}
+}
+
+// processOnce is the actual inventory→selector→apply→commit body.
+// Only ProcessLoop calls this, exactly one at a time, so it can
+// freely mutate s.activeDrops/queuedDrops/idleDrops/campaignCache/
+// currentPickID without an outer process-lock (the per-field
+// s.mu still serializes UI reads vs commit writes).
+func (s *Service) processOnce() {
 	campaigns, err := s.gql.GetDropsInventory()
 	if err != nil {
 		s.log("[Drops] Failed to fetch inventory: %v", err)

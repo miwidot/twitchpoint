@@ -206,9 +206,15 @@ func (f *Farmer) Start() error {
 	// Start channel rotation (Twitch only credits points for 2 channels at a time)
 	go f.points.RotationLoop(f.stopCh)
 
-	// Start drop mining if enabled
+	// Start drop mining if enabled. ProcessLoop is the single worker
+	// goroutine that drains drops.processQueue — every trigger source
+	// (CheckLoop ticker, claim handler, game-change debounce,
+	// stream-down, UI/Web toggle) calls drops.ProcessDrops which is
+	// now a non-blocking enqueue. Without ProcessLoop running, kicks
+	// would queue indefinitely.
 	if f.cfg.DropsEnabled {
 		f.addLog("Drop mining enabled — checking inventory every 15 min + DropCurrentSession poll every 60s")
+		go f.drops.ProcessLoop(f.stopCh)
 		go f.drops.CheckLoop(f.stopCh)
 		go f.drops.ProgressPollLoop(f.stopCh)
 	}
