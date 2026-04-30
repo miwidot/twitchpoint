@@ -507,6 +507,64 @@ func (c *Config) UnmarkCampaignCompleted(campaignID string) {
 	}
 }
 
+// GetDropsEnabled returns the drops-mining-enabled flag.
+func (c *Config) GetDropsEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.DropsEnabled
+}
+
+// SetDropsEnabled toggles the drops-mining-enabled flag. The change
+// takes effect on the next farmer restart — the running drops loops
+// don't honor it dynamically.
+func (c *Config) SetDropsEnabled(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.DropsEnabled = v
+}
+
+// GetIrcEnabled returns the IRC-presence-enabled flag.
+func (c *Config) GetIrcEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.IrcEnabled
+}
+
+// SetIrcEnabled toggles the IRC-presence-enabled flag (restart required).
+func (c *Config) SetIrcEnabled(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.IrcEnabled = v
+}
+
+// GetWebEnabled returns the web-UI-enabled flag.
+func (c *Config) GetWebEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.WebEnabled
+}
+
+// SetWebEnabled toggles the web-UI-enabled flag (restart required).
+func (c *Config) SetWebEnabled(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.WebEnabled = v
+}
+
+// GetWebPort returns the configured web server port.
+func (c *Config) GetWebPort() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.WebPort
+}
+
+// GetWebBind returns the configured web server bind address.
+func (c *Config) GetWebBind() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.WebBind
+}
+
 // HasChannel checks if a channel is in the config.
 func (c *Config) HasChannel(login string) bool {
 	login = strings.ToLower(login)

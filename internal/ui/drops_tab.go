@@ -23,25 +23,28 @@ type dropsSetting struct {
 // dropsSettings returns the runtime-toggleable boot config flags. All
 // three currently require a farmer restart to take effect — the Drops
 // tab's Space-toggle persists the change to config.json immediately
-// and the (restart required) hint reminds the user.
+// (via cfg.Save()) and the (restart required) hint reminds the user.
+//
+// Closures route through the lock-aware Get*/Set* methods so the
+// settings panel doesn't bypass Config.mu on direct field access.
 func dropsSettings(_ *config.Config) []dropsSetting {
 	return []dropsSetting{
 		{
 			label:   "Drops mining enabled",
-			get:     func(c *config.Config) bool { return c.DropsEnabled },
-			toggle:  func(c *config.Config) { c.DropsEnabled = !c.DropsEnabled },
+			get:     func(c *config.Config) bool { return c.GetDropsEnabled() },
+			toggle:  func(c *config.Config) { c.SetDropsEnabled(!c.GetDropsEnabled()) },
 			restart: true,
 		},
 		{
 			label:   "IRC viewer presence",
-			get:     func(c *config.Config) bool { return c.IrcEnabled },
-			toggle:  func(c *config.Config) { c.IrcEnabled = !c.IrcEnabled },
+			get:     func(c *config.Config) bool { return c.GetIrcEnabled() },
+			toggle:  func(c *config.Config) { c.SetIrcEnabled(!c.GetIrcEnabled()) },
 			restart: true,
 		},
 		{
 			label:   "Web UI enabled",
-			get:     func(c *config.Config) bool { return c.WebEnabled },
-			toggle:  func(c *config.Config) { c.WebEnabled = !c.WebEnabled },
+			get:     func(c *config.Config) bool { return c.GetWebEnabled() },
+			toggle:  func(c *config.Config) { c.SetWebEnabled(!c.GetWebEnabled()) },
 			restart: true,
 		},
 	}

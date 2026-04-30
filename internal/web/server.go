@@ -32,7 +32,7 @@ type Server struct {
 // cfg.WebBind (default 127.0.0.1 — localhost-only); set
 // "web_bind": "0.0.0.0" in config to expose on the LAN.
 func New(f *farmer.Farmer, port int) *Server {
-	bind := f.Config().WebBind
+	bind := f.Config().GetWebBind()
 	if strings.TrimSpace(bind) == "" {
 		bind = "127.0.0.1"
 	}
