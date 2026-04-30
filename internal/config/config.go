@@ -42,8 +42,9 @@ type Config struct {
 	PinnedCampaignID   string         `json:"pinned_campaign_id,omitempty"`  // v1.7.0 (deprecated v1.8.0; ignored by selector but kept for backward compat)
 	GamesToWatch       []string       `json:"games_to_watch,omitempty"`      // v1.8.0 ordered priority list of game names; empty = remaining_time fallback
 
-	path string       // file path, not serialized
-	mu   sync.RWMutex // guards all mutable fields above; not serialized
+	path   string       // file path, not serialized
+	mu     sync.RWMutex // guards all mutable fields above; not serialized
+	saveMu sync.Mutex   // serializes Save() — separate from mu so concurrent reads aren't blocked during marshal+rename
 }
 
 // Load reads the config from the given path. If path is empty, uses the default.
@@ -160,9 +161,21 @@ func (c *Config) migrate() bool {
 
 // Save writes the config back to disk using a temp-file + atomic rename
 // so concurrent readers (other processes, file watchers) never see a
-// torn write. Acquires RLock during marshal — concurrent reads are
-// fine, concurrent mutators block until we're done.
+// torn write.
+//
+// Two layers of locking:
+//   - saveMu serializes the WHOLE Save call (marshal → temp write →
+//     rename). Without it, two concurrent Saves can interleave like
+//     "A marshal, B marshal, B rename, A rename" — A's older snapshot
+//     overwrites B's newer one.
+//   - mu.RLock during the marshal so in-memory mutators are blocked
+//     from racing with the read but other concurrent readers (UI, web
+//     /api/*) can still proceed. Released before the I/O so disk
+//     latency doesn't stall live readers.
 func (c *Config) Save() error {
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
+
 	c.mu.RLock()
 	data, err := json.MarshalIndent(c, "", "  ")
 	c.mu.RUnlock()
