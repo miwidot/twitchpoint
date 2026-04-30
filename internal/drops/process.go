@@ -44,7 +44,34 @@ func (s *Service) CheckLoop(stopCh <-chan struct{}) {
 // the current drop hit 100%), HandleDropClaim (after a claim settles),
 // HandleGameChange (after a debounced wrong-game decision), and
 // SetCampaignEnabled (when the user toggles a campaign).
+//
+// Serialized via processMu+TryLock+rerunRequested: only one full
+// inventory→selector→apply→commit cycle runs at a time. Concurrent
+// triggers during a run flag rerunRequested, and ONE extra pass fires
+// after the current run completes (so newly-enabled campaigns or
+// streamer state changes that arrived mid-run don't get lost). The
+// goroutine spawn at the end is intentional — it lets the current
+// caller's defer-Unlock land BEFORE the next pass starts, so the
+// piggyback run sees a clean lock state.
 func (s *Service) ProcessDrops() {
+	if !s.processMu.TryLock() {
+		// Another ProcessDrops is mid-flight. Flag a rerun so the
+		// in-flight run picks up our trigger when it finishes.
+		s.rerunRequested.Store(true)
+		return
+	}
+	defer func() {
+		// Read the rerun flag while we still hold the lock — that way
+		// no other caller can have started a "fresh" run between our
+		// unlock and our swap (which would be benign but spawns an
+		// extra rerun goroutine for no useful work).
+		rerun := s.rerunRequested.Swap(false)
+		s.processMu.Unlock()
+		if rerun {
+			go s.ProcessDrops()
+		}
+	}()
+
 	campaigns, err := s.gql.GetDropsInventory()
 	if err != nil {
 		s.log("[Drops] Failed to fetch inventory: %v", err)

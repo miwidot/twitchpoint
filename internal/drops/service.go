@@ -2,6 +2,7 @@ package drops
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miwi/twitchpoint/internal/channels"
@@ -46,6 +47,17 @@ type Service struct {
 	campaignCache      map[string]twitch.DropCampaign // campaignID -> campaign, rebuilt each cycle
 	currentPickID      string                         // ChannelID currently assigned the drop slot, "" if none
 	lastProgressUpdate time.Time                      // when applyDropProgressUpdate last fired (WS or poll)
+
+	// processMu serializes ProcessDrops. The 15-min CheckLoop, the 60s
+	// progress poller's silent-pick path, the WS claim/game-change
+	// handlers, the EventStreamDown path, and the UI/Web campaign
+	// toggle all call ProcessDrops — without this lock they could
+	// stack up and commit stale inventory state on top of newer state.
+	// rerunRequested coalesces piled-up triggers into "exactly one
+	// extra pass" after the current run finishes; concurrent triggers
+	// after the rerun also get coalesced.
+	processMu      sync.Mutex
+	rerunRequested atomic.Bool
 }
 
 // ServiceDeps bundles the external dependencies NewService needs. The
