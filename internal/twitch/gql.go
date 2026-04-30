@@ -256,8 +256,14 @@ func NewGQLClient(authToken string) *GQLClient {
 		deviceID = generateDeviceID()
 	}
 	return &GQLClient{
-		authToken:       authToken,
-		httpClient:      &http.Client{},
+		authToken: authToken,
+		// 30s timeout on every Twitch request. Without this, a hung
+		// connection (Twitch backend issues, DNS hiccup, mid-flight
+		// reset) blocks the calling goroutine indefinitely. ProcessDrops,
+		// Startup channel-resolve, Claim, CurrentDropSession poll all run
+		// through this client — a stuck request would wedge the whole
+		// drops loop until the process is killed.
+		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		deviceID:        deviceID,
 		clientSessionID: generateSessionID(),
 	}
