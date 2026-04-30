@@ -152,3 +152,56 @@ func TestUnmarkCampaignCompleted(t *testing.T) {
 		t.Fatalf("unmark of absent ID should be no-op, got %v", c.CompletedCampaigns)
 	}
 }
+
+// TestConcurrent_NoRaces hammers the public API from many goroutines
+// at once. Run with `go test -race` to catch lock omissions or
+// races against the slice-getter copies. With the mu RWMutex in
+// place, all accesses serialize correctly; without it the race
+// detector (or just plain corruption on iteration vs append) would
+// fail.
+func TestConcurrent_NoRaces(t *testing.T) {
+	c := &Config{}
+	c.AddChannel("alpha")
+	c.AddChannel("beta")
+	c.AddChannel("gamma")
+
+	const workers = 20
+	const iterations = 200
+
+	done := make(chan struct{})
+	for w := 0; w < workers; w++ {
+		go func(id int) {
+			defer func() { done <- struct{}{} }()
+			for i := 0; i < iterations; i++ {
+				switch i % 8 {
+				case 0:
+					c.AddChannel("ch-tmp")
+				case 1:
+					c.RemoveChannel("ch-tmp")
+				case 2:
+					c.SetPriority("alpha", 1+(i%2))
+				case 3:
+					_ = c.GetChannelEntries() // copy-on-read
+				case 4:
+					c.AddGameToWatch("Game A")
+					c.AddGameToWatch("Game B")
+					c.RemoveGameFromWatch("Game A")
+				case 5:
+					_ = c.GetGamesToWatch()
+				case 6:
+					c.SetCampaignEnabled("cmp-1", i%2 == 0)
+				case 7:
+					_ = c.IsCampaignDisabled("cmp-1")
+				}
+			}
+		}(w)
+	}
+	for i := 0; i < workers; i++ {
+		<-done
+	}
+
+	// Smoke check that no internal slice was corrupted (length sane).
+	if len(c.GetChannelEntries()) < 3 {
+		t.Fatalf("expected at least 3 channels (alpha/beta/gamma), got %d", len(c.GetChannelEntries()))
+	}
+}

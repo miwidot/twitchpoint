@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const defaultConfigFile = "config.json"
@@ -18,20 +19,30 @@ type ChannelEntry struct {
 }
 
 // Config holds the application configuration.
+//
+// Concurrency: all public methods acquire mu (Lock for mutators,
+// RLock for readers). Slice getters return defensive copies — callers
+// can iterate without holding the lock. Save() takes RLock during
+// marshal and writes via temp-file + atomic rename. Internal callers
+// that already hold mu use the *Locked helpers.
+//
+// The mu field is intentionally lowercase so encoding/json skips it
+// (sync.RWMutex zero-value is fine — no init needed).
 type Config struct {
-	AuthToken      string         `json:"auth_token"`
-	Channels       []string       `json:"channels,omitempty"`        // legacy: simple list
-	ChannelConfigs []ChannelEntry `json:"channel_configs,omitempty"` // new: with priority
-	WebEnabled     bool           `json:"web_enabled"`               // enable web UI
-	WebPort        int            `json:"web_port"`                  // web server port (default 8080)
-	IrcEnabled     bool           `json:"irc_enabled"`               // enable IRC for viewer presence (default true)
-	DropsEnabled          bool     `json:"drops_enabled"`                         // enable drop mining (default true)
-	DisabledCampaigns     []string `json:"disabled_campaigns,omitempty"`          // campaign IDs to skip
-	CompletedCampaigns    []string `json:"completed_campaigns,omitempty"`         // campaign IDs already fully claimed
-	PinnedCampaignID      string   `json:"pinned_campaign_id,omitempty"`          // v1.7.0 (deprecated v1.8.0; ignored by selector but kept for backward compat)
-	GamesToWatch          []string `json:"games_to_watch,omitempty"`              // v1.8.0 ordered priority list of game names; empty = remaining_time fallback
+	AuthToken          string         `json:"auth_token"`
+	Channels           []string       `json:"channels,omitempty"`            // legacy: simple list
+	ChannelConfigs     []ChannelEntry `json:"channel_configs,omitempty"`     // new: with priority
+	WebEnabled         bool           `json:"web_enabled"`                   // enable web UI
+	WebPort            int            `json:"web_port"`                      // web server port (default 8080)
+	IrcEnabled         bool           `json:"irc_enabled"`                   // enable IRC for viewer presence (default true)
+	DropsEnabled       bool           `json:"drops_enabled"`                 // enable drop mining (default true)
+	DisabledCampaigns  []string       `json:"disabled_campaigns,omitempty"`  // campaign IDs to skip
+	CompletedCampaigns []string       `json:"completed_campaigns,omitempty"` // campaign IDs already fully claimed
+	PinnedCampaignID   string         `json:"pinned_campaign_id,omitempty"`  // v1.7.0 (deprecated v1.8.0; ignored by selector but kept for backward compat)
+	GamesToWatch       []string       `json:"games_to_watch,omitempty"`      // v1.8.0 ordered priority list of game names; empty = remaining_time fallback
 
-	path string // file path, not serialized
+	path string       // file path, not serialized
+	mu   sync.RWMutex // guards all mutable fields above; not serialized
 }
 
 // Load reads the config from the given path. If path is empty, uses the default.
@@ -92,7 +103,8 @@ func Load(path string) (*Config, error) {
 		cfg.DropsEnabled = true
 	}
 
-	// Migrate legacy channels and detect if new fields need to be written
+	// Migrate legacy channels and detect if new fields need to be written.
+	// Load is single-goroutine — no lock needed yet.
 	needsSave := cfg.migrate()
 
 	// Remove stale exclusive_drops field from config
@@ -118,7 +130,8 @@ func Load(path string) (*Config, error) {
 }
 
 // migrate converts legacy Channels list to ChannelConfigs.
-// Returns true if any changes were made.
+// Returns true if any changes were made. Caller is single-goroutine
+// (Load), no lock needed.
 func (c *Config) migrate() bool {
 	if len(c.Channels) == 0 {
 		return false
@@ -140,25 +153,60 @@ func (c *Config) migrate() bool {
 	return true
 }
 
-// Save writes the config back to disk.
+// Save writes the config back to disk using a temp-file + atomic rename
+// so concurrent readers (other processes, file watchers) never see a
+// torn write. Acquires RLock during marshal — concurrent reads are
+// fine, concurrent mutators block until we're done.
 func (c *Config) Save() error {
+	c.mu.RLock()
 	data, err := json.MarshalIndent(c, "", "  ")
+	c.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
-	if err := os.WriteFile(c.path, data, 0600); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+
+	// Write to a temp file in the same directory (so rename stays
+	// atomic across the same filesystem) then rename over the target.
+	dir := filepath.Dir(c.path)
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("writing temp config: %w", err)
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("closing temp config: %w", err)
+	}
+	if err := os.Rename(tmpPath, c.path); err != nil {
+		cleanup()
+		return fmt.Errorf("renaming temp config: %w", err)
 	}
 	return nil
 }
 
-// Path returns the config file path.
+// Path returns the config file path. Path is set once at Load and never
+// mutated afterwards — no lock needed.
 func (c *Config) Path() string {
 	return c.path
 }
 
-// GetChannelLogins returns all channel logins.
+// GetChannelLogins returns all channel logins (defensive copy).
 func (c *Config) GetChannelLogins() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	logins := make([]string, len(c.ChannelConfigs))
 	for i, cc := range c.ChannelConfigs {
 		logins[i] = cc.Login
@@ -166,8 +214,10 @@ func (c *Config) GetChannelLogins() []string {
 	return logins
 }
 
-// GetChannelEntries returns all channel entries (with ID, login, priority).
+// GetChannelEntries returns all channel entries (defensive copy).
 func (c *Config) GetChannelEntries() []ChannelEntry {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	result := make([]ChannelEntry, len(c.ChannelConfigs))
 	copy(result, c.ChannelConfigs)
 	return result
@@ -176,6 +226,8 @@ func (c *Config) GetChannelEntries() []ChannelEntry {
 // UpdateChannelLogin updates the login for a channel identified by ID.
 // Returns true if the channel was found and updated.
 func (c *Config) UpdateChannelLogin(channelID, newLogin string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for i, cc := range c.ChannelConfigs {
 		if cc.ID == channelID {
 			c.ChannelConfigs[i].Login = newLogin
@@ -188,6 +240,8 @@ func (c *Config) UpdateChannelLogin(channelID, newLogin string) bool {
 // SetChannelID sets the ID for a channel identified by login.
 func (c *Config) SetChannelID(login, channelID string) {
 	login = strings.ToLower(login)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for i, cc := range c.ChannelConfigs {
 		if cc.Login == login {
 			c.ChannelConfigs[i].ID = channelID
@@ -199,6 +253,8 @@ func (c *Config) SetChannelID(login, channelID string) {
 // GetPriority returns the priority for a channel (1 or 2). Returns 2 if not found.
 func (c *Config) GetPriority(login string) int {
 	login = strings.ToLower(login)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for _, cc := range c.ChannelConfigs {
 		if cc.Login == login {
 			if cc.Priority == 1 {
@@ -213,6 +269,8 @@ func (c *Config) GetPriority(login string) int {
 // SetPriority sets the priority for a channel.
 func (c *Config) SetPriority(login string, priority int) bool {
 	login = strings.ToLower(login)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for i, cc := range c.ChannelConfigs {
 		if cc.Login == login {
 			c.ChannelConfigs[i].Priority = priority
@@ -225,6 +283,8 @@ func (c *Config) SetPriority(login string, priority int) bool {
 // AddChannel adds a channel if not already present.
 func (c *Config) AddChannel(login string) bool {
 	login = strings.ToLower(login)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, cc := range c.ChannelConfigs {
 		if cc.Login == login {
 			return false
@@ -240,6 +300,8 @@ func (c *Config) AddChannel(login string) bool {
 // RemoveChannel removes a channel. Returns true if found and removed.
 func (c *Config) RemoveChannel(login string) bool {
 	login = strings.ToLower(login)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for i, cc := range c.ChannelConfigs {
 		if cc.Login == login {
 			c.ChannelConfigs = append(c.ChannelConfigs[:i], c.ChannelConfigs[i+1:]...)
@@ -251,6 +313,14 @@ func (c *Config) RemoveChannel(login string) bool {
 
 // IsCampaignDisabled returns true if the campaign ID is in the disabled list.
 func (c *Config) IsCampaignDisabled(campaignID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.isCampaignDisabledLocked(campaignID)
+}
+
+// isCampaignDisabledLocked is the unlocked variant for callers that
+// already hold mu (mutators that need to dedup-check before append).
+func (c *Config) isCampaignDisabledLocked(campaignID string) bool {
 	for _, id := range c.DisabledCampaigns {
 		if id == campaignID {
 			return true
@@ -262,6 +332,8 @@ func (c *Config) IsCampaignDisabled(campaignID string) bool {
 // SetCampaignEnabled adds or removes a campaign ID from the disabled list.
 // enabled=true removes from disabled, enabled=false adds to disabled.
 func (c *Config) SetCampaignEnabled(campaignID string, enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if enabled {
 		// Remove from disabled list
 		for i, id := range c.DisabledCampaigns {
@@ -272,7 +344,7 @@ func (c *Config) SetCampaignEnabled(campaignID string, enabled bool) {
 		}
 	} else {
 		// Add to disabled list if not already present
-		if !c.IsCampaignDisabled(campaignID) {
+		if !c.isCampaignDisabledLocked(campaignID) {
 			c.DisabledCampaigns = append(c.DisabledCampaigns, campaignID)
 		}
 	}
@@ -280,6 +352,14 @@ func (c *Config) SetCampaignEnabled(campaignID string, enabled bool) {
 
 // IsCampaignCompleted checks if a campaign has been fully claimed.
 func (c *Config) IsCampaignCompleted(campaignID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.isCampaignCompletedLocked(campaignID)
+}
+
+// isCampaignCompletedLocked is the unlocked variant for callers that
+// already hold mu (e.g. MarkCampaignCompleted's append guard).
+func (c *Config) isCampaignCompletedLocked(campaignID string) bool {
 	for _, id := range c.CompletedCampaigns {
 		if id == campaignID {
 			return true
@@ -290,7 +370,9 @@ func (c *Config) IsCampaignCompleted(campaignID string) bool {
 
 // MarkCampaignCompleted adds a campaign ID to the completed list.
 func (c *Config) MarkCampaignCompleted(campaignID string) {
-	if !c.IsCampaignCompleted(campaignID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.isCampaignCompletedLocked(campaignID) {
 		c.CompletedCampaigns = append(c.CompletedCampaigns, campaignID)
 	}
 }
@@ -298,21 +380,29 @@ func (c *Config) MarkCampaignCompleted(campaignID string) {
 // SetPinnedCampaign atomically sets the pinned campaign. Pass empty string to clear.
 // Only one campaign can be pinned at a time — calling this overwrites any previous pin.
 func (c *Config) SetPinnedCampaign(campaignID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.PinnedCampaignID = campaignID
 }
 
 // IsCampaignPinned returns true if the given campaign is the currently pinned one.
 func (c *Config) IsCampaignPinned(campaignID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.PinnedCampaignID != "" && c.PinnedCampaignID == campaignID
 }
 
 // GetPinnedCampaign returns the currently pinned campaign ID, or empty string if none.
 func (c *Config) GetPinnedCampaign() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.PinnedCampaignID
 }
 
-// GetGamesToWatch returns the ordered wanted-games list (copy, safe to mutate).
+// GetGamesToWatch returns the ordered wanted-games list (defensive copy).
 func (c *Config) GetGamesToWatch() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	out := make([]string, len(c.GamesToWatch))
 	copy(out, c.GamesToWatch)
 	return out
@@ -324,6 +414,8 @@ func (c *Config) AddGameToWatch(game string) {
 	if game == "" {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, g := range c.GamesToWatch {
 		if strings.EqualFold(g, game) {
 			return
@@ -334,6 +426,8 @@ func (c *Config) AddGameToWatch(game string) {
 
 // RemoveGameFromWatch removes a game from the priority list (case-insensitive).
 func (c *Config) RemoveGameFromWatch(game string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for i, g := range c.GamesToWatch {
 		if strings.EqualFold(g, game) {
 			c.GamesToWatch = append(c.GamesToWatch[:i], c.GamesToWatch[i+1:]...)
@@ -345,6 +439,8 @@ func (c *Config) RemoveGameFromWatch(game string) {
 // MoveGameToWatch shifts a game one position in the priority list.
 // direction: -1 = up (toward higher priority), +1 = down. No-op at boundaries.
 func (c *Config) MoveGameToWatch(game string, direction int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	idx := -1
 	for i, g := range c.GamesToWatch {
 		if strings.EqualFold(g, game) {
@@ -375,12 +471,16 @@ func (c *Config) SetGamesToWatch(games []string) {
 		seen[key] = true
 		out = append(out, strings.TrimSpace(g))
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.GamesToWatch = out
 }
 
 // UnmarkCampaignCompleted removes a campaign ID from the completed list.
 // Used by daily-rolling-campaign scrub when Twitch resets a campaign's drops.
 func (c *Config) UnmarkCampaignCompleted(campaignID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for i, id := range c.CompletedCampaigns {
 		if id == campaignID {
 			c.CompletedCampaigns = append(c.CompletedCampaigns[:i], c.CompletedCampaigns[i+1:]...)
@@ -392,6 +492,8 @@ func (c *Config) UnmarkCampaignCompleted(campaignID string) {
 // HasChannel checks if a channel is in the config.
 func (c *Config) HasChannel(login string) bool {
 	login = strings.ToLower(login)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for _, cc := range c.ChannelConfigs {
 		if cc.Login == login {
 			return true
