@@ -35,7 +35,7 @@ func main() {
 
 	// Handle --token flag (manual token override)
 	if *setToken != "" {
-		cfg.AuthToken = *setToken
+		cfg.SetAuthToken(*setToken)
 		if err := cfg.Save(); err != nil {
 			log.Fatalf("Failed to save config: %v", err)
 		}
@@ -50,10 +50,11 @@ func main() {
 	// addChannelFromEntry only works when the ID is known).
 	if *addChannel != "" {
 		channel := strings.ToLower(*addChannel)
-		if cfg.AuthToken == "" {
+		token := cfg.GetAuthToken()
+		if token == "" {
 			log.Fatalf("Cannot add channel: no auth token. Run --login first or set --token.")
 		}
-		gql := twitch.NewGQLClient(cfg.AuthToken)
+		gql := twitch.NewGQLClient(token)
 		info, err := gql.GetChannelInfo(channel)
 		if err != nil {
 			log.Fatalf("Channel %q not found on Twitch: %v", channel, err)
@@ -95,7 +96,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Login failed: %v", err)
 		}
-		cfg.AuthToken = token
+		cfg.SetAuthToken(token)
 		if err := cfg.Save(); err != nil {
 			log.Fatalf("Failed to save config: %v", err)
 		}
@@ -104,14 +105,14 @@ func main() {
 	}
 
 	// First-run setup: auto-login via Device Code OAuth if no token
-	if cfg.AuthToken == "" {
+	if cfg.GetAuthToken() == "" {
 		fmt.Println("Welcome to TwitchPoint Farmer!")
 		fmt.Println()
 		token, err := twitch.DeviceCodeLogin(twitch.TVClientID)
 		if err != nil {
 			log.Fatalf("Login failed: %v", err)
 		}
-		cfg.AuthToken = token
+		cfg.SetAuthToken(token)
 		if err := cfg.Save(); err != nil {
 			log.Fatalf("Failed to save config: %v", err)
 		}
@@ -131,7 +132,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Re-login failed: %v\n", err)
 				os.Exit(1)
 			}
-			cfg.AuthToken = token
+			cfg.SetAuthToken(token)
 			if err := cfg.Save(); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to save config: %v\n", err)
 				os.Exit(1)
@@ -164,7 +165,7 @@ func main() {
 
 func runHeadless(f *farmer.Farmer, cfg *config.Config) {
 	// Start web server (force-enable in headless mode)
-	port := cfg.WebPort
+	port := cfg.GetWebPort()
 	if port <= 0 {
 		port = 8080
 	}

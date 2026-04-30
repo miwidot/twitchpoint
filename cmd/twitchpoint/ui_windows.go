@@ -25,13 +25,13 @@ func runUI(f *farmer.Farmer, cfg *config.Config) {
 	// Intercept console X button — hide instead of terminate
 	setupConsoleCloseHandler()
 
-	webPort := cfg.WebPort
+	webPort := cfg.GetWebPort()
 	if webPort <= 0 {
 		webPort = 8080
 	}
 
 	// Start web server if enabled
-	if cfg.WebEnabled {
+	if cfg.GetWebEnabled() {
 		webServer := web.New(f, webPort)
 		go func() {
 			fmt.Printf("Web UI available at http://%s\n", webServer.Addr())
@@ -86,8 +86,11 @@ func startTray(f *farmer.Farmer, cfg *config.Config, webPort int) {
 
 		systray.AddSeparator()
 
-		// Open Web UI
-		if cfg.WebEnabled {
+		// Open Web UI. cfg.GetWebEnabled() — was a direct field read,
+		// which races against TUI Drops-tab Settings panel toggling
+		// SetWebEnabled at runtime. Tray-init runs in its own goroutine
+		// (startTray) so the read needs the lock.
+		if cfg.GetWebEnabled() {
 			mWebUI := systray.AddMenuItem("Open Web UI", "Open web dashboard in browser")
 			mWebUI.Click(func() {
 				openBrowser(fmt.Sprintf("http://localhost:%d", webPort))

@@ -100,8 +100,12 @@ func (f *Farmer) Start() error {
 	f.logDate = time.Now().Format("2006-01-02")
 	f.writeLogFile("=== TwitchPoint Farmer started ===")
 
-	// Initialize GQL client
-	f.gql = twitch.NewGQLClient(f.cfg.AuthToken)
+	// Initialize GQL client. Reads through accessors — even though
+	// Start() is single-goroutine before any other goroutine spawns,
+	// going through the lock-aware getters keeps the codebase
+	// consistent (no direct field reads outside of Config itself).
+	authToken := f.cfg.GetAuthToken()
+	f.gql = twitch.NewGQLClient(authToken)
 
 	// Validate auth token by getting user info
 	user, err := f.gql.GetUserInfo()
@@ -112,14 +116,14 @@ func (f *Farmer) Start() error {
 	f.addLog("Logged in as %s (ID: %s)", user.DisplayName, user.ID)
 
 	// Initialize Spade tracker
-	f.spade = twitch.NewSpadeTracker(user.ID, f.cfg.AuthToken, f.gql.DeviceID(), f.gql, f.addLog)
+	f.spade = twitch.NewSpadeTracker(user.ID, authToken, f.gql.DeviceID(), f.gql, f.addLog)
 	if err := f.spade.Start(); err != nil {
 		f.addLog("Spade initialization warning: %v", err)
 	}
 
 	// Initialize stream prober — fetches m3u8+chunk for picked channels so
 	// drop-credit anti-cheat sees us as a real viewer (not just heartbeats).
-	f.prober = twitch.NewStreamProber(f.gql, f.cfg.AuthToken, user.ID, f.gql.DeviceID(), f.debugLog)
+	f.prober = twitch.NewStreamProber(f.gql, authToken, user.ID, f.gql.DeviceID(), f.debugLog)
 
 	// Initialize drops Watcher (TDM-style single-channel watch loop).
 	// Owns the picked drop channel exclusively — Spade tracker and rotation
@@ -129,7 +133,7 @@ func (f *Farmer) Start() error {
 	go f.dropProgressLoop()
 
 	// Initialize PubSub
-	f.pubsub = twitch.NewPubSubClient(f.cfg.AuthToken, f.events)
+	f.pubsub = twitch.NewPubSubClient(authToken, f.events)
 
 	// Initialize drops Service now that all of its deps exist (gql, spade,
 	// prober, pubsub, watcher, channels registry already populated, log).
@@ -159,8 +163,8 @@ func (f *Farmer) Start() error {
 	}
 
 	// Initialize IRC for viewer presence
-	if f.cfg.IrcEnabled {
-		f.irc = twitch.NewIRCClient(f.cfg.AuthToken, user.Login, f.addLog)
+	if f.cfg.GetIrcEnabled() {
+		f.irc = twitch.NewIRCClient(authToken, user.Login, f.addLog)
 	}
 
 	// Initialize points Service AFTER IRC so we can hand it the (possibly
@@ -212,7 +216,7 @@ func (f *Farmer) Start() error {
 	// stream-down, UI/Web toggle) calls drops.ProcessDrops which is
 	// now a non-blocking enqueue. Without ProcessLoop running, kicks
 	// would queue indefinitely.
-	if f.cfg.DropsEnabled {
+	if f.cfg.GetDropsEnabled() {
 		f.addLog("Drop mining enabled — checking inventory every 15 min + DropCurrentSession poll every 60s")
 		go f.drops.ProcessLoop(f.stopCh)
 		go f.drops.CheckLoop(f.stopCh)

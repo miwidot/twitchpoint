@@ -16,8 +16,8 @@ import (
 
 func runUI(f *farmer.Farmer, cfg *config.Config) {
 	// Start web server if enabled
-	if cfg.WebEnabled {
-		port := cfg.WebPort
+	if cfg.GetWebEnabled() {
+		port := cfg.GetWebPort()
 		if port <= 0 {
 			port = 8080
 		}

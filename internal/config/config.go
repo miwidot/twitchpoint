@@ -507,6 +507,22 @@ func (c *Config) UnmarkCampaignCompleted(campaignID string) {
 	}
 }
 
+// GetAuthToken returns the OAuth bearer token. Read-side mutex; writes
+// go through SetAuthToken (CLI flag handlers, OAuth login flows).
+func (c *Config) GetAuthToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AuthToken
+}
+
+// SetAuthToken updates the OAuth bearer token. Used by --token CLI
+// flag and the device-code OAuth flow at startup.
+func (c *Config) SetAuthToken(t string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AuthToken = t
+}
+
 // GetDropsEnabled returns the drops-mining-enabled flag.
 func (c *Config) GetDropsEnabled() bool {
 	c.mu.RLock()
