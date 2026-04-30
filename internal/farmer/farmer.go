@@ -182,12 +182,12 @@ func (f *Farmer) Start() error {
 		DebugLog:  f.debugLog,
 	})
 
-	// Initialize channels first (stores all PubSub topics before connecting)
-	for _, entry := range f.cfg.GetChannelEntries() {
-		if err := f.addChannelFromEntry(entry); err != nil {
-			f.addLog("Failed to add channel %s: %v", entry.Login, err)
-		}
-	}
+	// Initialize channels first (stores all PubSub topics before connecting).
+	// resolveChannelsParallel does the GQL lookups concurrently with bounded
+	// fan-out, then we apply any rename/ID-migration to config in one pass
+	// + a single atomic Save, then register each channel sequentially so
+	// the startup log stays readable.
+	f.bootstrapChannels(f.cfg.GetChannelEntries())
 
 	// Start event loop before PubSub connect so events are processed immediately
 	go f.eventLoop()
@@ -266,44 +266,133 @@ func (f *Farmer) Done() <-chan struct{} {
 	return f.stopCh
 }
 
-// addChannelFromEntry resolves a channel from config, using ID if available (handles renames).
-func (f *Farmer) addChannelFromEntry(entry config.ChannelEntry) error {
-	var info *twitch.ChannelInfo
-	var err error
+// channelResolveResult captures the outcome of a single channel-resolve
+// goroutine in bootstrapChannels. We can't mutate Farmer state from
+// inside the parallel pass — channels.Add and friends are safe under
+// their own mutexes, but addLog ordering and cfg.Save batching get
+// chaotic if everyone races. So the resolve goroutines populate this
+// struct and the main goroutine applies the side effects sequentially.
+type channelResolveResult struct {
+	entry      config.ChannelEntry
+	info       *twitch.ChannelInfo
+	err        error
+	renamedTo  string // non-empty when entry.ID was set AND info.Login differs (rename detected)
+	persistID  bool   // true when entry.ID was empty AND we got info.ID back (capture for future startups)
+}
+
+// bootstrapChannels resolves every config entry against Twitch with
+// bounded concurrency, then applies pending config mutations in one
+// pass + a single atomic Save, then registers each channel
+// sequentially so the startup log lines stay grouped per channel.
+func (f *Farmer) bootstrapChannels(entries []config.ChannelEntry) {
+	if len(entries) == 0 {
+		return
+	}
+
+	results := f.resolveChannelsParallel(entries)
+
+	// Phase 2: apply config side effects atomically. Single Save at the
+	// end (instead of one per renamed/migrated channel) — combined with
+	// the atomic temp-file Save this is one fsync per startup vs N.
+	configDirty := false
+	for _, r := range results {
+		if r.err != nil {
+			continue
+		}
+		if r.renamedTo != "" {
+			f.addLog("Channel renamed: %s → %s (ID: %s)", r.entry.Login, r.renamedTo, r.entry.ID)
+			f.cfg.UpdateChannelLogin(r.entry.ID, r.renamedTo)
+			configDirty = true
+		}
+		if r.persistID && r.info != nil {
+			f.cfg.SetChannelID(r.entry.Login, r.info.ID)
+			configDirty = true
+		}
+	}
+	if configDirty {
+		if err := f.cfg.Save(); err != nil {
+			f.addLog("Warning: could not save config after channel resolve: %v", err)
+		}
+	}
+
+	// Phase 3: register each channel into the Farmer state. Sequential
+	// to keep "Added channel: X" log lines in entry order; the heavy
+	// network work was the GQL lookup (already done in parallel) so
+	// this loop is fast.
+	for _, r := range results {
+		if r.err != nil {
+			if r.entry.ID == "" {
+				f.addLog("Failed to add channel %s: channel not found on Twitch and no ID stored to recover from a rename — remove via `--remove-channel %s`: %v",
+					r.entry.Login, r.entry.Login, r.err)
+			} else {
+				f.addLog("Failed to add channel %s: get channel info: %v", r.entry.Login, r.err)
+			}
+			continue
+		}
+		if err := f.addChannelWithInfo(r.info); err != nil {
+			f.addLog("Failed to register channel %s: %v", r.entry.Login, err)
+		}
+	}
+}
+
+// resolveChannelsParallel runs GQL lookups concurrently with bounded
+// fan-out. Returns results in the same order as the input entries so
+// callers can iterate per-entry without re-sorting.
+func (f *Farmer) resolveChannelsParallel(entries []config.ChannelEntry) []channelResolveResult {
+	const maxParallel = 8 // 38 channels / 8 ≈ 5 batches; ~1s startup vs 7+s serial
+
+	results := make([]channelResolveResult, len(entries))
+	sem := make(chan struct{}, maxParallel)
+	var wg sync.WaitGroup
+
+	for i, e := range entries {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, entry config.ChannelEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[idx] = f.resolveOneChannel(entry)
+		}(i, e)
+	}
+	wg.Wait()
+	return results
+}
+
+// resolveOneChannel does the GQL lookup for a single config entry,
+// preserving the same fallback semantics as the original serial
+// addChannelFromEntry: if an ID is stored, prefer ID lookup (which
+// survives streamer renames); on ID-lookup failure fall back to the
+// login. If no ID is stored, login-lookup is the only option — once
+// it succeeds, the caller (bootstrapChannels) persists the resolved
+// ID so future startups get the rename-resilient path.
+func (f *Farmer) resolveOneChannel(entry config.ChannelEntry) channelResolveResult {
+	r := channelResolveResult{entry: entry}
 
 	if entry.ID != "" {
-		// Resolve by ID — handles channel renames
-		info, err = f.gql.GetChannelInfoByID(entry.ID)
+		info, err := f.gql.GetChannelInfoByID(entry.ID)
 		if err != nil {
-			// Fallback to login if ID lookup fails
+			// ID-lookup hiccup (rare). Fall back to login. We can't
+			// reliably set renamedTo or persistID from this branch.
 			info, err = f.gql.GetChannelInfo(entry.Login)
-		} else if info.Login != entry.Login {
-			// Channel was renamed — update config
-			f.addLog("Channel renamed: %s → %s (ID: %s)", entry.Login, info.Login, info.ID)
-			f.cfg.UpdateChannelLogin(entry.ID, info.Login)
-			f.cfg.Save()
+			r.info = info
+			r.err = err
+			return r
 		}
-	} else {
-		// No ID stored — resolve by login and persist the ID. This is the
-		// path that needs Twitch to still know the login; once we capture
-		// the ID, future startups become rename-resilient via the branch
-		// above.
-		info, err = f.gql.GetChannelInfo(entry.Login)
-		if err == nil {
-			f.cfg.SetChannelID(entry.Login, info.ID)
-			f.cfg.Save()
+		if info.Login != entry.Login {
+			r.renamedTo = info.Login
 		}
+		r.info = info
+		return r
 	}
 
-	if err != nil {
-		if entry.ID == "" {
-			return fmt.Errorf("channel %q not found on Twitch and no ID stored to recover from a rename — remove via `--remove-channel %s`: %w",
-				entry.Login, entry.Login, err)
-		}
-		return fmt.Errorf("get channel info: %w", err)
+	// No ID stored — login lookup, capture the ID for future startups.
+	info, err := f.gql.GetChannelInfo(entry.Login)
+	if err == nil {
+		r.persistID = true
 	}
-
-	return f.addChannelWithInfo(info)
+	r.info = info
+	r.err = err
+	return r
 }
 
 func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
