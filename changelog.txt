@@ -1,3 +1,24 @@
+== 2026-05-02 03:03 == Bump: v2.0.0-beta.3 → v2.0.0-rc.1 ==
+
+5 commits since v2.0.0-beta.3, all hardening:
+- 1ce1721 NOT_FOUND claim shortcut — bail immediately instead
+  of 3 retries when Twitch says claim already consumed
+- 52dd1cd farmer GetStats reads channel snapshots once
+  (eliminates Len()+Snapshots() double lock + TOCTOU)
+- ac7504b GQL response body capped at 8 MiB via io.LimitReader
+- 17268e0 Web JSON request body capped at 16 KiB via
+  MaxBytesReader; redundant GetActiveDrops in handleStats
+  removed (stats.ActiveDrops already populated)
+- abdb2e0 PubSub event emit non-blocking with 2 s timeout
+  (emitEvent for important events, emitEventDroppable for
+  high-frequency EventViewCount). Closes a WS-stall vector
+  where a slow handleEvent could wedge the WS reader and
+  miss the 5-min ping/pong deadline.
+
+This is the release-candidate cut after the v2.0.0-beta soak.
+No new features — only correctness / robustness work since
+v2.0.0-beta.3.
+
 == 2026-04-30 20:24 == Bump: v2.0.0-beta.2 → v2.0.0-beta.3 ==
 
 15 commits since v2.0.0-beta.2 across three reviewer iterations,
