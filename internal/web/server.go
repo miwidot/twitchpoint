@@ -14,6 +14,8 @@ import (
 	"github.com/miwi/twitchpoint/internal/farmer"
 )
 
+const maxJSONBodyBytes = 16 * 1024
+
 //go:embed static/*
 var staticFiles embed.FS
 
@@ -102,6 +104,11 @@ func jsonError(w http.ResponseWriter, message string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
 // StatsResponse is the /api/stats response.
 type StatsResponse struct {
 	Version          string `json:"version"`
@@ -135,8 +142,6 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	user := s.farmer.GetUser()
 	update := s.farmer.GetUpdateInfo()
 
-	drops := s.farmer.GetActiveDrops()
-
 	resp := StatsResponse{
 		Version:          Version,
 		User:             user.DisplayName,
@@ -147,7 +152,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		ChannelsOnline:   stats.ChannelsOnline,
 		ChannelsWatching: stats.ChannelsWatching,
 		ChannelsTotal:    stats.ChannelsTotal,
-		ActiveDrops:      len(drops),
+		ActiveDrops:      stats.ActiveDrops,
 
 		HasStableUpdate: update.HasStableUpdate,
 		HasBetaUpdate:   update.HasBetaUpdate,
@@ -212,7 +217,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Login string `json:"login"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req); err != nil {
 			jsonError(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
@@ -269,7 +274,7 @@ func (s *Server) handleChannelPriority(w http.ResponseWriter, r *http.Request, l
 	var req struct {
 		Priority int `json:"priority"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -358,7 +363,7 @@ func (s *Server) handleCampaignToggle(w http.ResponseWriter, r *http.Request, ca
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -380,7 +385,7 @@ func (s *Server) handleCampaignPin(w http.ResponseWriter, r *http.Request, campa
 	var req struct {
 		Pinned bool `json:"pinned"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		jsonError(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -448,7 +453,7 @@ func (s *Server) handleWantedGames(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Games []string `json:"games"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req); err != nil {
 			jsonError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 			return
 		}
