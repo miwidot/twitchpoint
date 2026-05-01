@@ -950,8 +950,9 @@ func (f *Farmer) GetStats() Stats {
 		Uptime:            time.Since(f.startTime),
 	}
 
-	stats.ChannelsTotal = f.channels.Len()
-	for _, snap := range f.channels.Snapshots() {
+	snapshots := f.channels.Snapshots()
+	stats.ChannelsTotal = len(snapshots)
+	for _, snap := range snapshots {
 		if snap.IsOnline {
 			stats.ChannelsOnline++
 		}
