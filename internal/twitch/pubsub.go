@@ -13,12 +13,13 @@ import (
 )
 
 const (
-	pubsubURL       = "wss://pubsub-edge.twitch.tv/v1"
-	pingInterval    = 4*time.Minute + 30*time.Second // Twitch expects pings within 5 min
-	pongTimeout     = 10 * time.Second
-	maxTopics       = 50
-	reconnectBase   = 1 * time.Second
-	reconnectMax    = 2 * time.Minute
+	pubsubURL        = "wss://pubsub-edge.twitch.tv/v1"
+	pingInterval     = 4*time.Minute + 30*time.Second // Twitch expects pings within 5 min
+	pongTimeout      = 10 * time.Second
+	maxTopics        = 50
+	reconnectBase    = 1 * time.Second
+	reconnectMax     = 2 * time.Minute
+	eventSendTimeout = 2 * time.Second
 )
 
 // PubSubClient manages a WebSocket connection to Twitch PubSub.
@@ -234,13 +235,13 @@ func (p *PubSubClient) handleCommunityPoints(rawMessage string) {
 			if channelID == "" {
 				channelID = evt.Data.Claim.ChannelID
 			}
-			p.events <- FarmerEvent{
+			p.emitEvent(FarmerEvent{
 				Type:      EventClaimAvailable,
 				ChannelID: channelID,
 				Data: ClaimData{
 					ClaimID: evt.Data.Claim.ID,
 				},
-			}
+			})
 		}
 	case "points-earned":
 		if evt.Data.PointGain != nil {
@@ -256,7 +257,7 @@ func (p *PubSubClient) handleCommunityPoints(rawMessage string) {
 			if pointsGained == 0 {
 				pointsGained = evt.Data.PointGain.TotalPoints
 			}
-			p.events <- FarmerEvent{
+			p.emitEvent(FarmerEvent{
 				Type:      EventPointsEarned,
 				ChannelID: channelID,
 				Data: PointsData{
@@ -264,7 +265,7 @@ func (p *PubSubClient) handleCommunityPoints(rawMessage string) {
 					TotalPoints:  totalPoints,
 					ReasonCode:   evt.Data.PointGain.ReasonCode,
 				},
-			}
+			})
 		}
 	case "claim-claimed":
 		// Claim was successfully claimed - handled via points-earned
@@ -279,23 +280,23 @@ func (p *PubSubClient) handleVideoPlayback(channelID, rawMessage string) {
 
 	switch evt.Type {
 	case "stream-up":
-		p.events <- FarmerEvent{
+		p.emitEvent(FarmerEvent{
 			Type:      EventStreamUp,
 			ChannelID: channelID,
-		}
+		})
 	case "stream-down":
-		p.events <- FarmerEvent{
+		p.emitEvent(FarmerEvent{
 			Type:      EventStreamDown,
 			ChannelID: channelID,
-		}
+		})
 	case "viewcount":
-		p.events <- FarmerEvent{
+		p.emitEventDroppable(FarmerEvent{
 			Type:      EventViewCount,
 			ChannelID: channelID,
 			Data: ViewCountData{
 				Viewers: evt.Viewers,
 			},
-		}
+		})
 	}
 }
 
@@ -306,7 +307,7 @@ func (p *PubSubClient) handleRaid(channelID, rawMessage string) {
 	}
 
 	if evt.Raid.ID != "" {
-		p.events <- FarmerEvent{
+		p.emitEvent(FarmerEvent{
 			Type:      EventRaid,
 			ChannelID: channelID,
 			Data: RaidData{
@@ -314,7 +315,7 @@ func (p *PubSubClient) handleRaid(channelID, rawMessage string) {
 				TargetLogin:       evt.Raid.TargetLogin,
 				TargetDisplayName: evt.Raid.TargetDisplayName,
 			},
-		}
+		})
 	}
 }
 
@@ -413,6 +414,25 @@ func (p *PubSubClient) sendError(err error) {
 	}
 }
 
+func (p *PubSubClient) emitEvent(ev FarmerEvent) {
+	timer := time.NewTimer(eventSendTimeout)
+	defer timer.Stop()
+
+	select {
+	case p.events <- ev:
+	case <-p.closeCh:
+	case <-timer.C:
+		p.sendError(fmt.Errorf("dropping PubSub event %d after blocked queue", ev.Type))
+	}
+}
+
+func (p *PubSubClient) emitEventDroppable(ev FarmerEvent) {
+	select {
+	case p.events <- ev:
+	default:
+	}
+}
+
 func generateNonce() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -438,7 +458,7 @@ func (p *PubSubClient) handleDropEvent(rawMessage string) {
 
 	switch msg.Type {
 	case "drop-progress":
-		p.events <- FarmerEvent{
+		p.emitEvent(FarmerEvent{
 			Type: EventDropProgress,
 			Data: DropProgressData{
 				CampaignID:             msg.Data.CampaignID,
@@ -446,16 +466,16 @@ func (p *PubSubClient) handleDropEvent(rawMessage string) {
 				CurrentMinutesWatched:  msg.Data.CurrentProgressMin,
 				RequiredMinutesWatched: msg.Data.RequiredProgressMin,
 			},
-		}
+		})
 	case "drop-claim":
-		p.events <- FarmerEvent{
+		p.emitEvent(FarmerEvent{
 			Type: EventDropClaim,
 			Data: DropClaimData{
 				CampaignID:     msg.Data.CampaignID,
 				DropID:         msg.Data.DropID,
 				DropInstanceID: msg.Data.DropInstanceID,
 			},
-		}
+		})
 	}
 }
 
@@ -470,7 +490,7 @@ func (p *PubSubClient) handleBroadcastSettings(channelID, rawMessage string) {
 	if err := json.Unmarshal([]byte(rawMessage), &msg); err != nil {
 		return
 	}
-	p.events <- FarmerEvent{
+	p.emitEvent(FarmerEvent{
 		ChannelID: channelID,
 		Type:      EventGameChange,
 		Data: GameChangeData{
@@ -478,5 +498,5 @@ func (p *PubSubClient) handleBroadcastSettings(channelID, rawMessage string) {
 			NewGameName: msg.Game,
 			Title:       msg.Status,
 		},
-	}
+	})
 }
