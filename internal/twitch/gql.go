@@ -19,6 +19,7 @@ import (
 const (
 	gqlURL     = "https://gql.twitch.tv/gql"
 	TVClientID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp" // Android App client-ID — bypasses integrity tokens, supports ViewerDropsDashboard
+	maxGQLBody = 8 * 1024 * 1024
 )
 
 // Raw GQL queries for read operations
@@ -321,7 +322,7 @@ func (g *GQLClient) do(req *GQLRequest) (*GQLResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxGQLBody))
 	if err != nil {
 		return nil, fmt.Errorf("read gql response: %w", err)
 	}
@@ -361,7 +362,7 @@ func (g *GQLClient) doBatch(reqs []GQLRequest) ([]GQLResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxGQLBody))
 	if err != nil {
 		return nil, fmt.Errorf("read gql response: %w", err)
 	}
