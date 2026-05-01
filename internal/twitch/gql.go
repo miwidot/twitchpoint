@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -566,6 +567,14 @@ func (g *GQLClient) GetChannelNameByID(channelID string) (string, error) {
 	return getString(userMap, "displayName"), nil
 }
 
+// ErrClaimNotFound is returned (wrapped) by ClaimCommunityPoints when
+// Twitch reports NOT_FOUND for a claim — meaning the claim was already
+// consumed (manual click in the web UI, or claim window expired). It's
+// a terminal failure for THIS claimID; retrying would never succeed.
+// Callers should bail immediately via errors.Is(err, ErrClaimNotFound)
+// instead of running the standard retry loop.
+var ErrClaimNotFound = errors.New("claim not found")
+
 // ClaimCommunityPoints claims a bonus chest.
 func (g *GQLClient) ClaimCommunityPoints(channelID, claimID string) error {
 	req := &GQLRequest{
@@ -592,6 +601,12 @@ func (g *GQLClient) ClaimCommunityPoints(channelID, claimID string) error {
 					if errMap, ok := errData.(map[string]interface{}); ok {
 						code := getString(errMap, "code")
 						if code != "" {
+							// NOT_FOUND is terminal — claim already consumed
+							// or expired. Wrap the sentinel so callers can
+							// errors.Is and skip the retry loop.
+							if code == "NOT_FOUND" {
+								return fmt.Errorf("claim rejected: %s: %w", code, ErrClaimNotFound)
+							}
 							return fmt.Errorf("claim rejected: %s", code)
 						}
 					}

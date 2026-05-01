@@ -1,9 +1,11 @@
 package points
 
 import (
+	"errors"
 	"time"
 
 	"github.com/miwi/twitchpoint/internal/channels"
+	"github.com/miwi/twitchpoint/internal/twitch"
 )
 
 // dedupTTL is how long we remember claim/raid IDs before pruning.
@@ -64,8 +66,13 @@ func (s *Service) RecordPoints(gained int) {
 // AttemptClaim runs the channel-points bonus claim flow asynchronously
 // with up to 3 retries (2s spaced). On success it bumps the running
 // total, records the claim against the channel state if non-nil, and
-// logs the success line. On all-3-failed it logs the failure with the
-// last error.
+// logs the success line.
+//
+// Bails immediately on twitch.ErrClaimNotFound — Twitch responds with
+// NOT_FOUND when the claim was already consumed (manual click in the
+// web UI, or claim window expired). Retrying that 3× wastes ~6s and
+// can't possibly succeed. The remaining failure modes (network
+// hiccup, transient 5xx, rate limit) ARE retry-worthy.
 //
 // Spawns a goroutine internally — handleEvent must NOT block on
 // network calls or it'll back up the PubSub event channel.
@@ -85,6 +92,11 @@ func (s *Service) AttemptClaim(channelID, claimID, channelName string, ch *chann
 				s.totalClaimsMade++
 				s.mu.Unlock()
 				s.log("Claimed bonus on %s!", channelName)
+				return
+			}
+			if errors.Is(lastErr, twitch.ErrClaimNotFound) {
+				// Already-consumed / expired claim. No point retrying.
+				s.log("Claim on %s skipped — already consumed (NOT_FOUND)", channelName)
 				return
 			}
 		}
