@@ -1,3 +1,23 @@
+== 2026-05-02 22:30 == Bump: v2.0.0-rc.1 → v2.0.0 (GA) ==
+
+Release-candidate soak passed clean. 6h on the rc.1 + spade-fix
+build under live load:
+  141 WATCH credits, 33 CLAIM bonuses, 25 inventory polls,
+  0 failed claims, 0 errors / warnings / panics / stalls / timeouts.
+
+2 commits since rc.1:
+- c7a03f7 fix(spade): match assets.twitch.tv as new settings.js host
+  Twitch moved the settings bundle around 2026-04-06; fetchSpadeURL
+  was falling through to the hardcoded fallback (which happened to
+  match the live beacon URL, so it worked by luck). Regex now
+  matches both static.twitchcdn.net and assets.twitch.tv hosts.
+- 4eba24a build(make): platform-suffix `make build` output
+  `make build` was writing bin/twitchpoint while users launch
+  bin/twitchpoint-macos (build-all naming). Rebuilt binaries sat
+  unused. Output path now derived from `go env GOOS/GOARCH`.
+
+This is v2.0.0 — the v2 line is GA.
+
 == 2026-05-02 16:28 == build(make): `make build` writes platform-suffixed binary ==
 
 Surfaced when the spade fix was built but never picked up: `make
