@@ -30,15 +30,17 @@ const (
 	browserUserAgent = "Dalvik/2.1.0 (Linux; U; Android 16; SM-S911B Build/TP1A.220624.014) tv.twitch.android.app/25.3.0/2503006"
 )
 
-// SpadeTracker sends minute-watched heartbeats. As of 2024+ Twitch only
-// credits drops via the `sendSpadeEvents` GQL mutation — the legacy
-// POST to spade.twitch.tv/track silently fails on stricter campaigns.
-// We call gql.SendMinuteWatched here. Name kept for compatibility.
+// SpadeTracker sends minute-watched heartbeats for CHANNEL-POINTS WATCH
+// credit. It POSTs the legacy event payload to the beacon/spade endpoint
+// resolved at Start() (see fetchSpadeURL). Drop-minute credit is a
+// separate pipeline — drops.Watcher uses the sendSpadeEvents GQL mutation
+// with INT user_id + game_id and does not go through this tracker.
+// See sendHeartbeat for the long-form pipeline rationale.
 type SpadeTracker struct {
 	userID     string
 	authToken  string
 	deviceID   string // kept for legacy fallback; no longer used by GQL path
-	spadeURL   string // legacy, only used as informational log
+	spadeURL   string // POST target for channel-points heartbeats; resolved at Start()
 	gql        *GQLClient
 	httpClient *http.Client
 	logFunc    func(string, ...interface{})
@@ -346,8 +348,10 @@ func (s *SpadeTracker) fetchSpadeURL() (string, error) {
 		}
 	}
 
-	// Step 2: Extract settings JS bundle URL from the page
-	settingsRe := regexp.MustCompile(`(https://static\.twitchcdn\.net/config/settings\.[^"'\s]+\.js)`)
+	// Step 2: Extract settings JS bundle URL from the page. Twitch moved the
+	// host from static.twitchcdn.net to assets.twitch.tv around 2026-04 — we
+	// match both so we keep working if they flip back (or A/B test it).
+	settingsRe := regexp.MustCompile(`(https://(?:static\.twitchcdn\.net|assets\.twitch\.tv)/config/settings\.[^"'\s]+\.js)`)
 	settingsMatch := settingsRe.FindStringSubmatch(pageBody)
 	if len(settingsMatch) < 2 {
 		return "", fmt.Errorf("settings JS URL not found in page")

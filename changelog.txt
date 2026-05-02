@@ -1,3 +1,26 @@
+== 2026-05-02 16:18 == fix(spade): match new settings.js host (assets.twitch.tv) ==
+
+13h rc1 soak surfaced one warning: "settings JS URL not found in
+page". Twitch moved the bundle from static.twitchcdn.net/config/
+to assets.twitch.tv/config/ around 2026-04-06 — fetchSpadeURL only
+matched the old host, so every Start() fell through to the hard-
+coded fallback (https://beacon.twitch.tv/track). Worked by luck
+because that's still the value Twitch publishes in settings.js;
+would silently break channel-points WATCH credit if Twitch ever
+moves the beacon endpoint.
+
+Changes:
+- internal/twitch/spade.go fetchSpadeURL regex now matches both
+  static.twitchcdn.net AND assets.twitch.tv hosts.
+- Stale comments on SpadeTracker struct + spadeURL field corrected
+  (claimed spadeURL was "informational only" — actually it's the
+  POST target for channel-points heartbeats; drops use a separate
+  GQL pipeline).
+
+Verified: live twitch.tv now serves assets.twitch.tv/config/
+settings.<hash>.js, regex matches, settings.js still publishes
+beacon_url=https://beacon.twitch.tv/track.
+
 == 2026-05-02 03:03 == Bump: v2.0.0-beta.3 → v2.0.0-rc.1 ==
 
 5 commits since v2.0.0-beta.3, all hardening:
