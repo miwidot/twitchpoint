@@ -1,3 +1,20 @@
+== 2026-05-02 16:28 == build(make): `make build` writes platform-suffixed binary ==
+
+Surfaced when the spade fix was built but never picked up: `make
+build` produced bin/twitchpoint, but the user always launches
+bin/twitchpoint-macos (build-all naming). New binary sat unused
+while the old rc1 one kept running.
+
+Makefile now derives a PLATFORM_SUFFIX from `go env GOOS/GOARCH`
+matching the build-all convention:
+  darwin/arm64 → -macos        darwin/amd64 → -macos-intel
+  linux/amd64  → -linux        linux/arm64  → -linux-arm64
+  windows/amd64 → -windows.exe (other → no suffix, falls back to
+  generic name)
+
+Result: `make build` on Apple Silicon writes
+bin/twitchpoint-macos directly. No more silently-stale launches.
+
 == 2026-05-02 16:18 == fix(spade): match new settings.js host (assets.twitch.tv) ==
 
 13h rc1 soak surfaced one warning: "settings JS URL not found in

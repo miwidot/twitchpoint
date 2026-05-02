@@ -11,9 +11,23 @@ BUILD_DIR=bin
 # (Go embeds those separately) but won't show file:line numbers.
 RELEASE_LDFLAGS=-s -w
 
+# Map the host's GOOS/GOARCH to the same naming convention build-all
+# uses, so `make build` overwrites the platform-suffixed binary the
+# user actually launches (e.g. bin/twitchpoint-macos on Apple Silicon)
+# instead of dropping a generic bin/twitchpoint that gets ignored.
+GOOS   := $(shell go env GOOS)
+GOARCH := $(shell go env GOARCH)
+PLATFORM_SUFFIX := $(strip \
+  $(if $(filter darwin/arm64,$(GOOS)/$(GOARCH)),-macos,\
+  $(if $(filter darwin/amd64,$(GOOS)/$(GOARCH)),-macos-intel,\
+  $(if $(filter linux/amd64,$(GOOS)/$(GOARCH)),-linux,\
+  $(if $(filter linux/arm64,$(GOOS)/$(GOARCH)),-linux-arm64,\
+  $(if $(filter windows/amd64,$(GOOS)/$(GOARCH)),-windows.exe,\
+  ))))))
+
 # `make build` — current platform, release-flavored (stripped, no debug tag).
 build:
-	go build -ldflags="$(RELEASE_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/twitchpoint
+	go build -ldflags="$(RELEASE_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)$(PLATFORM_SUFFIX) ./cmd/twitchpoint
 
 # `make build-debug` — current platform, with -tags=debug (UI shows
 # every prober/heartbeat tick, file:line in stack traces). For
