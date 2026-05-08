@@ -287,15 +287,41 @@ func (s *Service) TryStartWatching(state *channels.State) {
 	}
 }
 
+// orderFillCandidates returns the input list sorted by:
+//  1. Streak-Hunt candidates first (FIFO by OnlineSince ASC)
+//  2. Everything else by ViewerCount DESC (existing behavior)
+//
+// Pure function for testability — caller passes "now" and dropChanID.
+func orderFillCandidates(in []*channels.State, now time.Time, dropChanID string) []*channels.State {
+	var streak, rest []*channels.State
+	for _, ch := range in {
+		if isStreakCandidate(ch.Snapshot(), now, dropChanID) {
+			streak = append(streak, ch)
+		} else {
+			rest = append(rest, ch)
+		}
+	}
+	sortStreakCandidates(streak)
+	sort.Slice(rest, func(i, j int) bool {
+		return rest[i].Snapshot().ViewerCount > rest[j].Snapshot().ViewerCount
+	})
+	return append(streak, rest...)
+}
+
 // FillSpadeSlots scans for online-but-not-watching channels and tops up
 // the Spade tracker until it's at capacity. Called by farmer after
-// EventStreamDown frees a slot — without it, a streamer going offline
-// just leaves a slot empty until the next 5-min Rotate tick.
+// EventStreamDown frees a slot AND by the WATCH_STREAK event handler
+// to immediately rotate in the next streak candidate.
 //
-// Sorts candidates by viewer count (popular channels first) so a
-// flap-and-recover doesn't push a heavy-traffic channel out of rotation
-// in favor of a low-traffic one that happened to come online first.
+// Selection order: Streak-Hunt candidates first (FIFO by OnlineSince),
+// then remaining channels by ViewerCount desc.
 func (s *Service) FillSpadeSlots() {
+	dropChanID := ""
+	if s.dropWatch != nil {
+		dropChanID = s.dropWatch.CurrentChannelID()
+	}
+	now := time.Now()
+
 	var candidates []*channels.State
 	for _, ch := range s.channels.States() {
 		snap := ch.Snapshot()
@@ -304,11 +330,7 @@ func (s *Service) FillSpadeSlots() {
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Snapshot().ViewerCount > candidates[j].Snapshot().ViewerCount
-	})
-
-	for _, ch := range candidates {
+	for _, ch := range orderFillCandidates(candidates, now, dropChanID) {
 		if s.spade.ActiveSlots() <= 0 {
 			break
 		}

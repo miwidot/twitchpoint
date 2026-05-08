@@ -98,3 +98,55 @@ func TestSortStreakCandidates_OldestOnlineSinceFirst(t *testing.T) {
 			in[0].ChannelID, in[1].ChannelID, in[2].ChannelID)
 	}
 }
+
+func TestSelectFillCandidates_StreakBeforeViewerCount(t *testing.T) {
+	// Two online unwatched channels:
+	//   bigViewer: 1000 viewers, no streak candidacy (P2)
+	//   freshLive: 10 viewers, streak candidate (just went online)
+	// FillSpadeSlots must pick freshLive first, not bigViewer.
+	bigViewer := channels.NewState("big", "Big", "1")
+	bigViewer.SetPriority(2)
+	bigViewer.SetOnline("b1", "G", 1000)
+	bigViewer.MarkStreakClaimed() // already claimed → not a streak candidate
+
+	freshLive := channels.NewState("fresh", "Fresh", "2")
+	freshLive.SetPriority(2)
+	freshLive.SetOnline("b2", "G", 10)
+	// StreakClaimedAt left zero → unclaimed → streak candidate
+
+	candidates := []*channels.State{bigViewer, freshLive}
+	ordered := orderFillCandidates(candidates, time.Now(), "")
+
+	if len(ordered) != 2 {
+		t.Fatalf("got %d candidates, want 2", len(ordered))
+	}
+	if ordered[0].ChannelID != "2" {
+		t.Errorf("expected fresh streak candidate (id=2) first, got id=%s",
+			ordered[0].ChannelID)
+	}
+	if ordered[1].ChannelID != "1" {
+		t.Errorf("expected viewer-count fallback (id=1) second, got id=%s",
+			ordered[1].ChannelID)
+	}
+}
+
+func TestSelectFillCandidates_NoStreakCandidates_FallsBackToViewerCount(t *testing.T) {
+	chSmall := channels.NewState("small", "Small", "1")
+	chSmall.SetPriority(2)
+	chSmall.SetOnline("b1", "G", 10)
+	chSmall.MarkStreakClaimed()
+
+	chBig := channels.NewState("big", "Big", "2")
+	chBig.SetPriority(2)
+	chBig.SetOnline("b2", "G", 1000)
+	chBig.MarkStreakClaimed()
+
+	ordered := orderFillCandidates(
+		[]*channels.State{chSmall, chBig}, time.Now(), "",
+	)
+
+	if ordered[0].ChannelID != "2" {
+		t.Errorf("no streak candidates: expected viewer-count desc, got id=%s first",
+			ordered[0].ChannelID)
+	}
+}
