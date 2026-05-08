@@ -20,6 +20,49 @@ const rotationInterval = 5 * time.Minute
 // not the legacy POST-spade pipeline that the Spade tracker uses.
 const maxSpadeSlots = 2
 
+// streakHuntWindow is the cutoff past which a channel is no longer
+// considered for the Streak-Hunt slot. Twitch's WATCH_STREAK bonus
+// fires after ~5min watch-time once a streak >=5 is established;
+// past 30min from stream-start the window is almost always closed,
+// so further blocking the slot for this channel wastes bandwidth.
+const streakHuntWindow = 30 * time.Minute
+
+// isStreakCandidate reports whether a channel is eligible for the
+// Streak-Hunt bucket: online, not owned by the drops watcher, hasn't
+// claimed THIS stream's WATCH_STREAK yet, and is within the hunt
+// window. Pure function — caller passes "now" for testability.
+func isStreakCandidate(snap channels.Snapshot, now time.Time, dropChanID string) bool {
+	if !snap.IsOnline {
+		return false
+	}
+	if snap.ChannelID == dropChanID {
+		return false
+	}
+	if !snap.StreakClaimedAt.Before(snap.OnlineSince) {
+		// Already claimed (or claimed exactly when online — treat as claimed).
+		return false
+	}
+	if now.Sub(snap.OnlineSince) >= streakHuntWindow {
+		return false
+	}
+	return true
+}
+
+// sortStreakCandidates orders by OnlineSince ASC — oldest stream first,
+// since its 30min window is closest to expiring. Stable tie-break by
+// ChannelID for deterministic ordering when two candidates share a
+// timestamp (rare but possible in test setups).
+func sortStreakCandidates(list []*channels.State) {
+	sort.Slice(list, func(i, j int) bool {
+		si := list[i].Snapshot()
+		sj := list[j].Snapshot()
+		if si.OnlineSince.Equal(sj.OnlineSince) {
+			return list[i].ChannelID < list[j].ChannelID
+		}
+		return si.OnlineSince.Before(sj.OnlineSince)
+	})
+}
+
 // RotationLoop runs Rotate every rotationInterval until stopCh fires.
 // Started as a goroutine from Farmer.Start.
 func (s *Service) RotationLoop(stopCh <-chan struct{}) {
@@ -53,7 +96,10 @@ func (s *Service) Rotate() {
 		dropChanID = s.dropWatch.CurrentChannelID()
 	}
 
-	var priority0 []*channels.State // P0: active drop (auto-promoted)
+	now := time.Now()
+
+	var priority0 []*channels.State      // P0: active drop (auto-promoted)
+	var priorityStreak []*channels.State // PS: fresh-online, unclaimed streak (NEW)
 	var priority1 []*channels.State
 	var priority2 []*channels.State
 	for _, ch := range s.channels.States() {
@@ -64,9 +110,19 @@ func (s *Service) Rotate() {
 		if snap.ChannelID == dropChanID {
 			continue // drops Watcher owns this — don't add to Spade rotation
 		}
+		// Drops auto-promote to P0; keeps existing precedence rule
+		// (a channel with both an active drop AND an unclaimed streak
+		// goes to P0 — drops are typically worth more than 450 points).
 		if snap.HasActiveDrop {
 			priority0 = append(priority0, ch)
-		} else if snap.Priority == 1 {
+			continue
+		}
+		// Streak-Hunt sits between P0 and P1 — fresh-online, unclaimed.
+		if isStreakCandidate(snap, now, dropChanID) {
+			priorityStreak = append(priorityStreak, ch)
+			continue
+		}
+		if snap.Priority == 1 {
 			priority1 = append(priority1, ch)
 		} else {
 			priority2 = append(priority2, ch)
@@ -95,7 +151,7 @@ func (s *Service) Rotate() {
 		return priority2[i].ChannelID < priority2[j].ChannelID
 	})
 
-	// Build the desired watch set: P0 → P1 → P2 (rotated cursor).
+	// Build the desired watch set: P0 → PS → P1 → P2 (rotated cursor).
 	desired := make(map[string]*channels.State)
 
 	slotsUsed := 0
@@ -106,6 +162,19 @@ func (s *Service) Rotate() {
 		desired[ch.ChannelID] = ch
 		slotsUsed++
 	}
+
+	// Streak-Hunt: FIFO by OnlineSince ASC. Never starves P1/P2 long-term
+	// because each candidate either claims (within ~5-15min) or times out
+	// (30min hard cap), then drops back to P2 next tick.
+	sortStreakCandidates(priorityStreak)
+	for _, ch := range priorityStreak {
+		if slotsUsed >= maxSpadeSlots {
+			break
+		}
+		desired[ch.ChannelID] = ch
+		slotsUsed++
+	}
+
 	for _, ch := range priority1 {
 		if slotsUsed >= maxSpadeSlots {
 			break
@@ -131,7 +200,7 @@ func (s *Service) Rotate() {
 	// keep anything that stays (and refresh its broadcast ID in case the
 	// streamer restarted mid-cycle).
 	currentlyWatching := make(map[string]bool)
-	for _, list := range [][]*channels.State{priority0, priority1, priority2} {
+	for _, list := range [][]*channels.State{priority0, priorityStreak, priority1, priority2} {
 		for _, ch := range list {
 			if !ch.Snapshot().IsWatching {
 				continue
