@@ -7,28 +7,6 @@ import (
 	"github.com/miwi/twitchpoint/internal/channels"
 )
 
-// makeChan builds a State and forces OnlineSince + StreakClaimedAt directly.
-// We use the public setters so the locks are held correctly.
-func makeChan(t *testing.T, login, id string, onlineAgo time.Duration, claimedAgo time.Duration, hasDrop bool, prio int) *channels.State {
-	t.Helper()
-	s := channels.NewState(login, login, id)
-	s.SetPriority(prio)
-	s.SetOnline("bcast-"+id, "Game", 10)
-	// SetOnline sets OnlineSince to time.Now(). To shift it into the past for
-	// deterministic testing, we use a small race-free trick: sleep a tiny bit
-	// so the timestamps are distinguishable across multiple makeChan calls.
-	if onlineAgo > 0 {
-		time.Sleep(time.Millisecond)
-	}
-	if hasDrop {
-		s.SetDropInfo("Drop", 0, 60)
-	}
-	if claimedAgo >= 0 {
-		s.MarkStreakClaimed()
-	}
-	return s
-}
-
 func TestClassifyStreakBucket_FreshUnclaimedOnline_IsCandidate(t *testing.T) {
 	ch := channels.NewState("alice", "Alice", "111")
 	ch.SetPriority(2)
