@@ -35,6 +35,8 @@ func TestState_MarkStreakClaimed_OnlineSinceIndependent(t *testing.T) {
 	s.MarkStreakClaimed()
 	firstClaim := s.Snapshot().StreakClaimedAt
 
+	// Sleep ensures OnlineSince (set by the second SetOnline) is strictly
+	// after firstClaim; time.Now() resolution on some platforms is ~1ms.
 	time.Sleep(2 * time.Millisecond)
 	s.SetOffline()
 	time.Sleep(2 * time.Millisecond)

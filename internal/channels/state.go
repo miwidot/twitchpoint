@@ -164,7 +164,7 @@ func (s *State) RecordClaim() {
 
 // MarkStreakClaimed records that Twitch granted the WATCH_STREAK bonus
 // for the current stream. Called from the farmer's PointsEarned event
-// handler when ReasonCode == "WATCH_STREAK".
+// handler when the PubSub event carries a WATCH_STREAK reason code.
 func (s *State) MarkStreakClaimed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -224,7 +224,9 @@ type Snapshot struct {
 	LastClaimTime       time.Time
 	OnlineSince         time.Time
 	WatchingSince       time.Time
-	StreakClaimedAt     time.Time
+
+	// Streak-Hunt
+	StreakClaimedAt time.Time
 
 	// Drops
 	HasActiveDrop bool
