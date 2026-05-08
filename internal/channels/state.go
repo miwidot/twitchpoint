@@ -41,6 +41,14 @@ type State struct {
 	OnlineSince   time.Time
 	WatchingSince time.Time
 
+	// Streak-Hunt tracking. StreakClaimedAt is set when a WATCH_STREAK
+	// PubSub event fires for this channel; the rotation logic compares
+	// it to OnlineSince to decide if the current stream's streak is
+	// still claimable. Surviving across SetOffline is intentional —
+	// the comparison `StreakClaimedAt < OnlineSince` makes the new
+	// stream "unclaimed" without an explicit reset.
+	StreakClaimedAt time.Time
+
 	// Drops
 	HasActiveDrop bool
 	DropName      string
@@ -154,6 +162,15 @@ func (s *State) RecordClaim() {
 	s.LastClaimTime = time.Now()
 }
 
+// MarkStreakClaimed records that Twitch granted the WATCH_STREAK bonus
+// for the current stream. Called from the farmer's PointsEarned event
+// handler when ReasonCode == "WATCH_STREAK".
+func (s *State) MarkStreakClaimed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.StreakClaimedAt = time.Now()
+}
+
 // SetBalance sets the points balance.
 func (s *State) SetBalance(balance int) {
 	s.mu.Lock()
@@ -207,6 +224,7 @@ type Snapshot struct {
 	LastClaimTime       time.Time
 	OnlineSince         time.Time
 	WatchingSince       time.Time
+	StreakClaimedAt     time.Time
 
 	// Drops
 	HasActiveDrop bool
@@ -240,6 +258,7 @@ func (s *State) Snapshot() Snapshot {
 		LastClaimTime:       s.LastClaimTime,
 		OnlineSince:         s.OnlineSince,
 		WatchingSince:       s.WatchingSince,
+		StreakClaimedAt:     s.StreakClaimedAt,
 		HasActiveDrop:       s.HasActiveDrop,
 		DropName:            s.DropName,
 		DropProgress:        s.DropProgress,
