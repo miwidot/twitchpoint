@@ -1,3 +1,39 @@
+== 2026-05-08 23:39 == feat(streak): Streak-Hunt slot pool ==
+
+Fixes a bug where the bot lost the 450-point WATCH_STREAK bonus on
+freshly-online channels because all 2 Spade slots were occupied with
+rotation. Logs from the past week showed worst-case 1h51min delay
+between "went LIVE" and first "Started watching" (t0b1_1337 04.05) —
+far past Twitch's streak window.
+
+Mechanic:
+- channels.State gains StreakClaimedAt + MarkStreakClaimed setter.
+  Survives SetOffline intentionally — the comparison
+  StreakClaimedAt < OnlineSince makes a restarted stream re-eligible
+  without an explicit reset.
+- Rotate() and FillSpadeSlots() honor a new bucket between P0 (drops)
+  and P1 (always-watch): online, not drops-owned, StreakClaimedAt
+  before OnlineSince, age <30min. FIFO by OnlineSince ASC — oldest
+  stream first since its window is closest to expiring.
+- farmer.go hooks ReasonCode==WATCH_STREAK -> MarkStreakClaimed and
+  immediately calls FillSpadeSlots so the next candidate gets the
+  slot within seconds, not 5min.
+- Drops keep precedence (P0 > PS) since drops typically pay more
+  than 450 points.
+- 30min hard timeout prevents one stuck candidate from starving the
+  slot pool — scales to 80-90 channels.
+
+Tests: 9 new unit tests in internal/points/rotation_test.go (first
+tests in this package), 3 new in internal/channels/state_test.go.
+
+Commits:
+- 97f6d49 feat(channels): add StreakClaimedAt field + setter
+- cfdf1ca style(channels): address Task 1 review nits
+- 8702b19 feat(farmer): mark WATCH_STREAK claimed + immediate slot top-up
+- 4dfc503 feat(points): add Streak-Hunt bucket between P0 and P1
+- 20bf8b2 test(points): remove unused makeChan helper
+- b629d58 feat(points): FillSpadeSlots prefers streak candidates
+
 == 2026-05-02 22:30 == Bump: v2.0.0-rc.1 → v2.0.0 (GA) ==
 
 Release-candidate soak passed clean. 6h on the rc.1 + spade-fix
