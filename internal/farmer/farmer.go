@@ -703,6 +703,14 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 			ch.AddPointsEarned(data.PointsGained, data.TotalPoints)
 			f.addLog("+%d points on %s (%s) - Balance: %d",
 				data.PointsGained, ch.DisplayName, data.ReasonCode, data.TotalPoints)
+
+			// WATCH_STREAK bonus arrived — mark the channel as claimed and
+			// immediately free its Streak-Hunt slot so the next candidate
+			// doesn't wait 5min for the next Rotate tick.
+			if data.ReasonCode == "WATCH_STREAK" {
+				ch.MarkStreakClaimed()
+				go f.points.FillSpadeSlots()
+			}
 		} else {
 			channelName := f.points.ResolveChannelName(evt.ChannelID)
 			f.addLog("+%d points on %s (%s) - Balance: %d",
