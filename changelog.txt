@@ -1,3 +1,28 @@
+== 2026-05-09 16:33 == Bump: v2.0.0 → v2.1.0 ==
+
+First minor release on the v2 line. Two features bundled:
+
+1. Streak-Hunt slot pool (2026-05-08) — dedicated FIFO bucket between
+   P0 (drops) and P1 (always-watch) for channels that just went live
+   and haven't yet had their 450-point WATCH_STREAK PubSub bonus.
+   Sorted by OnlineSince ASC. WATCH_STREAK event triggers immediate
+   FillSpadeSlots so the next candidate gets the freed slot in
+   seconds, not 5min. 30min hard timeout prevents one stuck channel
+   from starving the slot pool.
+
+2. Real stream.createdAt from GQL (2026-05-09) — eliminates the
+   cold-start edge case where bot restarts caused all already-live
+   channels to look "freshly live" and pile into the streak bucket
+   for 30min. OnlineSince now reflects when the stream actually
+   started on Twitch's side, not when our bot first noticed it.
+
+Tests: 14 new unit tests across internal/channels/state_test.go
+and internal/points/rotation_test.go (the latter is the first
+test file in the points package).
+
+Per CLAUDE.md: built across darwin/arm64, darwin/amd64, linux/amd64,
+linux/arm64, windows/amd64.
+
 == 2026-05-09 13:25 == feat(streak): use real stream.createdAt for OnlineSince ==
 
 Eliminates the Streak-Hunt cold-start edge case observed after bot
