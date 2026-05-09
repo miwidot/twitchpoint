@@ -116,7 +116,7 @@ func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) Ap
 		}
 	} else {
 		// Existing channel — refresh its state with the verified metadata.
-		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 	}
 	snap := ch.Snapshot()
 
@@ -215,7 +215,7 @@ func (s *Service) RefreshWatcherBroadcast(channelID, login string) {
 		return
 	}
 	if ch, ok := s.channels.Get(channelID); ok {
-		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 	}
 	s.watcher.UpdateBroadcast(channelID, info.BroadcastID, info.GameName, info.GameID)
 }

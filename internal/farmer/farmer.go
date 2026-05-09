@@ -430,7 +430,7 @@ func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
 
 	// Check if live and start watching
 	if info.IsLive {
-		state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+		state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 		f.addLog("%s is LIVE - %s (%d viewers)", info.DisplayName, info.GameName, info.ViewerCount)
 		f.points.TryStartWatching(state)
 	} else {
@@ -500,7 +500,7 @@ func (f *Farmer) addTemporaryChannelFromInfo(info *twitch.ChannelInfo, campaignI
 
 	f.points.NotifyChannelAdded(info.Login)
 
-	state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+	state.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 	f.addLog("[Drops] Auto-added temporary channel: %s (campaign: %s)", info.DisplayName, campaignID)
 	// FIX #3: do NOT start Spade for temp drop channels — applySelectorPick
 	// (the caller of addTemporaryChannel) hands the channel directly to the
@@ -731,7 +731,7 @@ func (f *Farmer) handleEvent(evt twitch.FarmerEvent) {
 						f.addLog("Error fetching stream info for %s (attempt %d): %v", ch.Login, attempt+1, err)
 						continue
 					}
-					ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+					ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 					broadcastID = info.BroadcastID
 					gameName = info.GameName
 					if broadcastID != "" && gameName != "" {

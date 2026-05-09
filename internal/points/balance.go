@@ -45,7 +45,7 @@ func (s *Service) RefreshBalances() {
 		if snap.IsOnline {
 			info, err := s.gql.GetChannelInfo(ch.Login)
 			if err == nil && info.IsLive {
-				ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+				ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 			}
 		}
 

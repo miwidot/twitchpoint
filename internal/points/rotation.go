@@ -253,7 +253,7 @@ func (s *Service) fetchAndStartWatching(ch *channels.State) {
 		s.log("[Spade] %s has empty broadcast ID, skipping", ch.DisplayName)
 		return
 	}
-	ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount)
+	ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 	if s.spade.StartWatching(ch.ChannelID, ch.Login, info.BroadcastID, info.GameName, info.GameID) {
 		ch.SetWatching(true)
 		s.prober.Start(ch.Login)

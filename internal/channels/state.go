@@ -104,13 +104,22 @@ func (s *State) SetOnline(broadcastID, gameName string, viewers int) {
 	s.ViewerCount = viewers
 }
 
-// SetOnlineWithGameID is like SetOnline but also stores the game ID.
-// Used by the drops watcher payload (sendSpadeEvents requires real game_id).
-func (s *State) SetOnlineWithGameID(broadcastID, gameName, gameID string, viewers int) {
+// SetOnlineWithGameID is like SetOnline but also stores the game ID and
+// accepts the real Twitch stream-start time (from GQL stream.createdAt).
+// Used by the drops watcher payload (sendSpadeEvents requires real game_id)
+// and by every code path that promotes a channel from offline to online —
+// so OnlineSince reflects when the stream actually started, not when our
+// bot first noticed it. A zero streamStartedAt falls back to time.Now(),
+// preserving behavior for callers without GQL info (e.g. tests).
+func (s *State) SetOnlineWithGameID(broadcastID, gameName, gameID string, viewers int, streamStartedAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.IsOnline {
-		s.OnlineSince = time.Now()
+		if streamStartedAt.IsZero() {
+			s.OnlineSince = time.Now()
+		} else {
+			s.OnlineSince = streamStartedAt
+		}
 	}
 	s.IsOnline = true
 	s.BroadcastID = broadcastID

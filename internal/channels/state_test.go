@@ -48,3 +48,33 @@ func TestState_MarkStreakClaimed_OnlineSinceIndependent(t *testing.T) {
 			firstClaim, snap.OnlineSince)
 	}
 }
+
+func TestState_SetOnlineWithGameID_UsesStreamStartedAt(t *testing.T) {
+	// When caller provides a non-zero streamStartedAt, that becomes
+	// OnlineSince — replacing the time.Now() default so the streak
+	// window is measured from the real stream start.
+	s := NewState("alice", "Alice", "111")
+	realStart := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+
+	s.SetOnlineWithGameID("bcast1", "Game", "g1", 5, realStart)
+
+	snap := s.Snapshot()
+	if !snap.OnlineSince.Equal(realStart) {
+		t.Errorf("OnlineSince = %v, want %v", snap.OnlineSince, realStart)
+	}
+}
+
+func TestState_SetOnlineWithGameID_FallsBackToNow(t *testing.T) {
+	// Zero streamStartedAt (e.g. GQL didn't return createdAt) falls
+	// back to time.Now() so callers without GQL info still work.
+	s := NewState("alice", "Alice", "111")
+	before := time.Now()
+	s.SetOnlineWithGameID("bcast1", "Game", "g1", 5, time.Time{})
+	after := time.Now()
+
+	snap := s.Snapshot()
+	if snap.OnlineSince.Before(before) || snap.OnlineSince.After(after) {
+		t.Errorf("OnlineSince fallback %v not in [%v, %v]",
+			snap.OnlineSince, before, after)
+	}
+}
