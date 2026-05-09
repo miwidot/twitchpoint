@@ -1,3 +1,35 @@
+== 2026-05-09 13:25 == feat(streak): use real stream.createdAt for OnlineSince ==
+
+Eliminates the Streak-Hunt cold-start edge case observed after bot
+restarts. Previously, when the bot started up while channels were
+already live, all of them got OnlineSince=boot-time and piled into
+the Streak-Hunt bucket — blocking the 2 Spade slots for 30min until
+the hard timeout, while genuinely-fresh streamers waited for a slot.
+
+Live evidence (08.05. logs): bot restart at 23:41:50 with saitrixgaming
+already live since 23:00:31 and t0b1_1337 since 23:08:05; both grabbed
+streak-hunt slots, WoLv3rinE went actually live at 23:46:12 and waited
+until 00:11:50 (30min) for the hard-timeout fallback.
+
+Fix: GQL queries (GetChannelInfo, GetChannelInfoByID) now request
+stream.createdAt; the value is parsed into ChannelInfo.StreamCreatedAt
+and threaded through all 7 SetOnlineWithGameID call sites (plan documented
+4, codebase had 7 — subagent caught the gap). State.OnlineSince now
+reflects the real Twitch stream-start time, with time.Now() as fallback
+when GQL doesn't return one (offline channels, parse errors, test mocks).
+
+The Streak-Hunt rotation logic is unchanged — once OnlineSince is
+correct, the 30min window comparison just works.
+
+Tests: 2 new in internal/channels/state_test.go (createdAt path +
+zero fallback). No new tests in internal/twitch/ (parser is HTTP-bound,
+verified via real-world smoke test).
+
+Commits since v2.0.0 + streak-hunt:
+- 25a0bb5 feat(twitch): add StreamCreatedAt field to ChannelInfo
+- 2e6ef48 feat(twitch): parse stream.createdAt into ChannelInfo
+- ab23c63 feat(channels): use real stream.createdAt for OnlineSince
+
 == 2026-05-08 23:39 == feat(streak): Streak-Hunt slot pool ==
 
 Fixes a bug where the bot lost the 450-point WATCH_STREAK bonus on
