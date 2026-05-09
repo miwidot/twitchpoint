@@ -159,6 +159,11 @@ type ChannelInfo struct {
 	GameName    string
 	GameID      string
 	ViewerCount int
+	// StreamCreatedAt is the real Twitch stream-start timestamp from the
+	// GQL `stream.createdAt` field. Zero (time.Time{}) when the channel is
+	// offline OR when the GQL response didn't include it (caller should
+	// fall back to time.Now() in that case).
+	StreamCreatedAt time.Time
 }
 
 // Stream metadata
