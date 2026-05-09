@@ -29,7 +29,7 @@ const (
 	queryGetChannelInfo = `query GetChannelInfo($login: String!) {
 		user(login: $login) {
 			id login displayName
-			stream { id viewersCount game { id displayName } }
+			stream { id createdAt viewersCount game { id displayName } }
 		}
 	}`
 
@@ -73,7 +73,7 @@ const (
 	queryGetChannelInfoByID = `query GetChannelInfoByID($id: ID!) {
 		user(id: $id) {
 			id login displayName
-			stream { id viewersCount game { id displayName } }
+			stream { id createdAt viewersCount game { id displayName } }
 		}
 	}`
 
@@ -482,6 +482,11 @@ func (g *GQLClient) GetChannelInfo(login string) (*ChannelInfo, error) {
 			info.IsLive = true
 			info.BroadcastID = getString(streamMap, "id")
 			info.ViewerCount = getInt(streamMap, "viewersCount")
+			if cs := getString(streamMap, "createdAt"); cs != "" {
+				if t, err := time.Parse(time.RFC3339, cs); err == nil {
+					info.StreamCreatedAt = t
+				}
+			}
 			if game, ok := streamMap["game"]; ok && game != nil {
 				if gameMap, ok := game.(map[string]interface{}); ok {
 					info.GameName = getString(gameMap, "displayName")
@@ -529,6 +534,11 @@ func (g *GQLClient) GetChannelInfoByID(channelID string) (*ChannelInfo, error) {
 			info.IsLive = true
 			info.BroadcastID = getString(streamMap, "id")
 			info.ViewerCount = getInt(streamMap, "viewersCount")
+			if cs := getString(streamMap, "createdAt"); cs != "" {
+				if t, err := time.Parse(time.RFC3339, cs); err == nil {
+					info.StreamCreatedAt = t
+				}
+			}
 			if game, ok := streamMap["game"]; ok && game != nil {
 				if gameMap, ok := game.(map[string]interface{}); ok {
 					info.GameName = getString(gameMap, "displayName")
