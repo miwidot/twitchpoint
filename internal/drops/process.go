@@ -181,7 +181,11 @@ func (s *Service) processOnce() {
 		}
 		s.log("[Drops/Pool] picked %s (campaigns: %s)", pick.DisplayName, strings.Join(campaignNames, ", "))
 	} else {
-		s.log("[Drops/Pool] empty pool — drops idle, slots free for points")
+		fs := s.Selector.LastFilterStats()
+		s.log("[Drops/Pool] empty pool — drops idle, slots free for points "+
+			"(filter: total=%d status=%d expired=%d not_in_wanted=%d not_connected=%d disabled=%d completed=%d no_earnable=%d eligible=%d | poolSize=%d)",
+			fs.Total, fs.StatusRejected, fs.Expired, fs.NotInWanted, fs.NotConnected, fs.Disabled, fs.Completed, fs.NoEarnableDrops, fs.Eligible,
+			s.Selector.LastPoolSize())
 	}
 
 	// 10. Snapshot the picked channel's current drop progress so the

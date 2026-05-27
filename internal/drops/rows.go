@@ -98,7 +98,19 @@ func BuildRows(
 		if !c.EndAt.IsZero() && !c.EndAt.After(time.Now()) {
 			continue
 		}
-		if !c.IsAccountConnected {
+		// wanted_games strict whitelist — same gate as the Selector.
+		// When the user has explicit priority games set, the UI shouldn't
+		// surface campaigns from other games (they're not farmable anyway
+		// per the strict filter, so listing them is noise).
+		if useAutoMarker && !wantedSet[strings.ToLower(strings.TrimSpace(c.GameName))] {
+			continue
+		}
+
+		// Same eligibility as Selector.filterEligibleCampaigns: account-link
+		// OR badge/emote benefit. Skipping this parity caused 80%+ of
+		// campaigns to vanish from the UI even though the selector was
+		// happily picking them in the background.
+		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
 			continue
 		}
 

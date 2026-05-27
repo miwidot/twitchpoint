@@ -106,6 +106,14 @@ func (f *Farmer) Start() error {
 	// consistent (no direct field reads outside of Config itself).
 	authToken := f.cfg.GetAuthToken()
 	f.gql = twitch.NewGQLClient(authToken)
+	// Route GQL diagnostics through the file logger so they're visible on
+	// Windows (log.Printf is io.Discard'd there). Wrap addLog so the diag
+	// call sites can use fmt-style format strings.
+	diagSink := func(format string, args ...interface{}) {
+		f.writeLogFile(fmt.Sprintf(format, args...))
+	}
+	f.gql.DiagLog = diagSink
+	twitch.SetParseDiagSink(diagSink)
 
 	// Validate auth token by getting user info
 	user, err := f.gql.GetUserInfo()
@@ -113,6 +121,7 @@ func (f *Farmer) Start() error {
 		return fmt.Errorf("auth validation failed: %w", err)
 	}
 	f.user = user
+	f.gql.SetUserID(user.ID)
 	f.addLog("Logged in as %s (ID: %s)", user.DisplayName, user.ID)
 
 	// Initialize Spade tracker
@@ -153,6 +162,9 @@ func (f *Farmer) Start() error {
 		// can't pass f.points.Rotate directly here (it would capture nil).
 		TriggerRotation: func() { f.points.Rotate() },
 	})
+	// Route Selector's reject-diag through the same file-logger sink so we
+	// can see why a wanted-game campaign got filtered out on Windows too.
+	f.drops.Selector.SetDiagSink(diagSink)
 
 	// Subscribe to user-level PubSub topics: community points + v1.8.0 drop events
 	if err := f.pubsub.Listen([]string{

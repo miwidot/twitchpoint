@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,39 +31,6 @@ const (
 		user(login: $login) {
 			id login displayName
 			stream { id createdAt viewersCount game { id displayName } }
-		}
-	}`
-
-	queryGetGameStreams = `query DirectoryPage_Game($name: String!, $first: Int!) {
-		game(name: $name) {
-			streams(first: $first) {
-				edges {
-					node {
-						id
-						broadcaster { id login displayName }
-						viewersCount
-						game { id name }
-					}
-				}
-			}
-		}
-	}`
-
-	// Same as queryGetGameStreams but filters for streams with the Drops Enabled
-	// system filter — used when auto-selecting a channel for an unrestricted drop
-	// campaign so we don't pick a streamer who isn't running drops.
-	queryGetGameStreamsDropsEnabled = `query DirectoryPage_Game($name: String!, $first: Int!) {
-		game(name: $name) {
-			streams(first: $first, options: { sort: VIEWER_COUNT, systemFilters: [DROPS_ENABLED] }) {
-				edges {
-					node {
-						id
-						broadcaster { id login displayName }
-						viewersCount
-						game { id name }
-					}
-				}
-			}
 		}
 	}`
 
@@ -111,6 +79,12 @@ const (
 	// PubSub doesn't always fire reliably (TDM has the same issue and uses
 	// this query as the bridge after each Spade heartbeat).
 	dropCurrentSessionHash = "4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b"
+
+	// Persisted query hash for DirectoryPage_Game (game directory streams).
+	// Rotated 2026-04-30 from 98a996c3...; the raw-query variant we used
+	// previously may stop being accepted by Twitch's GQL backend at any
+	// time, the persisted hash is the Android-app canonical traffic.
+	gameDirectoryHash = "cb5dc816e139dcb8a118f14b4b677d59abc224a4b016c4bc2bb00a47fe0ddec4"
 )
 
 // CurrentDropSession is the lean response from DropCurrentSessionContext.
@@ -246,6 +220,25 @@ type GQLClient struct {
 	httpClient      *http.Client
 	deviceID        string // X-Device-Id header (32 alphanumeric, persisted per session)
 	clientSessionID string // Client-Session-Id header (16 hex bytes, per session)
+	userID          string // Twitch user ID — set by SetUserID after login. Required by DropCampaignDetails (channelLogin variable).
+	// DiagLog is an optional sink for diagnostic messages that need to
+	// reach the user-visible file log. Set by callers AFTER construction.
+	// On Windows log.Printf goes to io.Discard, so we can't use it for
+	// anything the user needs to see.
+	DiagLog func(format string, args ...interface{})
+}
+
+// SetUserID stores the logged-in user's Twitch ID. Required before any
+// DropCampaignDetails fetch, which passes it as the channelLogin variable.
+func (g *GQLClient) SetUserID(id string) { g.userID = id }
+
+// diag emits a diagnostic line via DiagLog if set, otherwise log.Printf.
+func (g *GQLClient) diag(format string, args ...interface{}) {
+	if g.DiagLog != nil {
+		g.DiagLog(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // NewGQLClient creates a new GQL client with the given auth token.
@@ -718,8 +711,44 @@ func (g *GQLClient) GetChannelPointsBalance(channelLogin string) (int, error) {
 }
 
 // GetGameStreams queries the game directory for live streams.
-func (g *GQLClient) GetGameStreams(gameName string, limit int) ([]GameStream, error) {
-	return g.fetchGameStreams(gameName, limit, queryGetGameStreams)
+// `slug` is the URL-safe game slug; if you only have a display name, use
+// SlugFromGameName as a derivation fallback.
+func (g *GQLClient) GetGameStreams(slug string, limit int) ([]GameStream, error) {
+	return g.fetchGameStreams(slug, limit, nil)
+}
+
+// SlugFromGameName derives a Twitch URL slug from a game's displayName.
+// Lowercases, replaces non-alphanumeric runs with single dashes, trims
+// leading/trailing dashes. Matches Twitch's own slug-generation pattern for
+// common titles: "Escape from Tarkov" → "escape-from-tarkov".
+//
+// Used as a fallback when an upstream response did not carry the canonical
+// `game.slug` field. Twitch usually accepts the derived slug, but if the
+// actual canonical slug differs (rare; e.g. games whose URL uses a number
+// suffix from a name collision) the parsed slug from drops responses
+// should be preferred.
+func SlugFromGameName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return ""
+	}
+	var b strings.Builder
+	prevDash := true
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	out := b.String()
+	out = strings.TrimRight(out, "-")
+	return out
 }
 
 // GetGameStreamsDropsEnabled is like GetGameStreams but filters for streams
@@ -727,8 +756,8 @@ func (g *GQLClient) GetGameStreams(gameName string, limit int) ([]GameStream, er
 // running the drop campaign. Use this when auto-selecting a temp channel for
 // an unrestricted drop campaign so we don't pick a streamer who is in the
 // game category but not participating in drops.
-func (g *GQLClient) GetGameStreamsDropsEnabled(gameName string, limit int) ([]GameStream, error) {
-	return g.fetchGameStreams(gameName, limit, queryGetGameStreamsDropsEnabled)
+func (g *GQLClient) GetGameStreamsDropsEnabled(slug string, limit int) ([]GameStream, error) {
+	return g.fetchGameStreams(slug, limit, []string{"DROPS_ENABLED"})
 }
 
 // GetCurrentDropSession queries Twitch's DropCurrentSessionContext for the
@@ -848,13 +877,42 @@ func (g *GQLClient) SearchGameCategories(query string, limit int) ([]string, err
 	return out, nil
 }
 
-func (g *GQLClient) fetchGameStreams(gameName string, limit int, query string) ([]GameStream, error) {
+// fetchGameStreams queries the DirectoryPage_Game persisted-hash operation
+// for live streams of a given game. `slug` is the URL-safe game slug
+// (e.g. "escape-from-tarkov"); if empty, callers should derive it from the
+// game's displayName. `systemFilters` (e.g. ["DROPS_ENABLED"]) restricts the
+// returned set; pass nil/empty for unfiltered.
+//
+// Variable shape matches the Twitch Android-app's GameDirectory operation;
+// systemFilters is the only knob we currently flex.
+func (g *GQLClient) fetchGameStreams(slug string, limit int, systemFilters []string) ([]GameStream, error) {
+	if systemFilters == nil {
+		systemFilters = []string{}
+	}
 	req := &GQLRequest{
 		OperationName: "DirectoryPage_Game",
-		Query:         query,
 		Variables: map[string]interface{}{
-			"name":  gameName,
-			"first": limit,
+			"limit":               limit,
+			"slug":                slug,
+			"imageWidth":          50,
+			"includeCostreaming":  false,
+			"sortTypeIsRecency":   false,
+			"options": map[string]interface{}{
+				"broadcasterLanguages":  []string{},
+				"freeformTags":          nil,
+				"includeRestricted":     []string{"SUB_ONLY_LIVE"},
+				"recommendationsContext": map[string]interface{}{"platform": "web"},
+				"sort":                  "VIEWER_COUNT",
+				"systemFilters":         systemFilters,
+				"tags":                  []string{},
+				"requestID":             "JIRA-VXP-2397",
+			},
+		},
+		Extensions: &GQLExtensions{
+			PersistedQuery: &PersistedQuery{
+				Version:    1,
+				SHA256Hash: gameDirectoryHash,
+			},
 		},
 	}
 

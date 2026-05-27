@@ -11,7 +11,7 @@ import (
 
 // streamSource is the minimal GQL interface the selector needs. Mocked in tests.
 type streamSource interface {
-	GetGameStreamsDropsEnabled(gameName string, limit int) ([]twitch.GameStream, error)
+	GetGameStreamsDropsEnabled(slug string, limit int) ([]twitch.GameStream, error)
 	// GetChannelInfos resolves stream info for a batch of logins in parallel.
 	// Used for ACL campaigns: query the campaign's allowed_channels directly
 	// instead of relying on the (often too small) game-directory top 100.
@@ -42,12 +42,37 @@ type PoolEntry struct {
 	Campaigns    []CampaignRef // 1+ eligible campaigns this channel serves; sorted with highest priority first
 }
 
+// FilterStats counts rejection reasons from the most recent filter pass.
+// Surfaced by Select callers to diagnose "empty pool" symptoms — without
+// these numbers it's impossible to tell whether 0 candidates means
+// "no eligible campaigns" or "eligible but no live streamers".
+type FilterStats struct {
+	Total           int
+	StatusRejected  int // non-ACTIVE status
+	Expired         int // EndAt in the past
+	NotInWanted     int // wanted_games is non-empty AND campaign's game not in it
+	NotConnected    int // isAccountConnected=false AND no badge/emote benefit
+	Disabled        int // user-disabled
+	Completed       int // user-marked completed
+	NoEarnableDrops int // no IsEarnable drop right now (claimed / out-of-window / precondition gated)
+	Eligible        int
+}
+
 // Selector is a pure pick-a-channel function with no side effects on Farmer state.
 // Construction takes everything it needs as dependencies so tests can substitute mocks.
 type Selector struct {
-	cfg     *config.Config
-	streams streamSource
-	now     func() time.Time // injectable for deterministic tests
+	cfg          *config.Config
+	streams      streamSource
+	now          func() time.Time // injectable for deterministic tests
+	lastFilter   FilterStats      // populated by every Select(); LastFilterStats() reads it
+	lastPoolSize int              // candidates after buildPool, before skip-set
+	diagFn       func(format string, args ...interface{})
+}
+
+// SetDiagSink wires a logger for filter-reject diagnostics. Without it,
+// rejected-wanted-game logging is silently dropped.
+func (s *Selector) SetDiagSink(fn func(format string, args ...interface{})) {
+	s.diagFn = fn
 }
 
 // NewSelector constructs a selector with the production stream source.
@@ -65,21 +90,92 @@ func NewSelector(cfg *config.Config, gql *twitch.GQLClient) *Selector {
 func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []twitch.DropCampaign {
 	now := s.now()
 	out := make([]twitch.DropCampaign, 0, len(campaigns))
+	stats := FilterStats{Total: len(campaigns)}
+
+	// wanted_games as strict whitelist. Empty list = no restriction; any
+	// non-empty list excludes everything else.
+	// Without this, badge/emote campaigns from random Twitch-side games
+	// (TwitchCon, chat-badge promos, etc.) leak into the pool whenever the
+	// user's priority games have no current pool entry — and end up picked
+	// because sortPool only ranks, doesn't gate.
+	wanted := s.cfg.GetGamesToWatch()
+	wantedSet := make(map[string]bool, len(wanted))
+	for _, g := range wanted {
+		wantedSet[strings.ToLower(strings.TrimSpace(g))] = true
+	}
+	hasWantedFilter := len(wantedSet) > 0
+
+	// One-shot diagnostic dump: for every campaign whose game IS in the wanted
+	// list, log status/connection/benefit-type so we can see why a "should
+	// work" campaign got rejected. Routes through diagLog (file logger) so
+	// it's visible on Windows too.
+	logWantedReject := func(c twitch.DropCampaign, reason string) {
+		if !hasWantedFilter {
+			return
+		}
+		if !wantedSet[strings.ToLower(strings.TrimSpace(c.GameName))] {
+			return
+		}
+		benefitTypes := make([]string, 0, len(c.Drops))
+		for _, d := range c.Drops {
+			benefitTypes = append(benefitTypes, d.BenefitType)
+		}
+		if s.diagFn == nil {
+			return
+		}
+		s.diagFn("[Drops/Diag] wanted-game campaign rejected (%s): name=%q game=%q status=%q connected=%t inInventory=%t drops=%d benefitTypes=%v allowChannels=%d endAt=%s",
+			reason, c.Name, c.GameName, c.Status, c.IsAccountConnected, c.InInventory, len(c.Drops), benefitTypes, len(c.Channels), c.EndAt.Format(time.RFC3339))
+	}
+
+	// One-shot dump: enumerate EVERY campaign whose game is in the wanted list,
+	// regardless of filter outcome. Lets us spot "missing campaign" cases
+	// (e.g. Twitch dropped one between two cycles) that the reject-log can't
+	// surface because the campaign isn't there to reject.
+	if hasWantedFilter && s.diagFn != nil {
+		count := 0
+		for _, c := range campaigns {
+			if !wantedSet[strings.ToLower(strings.TrimSpace(c.GameName))] {
+				continue
+			}
+			count++
+			s.diagFn("[Drops/Diag] wanted-game in candidates: name=%q game=%q status=%q connected=%t inInventory=%t drops=%d endAt=%s",
+				c.Name, c.GameName, c.Status, c.IsAccountConnected, c.InInventory, len(c.Drops), c.EndAt.Format(time.RFC3339))
+		}
+		s.diagFn("[Drops/Diag] wanted-game total in candidates: %d", count)
+	}
 
 	for _, c := range campaigns {
 		if c.Status != "" && c.Status != "ACTIVE" {
+			logWantedReject(c, "status")
+			stats.StatusRejected++
 			continue
 		}
 		if !c.EndAt.IsZero() && !c.EndAt.After(now) {
+			logWantedReject(c, "expired")
+			stats.Expired++
 			continue
 		}
-		if !c.IsAccountConnected {
+		if hasWantedFilter && !wantedSet[strings.ToLower(strings.TrimSpace(c.GameName))] {
+			stats.NotInWanted++
+			continue
+		}
+		// Account-link OR badge/emote eligibility. A campaign is earnable
+		// without a linked publisher account if its benefit is a Twitch-side
+		// reward (BADGE or EMOTE). Only DIRECT_ENTITLEMENT rewards (in-game
+		// items) actually require a linked game account. Skipping this
+		// branch filtered out the badge/emote campaigns that should still
+		// be farmable.
+		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
+			logWantedReject(c, "not_connected")
+			stats.NotConnected++
 			continue
 		}
 		if s.cfg.IsCampaignDisabled(c.ID) {
+			stats.Disabled++
 			continue
 		}
 		if s.cfg.IsCampaignCompleted(c.ID) {
+			stats.Completed++
 			continue
 		}
 		// Need at least one drop that's actually earnable RIGHT NOW.
@@ -98,11 +194,15 @@ func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []tw
 			}
 		}
 		if !hasWatchable {
+			logWantedReject(c, "no_earnable")
+			stats.NoEarnableDrops++
 			continue
 		}
 		out = append(out, c)
 	}
 
+	stats.Eligible = len(out)
+	s.lastFilter = stats
 	return out
 }
 
@@ -116,18 +216,27 @@ func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []tw
 func (s *Selector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 	pinnedID := s.cfg.GetPinnedCampaign()
 
-	// Game-name → cached directory result, so we hit GQL at most once per game per cycle.
+	// Game-slug → cached directory result, so we hit GQL at most once per game per cycle.
+	// Slug (URL form) is required by the persisted-hash GameDirectory query; if a campaign
+	// didn't carry one, we derive it from the displayName as a fallback.
 	dirCache := make(map[string][]twitch.GameStream)
-	getDir := func(gameName string) []twitch.GameStream {
-		if cached, ok := dirCache[gameName]; ok {
-			return cached
+	getDir := func(gameSlug, gameName string) []twitch.GameStream {
+		slug := gameSlug
+		if slug == "" {
+			slug = twitch.SlugFromGameName(gameName)
 		}
-		streams, err := s.streams.GetGameStreamsDropsEnabled(gameName, 100)
-		if err != nil {
-			dirCache[gameName] = nil // negative cache for the cycle
+		if slug == "" {
 			return nil
 		}
-		dirCache[gameName] = streams
+		if cached, ok := dirCache[slug]; ok {
+			return cached
+		}
+		streams, err := s.streams.GetGameStreamsDropsEnabled(slug, 100)
+		if err != nil {
+			dirCache[slug] = nil // negative cache for the cycle
+			return nil
+		}
+		dirCache[slug] = streams
 		return streams
 	}
 
@@ -199,7 +308,7 @@ func (s *Selector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 		}
 
 		// No allow list — fall back to game-directory drops-enabled streams.
-		streams := getDir(c.GameName)
+		streams := getDir(c.GameSlug, c.GameName)
 		for _, st := range streams {
 			login := strings.ToLower(st.BroadcasterLogin)
 			entry, exists := byChannel[st.BroadcasterID]
@@ -294,6 +403,7 @@ func (s *Selector) Select(campaigns []twitch.DropCampaign, skipChannels map[stri
 		return nil, nil
 	}
 	pool := s.buildPool(eligible)
+	s.lastPoolSize = len(pool)
 	if len(pool) == 0 {
 		return nil, nil
 	}
@@ -312,3 +422,25 @@ func (s *Selector) Select(campaigns []twitch.DropCampaign, skipChannels map[stri
 	s.sortPool(pool)
 	return pool[0], pool
 }
+
+// LastFilterStats returns the filter-stage rejection counts from the most
+// recent Select call. Use to diagnose "empty pool" symptoms.
+func (s *Selector) LastFilterStats() FilterStats { return s.lastFilter }
+
+// hasBadgeOrEmoteBenefit reports whether any of the campaign's drops awards
+// a BADGE or EMOTE — Twitch-side rewards that can be earned without linking
+// a publisher account.
+func hasBadgeOrEmoteBenefit(c twitch.DropCampaign) bool {
+	for _, d := range c.Drops {
+		switch d.BenefitType {
+		case "BADGE", "EMOTE":
+			return true
+		}
+	}
+	return false
+}
+
+// LastPoolSize returns how many channel candidates the pool stage produced
+// from the most recent Select. 0 with Eligible>0 means the filter passed
+// campaigns but no live drops-enabled streamer was found for any of them.
+func (s *Selector) LastPoolSize() int { return s.lastPoolSize }

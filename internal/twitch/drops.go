@@ -2,7 +2,6 @@ package twitch
 
 import (
 	"fmt"
-	"log"
 	"time"
 )
 
@@ -128,6 +127,7 @@ type DropCampaign struct {
 	Status             string // ACTIVE, EXPIRED, etc.
 	GameName           string
 	GameID             string
+	GameSlug           string // URL slug (e.g. "escape-from-tarkov"); required by the GameDirectory persisted query
 	StartAt            time.Time
 	EndAt              time.Time
 	IsAccountConnected bool // whether the user's account is linked for this game
@@ -146,6 +146,7 @@ type TimeBasedDrop struct {
 	IsClaimed              bool
 	BenefitID              string    // benefit ID for cross-referencing with gameEventDrops
 	BenefitName            string
+	BenefitType            string    // distributionType: BADGE / EMOTE / DIRECT_ENTITLEMENT / UNKNOWN. Drives the "earnable without account-link" check (badges/emotes are Twitch-side rewards, no publisher account needed).
 	StartAt                time.Time // per-drop time window — drop only earnable from StartAt
 	EndAt                  time.Time // per-drop time window — drop only earnable until EndAt
 	PreconditionDrops      []string  // IDs of drops that must be claimed before this one is earnable
@@ -229,6 +230,11 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 	dashboardCampaigns, err := g.getDropsDashboard()
 	if err != nil || dashboardCampaigns == nil {
 		// Fallback: inventory only (still has progress data)
+		if err != nil {
+			g.diag("[Drops/Diag] Dashboard query failed (%v) — falling back to Inventory-only. Campaigns without prior progress will be invisible until user generates first watch-minute (e.g. opens twitch.tv channel in browser).", err)
+		} else {
+			g.diag("[Drops/Diag] Dashboard returned nil/empty — falling back to Inventory-only. Campaigns without prior progress will be invisible until user generates first watch-minute (e.g. opens twitch.tv channel in browser).")
+		}
 		campaigns, _, invErr := g.getDropsFromInventory()
 		if invErr != nil {
 			return nil, invErr
@@ -239,26 +245,89 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 	// Fetch inventory for progress data + gameEventDrops
 	inventoryCampaigns, claimedBenefits, _ := g.getDropsFromInventory()
 
-	log.Printf("[Drops/Merge] Dashboard=%d campaigns, Inventory=%d campaigns, gameEventDrops=%d benefits",
-		len(dashboardCampaigns), len(inventoryCampaigns), len(claimedBenefits))
+	// One-shot diag: dump every inventory campaign so we can spot
+	// "should-be-active campaign missing or mislabeled" cases.
+	for _, ic := range inventoryCampaigns {
+		claimedCount := 0
+		totalDrops := 0
+		for _, d := range ic.Drops {
+			totalDrops++
+			if d.IsClaimed {
+				claimedCount++
+			}
+		}
+		g.diag("[Drops/Diag] inventory entry: name=%q game=%q status=%q connected=%t drops=%d claimed=%d endAt=%s",
+			ic.Name, ic.GameName, ic.Status, ic.IsAccountConnected, totalDrops, claimedCount, ic.EndAt.Format(time.RFC3339))
+	}
 
-	// Build lookups from inventory campaigns
-	inventoryCampaignIDs := make(map[string]bool)
-	progressByDropID := make(map[string]TimeBasedDrop)
+	// Step 2.5: Dashboard only returns campaign summaries (no timeBasedDrops,
+	// no allow.channels) under the persisted hash. For any campaign that's
+	// NOT already in the inventory (= no progress yet), we need to fetch its
+	// full detail explicitly via DropCampaignDetails. Limit to ACTIVE /
+	// UPCOMING campaigns whose window hasn't expired — avoids burning
+	// batch slots on dead campaigns.
+	inventoryCampaignIDs := make(map[string]bool, len(inventoryCampaigns))
 	for _, ic := range inventoryCampaigns {
 		inventoryCampaignIDs[ic.ID] = true
+	}
+
+	now := time.Now()
+	var needDetails []string
+	for _, dc := range dashboardCampaigns {
+		if inventoryCampaignIDs[dc.ID] {
+			continue
+		}
+		if dc.Status != "" && dc.Status != "ACTIVE" && dc.Status != "UPCOMING" {
+			continue
+		}
+		if !dc.EndAt.IsZero() && !dc.EndAt.After(now) {
+			continue
+		}
+		needDetails = append(needDetails, dc.ID)
+	}
+
+	detailsByID, detailsErr := g.getCampaignDetails(needDetails)
+	if detailsErr != nil {
+		g.diag("[Drops/Diag] CampaignDetails partial failure (%v) — got %d/%d, continuing with what we have", detailsErr, len(detailsByID), len(needDetails))
+	}
+
+	g.diag("[Drops/Merge] Dashboard=%d campaigns, Inventory=%d campaigns, Details fetched=%d/%d, gameEventDrops=%d benefits",
+		len(dashboardCampaigns), len(inventoryCampaigns), len(detailsByID), len(needDetails), len(claimedBenefits))
+
+	// Rebuild lookups now that we have details
+	progressByDropID := make(map[string]TimeBasedDrop)
+	for _, ic := range inventoryCampaigns {
 		for _, drop := range ic.Drops {
 			progressByDropID[drop.ID] = drop
 		}
 	}
 
-	// Merge progress into dashboard campaigns
+	// Step 3: Merge detail/inventory data into the Dashboard summaries.
+	// Priority: inventory (has progress) > details (no progress) > dashboard
+	// summary (useless on its own — no drops/channels).
 	for i := range dashboardCampaigns {
-		if inventoryCampaignIDs[dashboardCampaigns[i].ID] {
+		id := dashboardCampaigns[i].ID
+
+		if inventoryCampaignIDs[id] {
 			dashboardCampaigns[i].InInventory = true
+			// Inventory entries have full detail AND progress. Replace the
+			// summary with them so the selector sees timeBasedDrops/channels.
+			for _, ic := range inventoryCampaigns {
+				if ic.ID == id {
+					ic.InInventory = true
+					dashboardCampaigns[i] = ic
+					break
+				}
+			}
+		} else if details, ok := detailsByID[id]; ok {
+			// Details query returned full detail; replace summary. No progress
+			// to merge (the campaign isn't in inventory).
+			dashboardCampaigns[i] = details
 		}
 
-		// Step 3: Merge progress from inventory (per-drop)
+		// Step 3b: Merge per-drop progress from inventory (handles the case
+		// where Details and Inventory both have the drop ID — Inventory's
+		// progress is authoritative).
 		for j := range dashboardCampaigns[i].Drops {
 			drop := &dashboardCampaigns[i].Drops[j]
 			if inv, ok := progressByDropID[drop.ID]; ok {
@@ -316,14 +385,140 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 		}
 	}
 
+	// Step 5: union with Inventory campaigns that the Dashboard summary
+	// didn't include. Twitch's persisted-hash Dashboard occasionally
+	// omits in-progress campaigns once they reach late-stage state
+	// (partially claimed, late-day rotation, etc.). Inventory still
+	// carries them — and we want to keep farming them. We treat Inventory
+	// as the truth base and union Dashboard/Details INTO it instead of the
+	// other way around (the dashboard-only approach silently drops late-
+	// stage progress campaigns).
+	dashboardCampaignIDs := make(map[string]bool, len(dashboardCampaigns))
+	for _, dc := range dashboardCampaigns {
+		dashboardCampaignIDs[dc.ID] = true
+	}
+	for _, ic := range inventoryCampaigns {
+		if dashboardCampaignIDs[ic.ID] {
+			continue
+		}
+		ic.InInventory = true
+		dashboardCampaigns = append(dashboardCampaigns, ic)
+	}
+
 	return dashboardCampaigns, nil
 }
 
-// getDropsDashboard fetches all campaigns via ViewerDropsDashboard.
+// Persisted-query SHA256 hashes for the Twitch GraphQL operations we use
+// for drops discovery. Switching from raw Query strings to persisted-hash
+// requests aligns us with the Android-app's canonical traffic; raw queries
+// produce non-deterministic responses (dropCampaigns sometimes returns null
+// even for accounts that have eligible campaigns), persisted-hash responses
+// are stable. Hashes verified against current Twitch Android-app traffic.
+const (
+	persistedHashViewerDropsDashboard = "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619"
+	persistedHashInventory            = "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b"
+	// persistedHashCampaignDetails returns the full per-campaign object
+	// (timeBasedDrops, allow.channels, self.isAccountConnected, etc.) under
+	// data.user.dropCampaign. Used to enrich the Dashboard summary list.
+	persistedHashCampaignDetails = "039277bf98f3130929262cc7c6efd9c141ca3749cb6dca442fc8ead9a53f77c1"
+
+	// campaignDetailsBatchSize: Twitch caps batched GQL requests around 35;
+	// 20 keeps us well under that ceiling while still cutting the round-trip
+	// count by 20x compared to per-campaign calls.
+	campaignDetailsBatchSize = 20
+)
+
+// getCampaignDetails fetches full campaign data for the given IDs in batched
+// requests. Used to enrich the Dashboard summary (which lacks timeBasedDrops
+// and allow.channels) for campaigns that aren't already covered by Inventory.
+//
+// Returns a map keyed by campaign ID. Campaigns that fail to parse are
+// omitted; the function logs but does not error on partial failures so a
+// single bad campaign can't kill the whole refresh cycle.
+func (g *GQLClient) getCampaignDetails(campaignIDs []string) (map[string]DropCampaign, error) {
+	if len(campaignIDs) == 0 {
+		return map[string]DropCampaign{}, nil
+	}
+	if g.userID == "" {
+		return nil, fmt.Errorf("getCampaignDetails: userID not set (call SetUserID first)")
+	}
+
+	out := make(map[string]DropCampaign, len(campaignIDs))
+
+	for start := 0; start < len(campaignIDs); start += campaignDetailsBatchSize {
+		end := start + campaignDetailsBatchSize
+		if end > len(campaignIDs) {
+			end = len(campaignIDs)
+		}
+		chunk := campaignIDs[start:end]
+
+		reqs := make([]GQLRequest, len(chunk))
+		for i, id := range chunk {
+			reqs[i] = GQLRequest{
+				OperationName: "DropCampaignDetails",
+				Variables: map[string]interface{}{
+					// channelLogin variable accepts the user_id as a string here
+					// despite the field name — Twitch backend handles both forms.
+					"channelLogin": g.userID,
+					"dropID":       id,
+				},
+				Extensions: &GQLExtensions{
+					PersistedQuery: &PersistedQuery{
+						Version:    1,
+						SHA256Hash: persistedHashCampaignDetails,
+					},
+				},
+			}
+		}
+
+		resps, err := g.doBatch(reqs)
+		if err != nil {
+			return out, fmt.Errorf("campaign details batch %d-%d: %w", start, end, err)
+		}
+
+		for i, resp := range resps {
+			id := chunk[i]
+			userRaw, ok := resp.Data["user"]
+			if !ok || userRaw == nil {
+				continue
+			}
+			userMap, ok := userRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			campaignRaw, ok := userMap["dropCampaign"]
+			if !ok || campaignRaw == nil {
+				continue
+			}
+			parsed := parseCampaignList([]interface{}{campaignRaw})
+			if len(parsed) == 0 {
+				continue
+			}
+			out[id] = parsed[0]
+		}
+	}
+
+	return out, nil
+}
+
+// getDropsDashboard fetches all campaigns via ViewerDropsDashboard using the
+// persisted-query hash. NOTE: this hash returns only campaign *summaries* —
+// id/name/game/status/endAt/self.isAccountConnected — NOT the nested drops
+// or allow.channels. Callers must enrich with DropCampaignDetails for any
+// campaign whose full data isn't already covered by the Inventory response.
+// See GetDropsInventory for the merge flow.
 func (g *GQLClient) getDropsDashboard() ([]DropCampaign, error) {
 	req := &GQLRequest{
 		OperationName: "ViewerDropsDashboard",
-		Query:         queryDropsDashboard,
+		Variables: map[string]interface{}{
+			"fetchRewardCampaigns": false,
+		},
+		Extensions: &GQLExtensions{
+			PersistedQuery: &PersistedQuery{
+				Version:    1,
+				SHA256Hash: persistedHashViewerDropsDashboard,
+			},
+		},
 	}
 
 	resp, err := g.do(req)
@@ -333,23 +528,80 @@ func (g *GQLClient) getDropsDashboard() ([]DropCampaign, error) {
 
 	currentUser, ok := resp.Data["currentUser"]
 	if !ok || currentUser == nil {
+		g.diag("[Drops/Diag] Dashboard: currentUser missing/null in response (auth token may lack scope, or Client-ID rejected). Raw data keys: %v", mapKeys(resp.Data))
 		return nil, nil
 	}
 	userMap, ok := currentUser.(map[string]interface{})
 	if !ok {
+		g.diag("[Drops/Diag] Dashboard: currentUser is not an object (type=%T)", currentUser)
 		return nil, nil
 	}
 
 	campaignsRaw, ok := userMap["dropCampaigns"]
 	if !ok || campaignsRaw == nil {
+		g.diag("[Drops/Diag] Dashboard: dropCampaigns missing/null (Twitch returned the user but no campaigns — A/B test, region, or account-state issue). currentUser keys: %v", mapKeys(userMap))
 		return nil, nil
 	}
 	campaignList, ok := campaignsRaw.([]interface{})
 	if !ok {
+		g.diag("[Drops/Diag] Dashboard: dropCampaigns is not a list (type=%T)", campaignsRaw)
 		return nil, nil
 	}
 
-	return parseCampaignList(campaignList), nil
+	parsed := parseCampaignList(campaignList)
+	g.diag("[Drops/Diag] Dashboard OK: %d campaigns parsed from %d raw entries", len(parsed), len(campaignList))
+	return parsed, nil
+}
+
+// parseDiagOnce dumps the field shape of the first campaign each call. It
+// routes through the package-level diagSink so the output ends up in the
+// user-visible file log instead of the discarded log.Printf stream.
+func parseDiagOnce(cMap map[string]interface{}) {
+	diag := getParseDiag()
+	if diag == nil {
+		return
+	}
+	drops := -1
+	if td, ok := cMap["timeBasedDrops"].([]interface{}); ok {
+		drops = len(td)
+	} else if _, present := cMap["timeBasedDrops"]; !present {
+		drops = -2 // key missing entirely
+	}
+	channels := -1
+	if allow, ok := cMap["allow"].(map[string]interface{}); ok {
+		if ch, ok := allow["channels"].([]interface{}); ok {
+			channels = len(ch)
+		} else if _, present := allow["channels"]; !present {
+			channels = -2
+		}
+	}
+	diag("[Drops/Diag] First campaign raw keys=%v | timeBasedDrops count=%d (-1 wrong type, -2 missing) | allow.channels count=%d | name=%q endAt=%q status=%q",
+		mapKeys(cMap), drops, channels,
+		getString(cMap, "name"), getString(cMap, "endAt"), getString(cMap, "status"))
+}
+
+// parseDiagSink is the package-level sink for parseCampaignList diagnostics.
+// Set by GQLClient when it has a DiagLog wired. Package-level (not method) so
+// the static parser helpers can reach it without changing signatures.
+var parseDiagSink func(format string, args ...interface{})
+
+func getParseDiag() func(format string, args ...interface{}) { return parseDiagSink }
+
+// SetParseDiagSink wires the file-logger sink for parser diagnostics.
+func SetParseDiagSink(sink func(format string, args ...interface{})) {
+	parseDiagSink = sink
+}
+
+// mapKeys returns the keys of a map[string]interface{} for diagnostic logging.
+func mapKeys(m map[string]interface{}) []string {
+	if m == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // getDropsFromInventory fetches campaigns via the Inventory query (fallback).
@@ -357,7 +609,15 @@ func (g *GQLClient) getDropsDashboard() ([]DropCampaign, error) {
 func (g *GQLClient) getDropsFromInventory() ([]DropCampaign, map[string]time.Time, error) {
 	req := &GQLRequest{
 		OperationName: "Inventory",
-		Query:         queryDropsInventory,
+		Variables: map[string]interface{}{
+			"fetchRewardCampaigns": false,
+		},
+		Extensions: &GQLExtensions{
+			PersistedQuery: &PersistedQuery{
+				Version:    1,
+				SHA256Hash: persistedHashInventory,
+			},
+		},
 	}
 
 	resp, err := g.do(req)
@@ -438,10 +698,16 @@ func parseGameEventDrops(invMap map[string]interface{}) map[string]time.Time {
 // parseCampaignList parses a list of campaign objects from GQL response.
 func parseCampaignList(campaignList []interface{}) []DropCampaign {
 	var campaigns []DropCampaign
-	for _, cRaw := range campaignList {
+	for i, cRaw := range campaignList {
 		cMap, ok := cRaw.(map[string]interface{})
 		if !ok {
 			continue
+		}
+		// One-time diagnostic dump of the first campaign's raw shape to
+		// verify which fields the persisted-hash response actually carries.
+		// Remove once the field-shape question is resolved.
+		if i == 0 {
+			parseDiagOnce(cMap)
 		}
 
 		campaign := DropCampaign{
@@ -451,11 +717,20 @@ func parseCampaignList(campaignList []interface{}) []DropCampaign {
 			IsAccountConnected: true, // default true — only false when API explicitly says so
 		}
 
-		// Parse game
+		// Parse game with `displayName || name` fallback. The persisted-hash
+		// Inventory and CampaignDetails responses return only `name` (Android
+		// schema), while the raw-query Dashboard returned `displayName`.
+		// Without the fallback every inventory campaign ends up with an empty
+		// GameName and gets silently rejected by the wanted_games whitelist.
 		if game, ok := cMap["game"]; ok && game != nil {
 			if gMap, ok := game.(map[string]interface{}); ok {
 				campaign.GameID = getString(gMap, "id")
-				campaign.GameName = getString(gMap, "displayName")
+				if dn := getString(gMap, "displayName"); dn != "" {
+					campaign.GameName = dn
+				} else {
+					campaign.GameName = getString(gMap, "name")
+				}
+				campaign.GameSlug = getString(gMap, "slug")
 			}
 		}
 
@@ -533,6 +808,7 @@ func parseCampaignList(campaignList []interface{}) []DropCampaign {
 									if bMap, ok := benefit.(map[string]interface{}); ok {
 										drop.BenefitID = getString(bMap, "id")
 									drop.BenefitName = getString(bMap, "name")
+									drop.BenefitType = getString(bMap, "distributionType")
 									}
 								}
 							}
