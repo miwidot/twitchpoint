@@ -15,8 +15,6 @@ import (
 const (
 	pubsubURL        = "wss://pubsub-edge.twitch.tv/v1"
 	pingInterval     = 4*time.Minute + 30*time.Second // Twitch expects pings within 5 min
-	pongTimeout      = 10 * time.Second
-	maxTopics        = 50
 	reconnectBase    = 1 * time.Second
 	reconnectMax     = 2 * time.Minute
 	eventSendTimeout = 2 * time.Second
