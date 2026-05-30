@@ -1,3 +1,43 @@
+== 2026-05-31 01:43 == Bump: v2.1.0 → v2.1.1 ==
+
+Patch release covering the drops-discovery rewrite landed after
+v2.1.0. Resolves the case where active Drops campaigns were
+invisible to the bot until the user manually opened Twitch in a
+browser to register a first watch-minute.
+
+Changes:
+
+1. Persisted-hash GQL flow for drops discovery — Dashboard summary
+   + Inventory full detail + DropCampaignDetails batched enrichment
+   replaces the raw-query Dashboard call that returned null for some
+   accounts. Inventory∪Dashboard union ensures in-progress campaigns
+   missing from the Dashboard summary are still picked up.
+
+2. Badge/emote eligibility check — campaigns with BADGE or EMOTE
+   benefits are now eligible without requiring the Twitch account
+   to be linked to the publisher's reward portal.
+
+3. wanted_games strict whitelist — Selector and BuildRows both
+   gate on the configured games list, preventing the bot from
+   picking random unrelated badge/emote campaigns over the
+   wanted-game (Tarkov) priority.
+
+4. Parser fix: campaign.GameName now reads game.displayName ||
+   game.name. The persisted-hash Inventory response returns
+   game.name (not displayName); previous parser dropped GameName
+   entirely, breaking the wanted_games whitelist downstream.
+
+5. Diagnostic logging routed through file logger so Windows users
+   can capture Dashboard nil/empty diagnostics without the console
+   being /dev/null.
+
+Cleanup: removed unused raw-query string constants (queryDrops*),
+dropped utls_transport.go (never wired), trimmed dead pubsub
+constants.
+
+Per CLAUDE.md: built across darwin/arm64, darwin/amd64, linux/amd64,
+linux/arm64, windows/amd64.
+
 == 2026-05-09 16:33 == Bump: v2.0.0 → v2.1.0 ==
 
 First minor release on the v2 line. Two features bundled:
