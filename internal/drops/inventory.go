@@ -43,7 +43,16 @@ func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) {
 
 // autoClaimWith is the testable inner. Tests pass a stub claimer
 // (anything implementing dropClaimer) instead of the real GQL client.
+//
+// When the AutoClaim config flag is false, the ClaimDrop call is
+// skipped entirely — completed drops sit unclaimed until the user
+// claims them via the Twitch UI. Campaign-completion marking still
+// fires when downstream inventory cycles observe every watchable
+// drop as claimed (i.e. user did it manually), because completion
+// detection reads d.IsClaimed which is sourced from Twitch's
+// inventory response, not from our local mutation.
 func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropClaimer) {
+	autoClaim := s.cfg.GetAutoClaim()
 	for ci := range campaigns {
 		c := &campaigns[ci]
 		if c.Status != "" && c.Status != "ACTIVE" {
@@ -68,6 +77,13 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 				continue
 			}
 			if d.IsComplete() && d.DropInstanceID != "" {
+				if !autoClaim {
+					// Drop is claimable but auto-claim is off —
+					// leave it for the user. Campaign isn't fully
+					// claimed yet either, so don't mark complete.
+					allClaimed = false
+					continue
+				}
 				name := d.BenefitName
 				if name == "" {
 					name = d.Name

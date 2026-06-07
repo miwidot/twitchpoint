@@ -64,6 +64,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/drops/", s.handleDropAction)
 	s.mux.HandleFunc("/api/wanted_games", s.handleWantedGames)
 	s.mux.HandleFunc("/api/games/search", s.handleGamesSearch)
+	s.mux.HandleFunc("/api/settings", s.handleSettings)
 
 	// Static files (embedded)
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -404,6 +405,44 @@ func (s *Server) handleCampaignPin(w http.ResponseWriter, r *http.Request, campa
 	jsonResponse(w, map[string]string{
 		"pinned_campaign_id": cfg.GetPinnedCampaign(),
 	})
+}
+
+// SettingsResponse is the /api/settings response. Only the runtime-live
+// flags are exposed for now — boot-time flags (drops_enabled, irc_enabled,
+// web_enabled) require a farmer restart and aren't toggleable from the
+// web UI.
+type SettingsResponse struct {
+	AutoClaim bool `json:"auto_claim"`
+}
+
+// handleSettings serves the live, runtime-toggleable config flags.
+//
+// GET  /api/settings              -> {"auto_claim": true}
+// PUT  /api/settings              -> body: {"auto_claim": false} → 200 OK
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	cfg := s.farmer.Config()
+	switch r.Method {
+	case http.MethodGet:
+		jsonResponse(w, SettingsResponse{
+			AutoClaim: cfg.GetAutoClaim(),
+		})
+	case http.MethodPut:
+		var req SettingsResponse
+		if err := decodeJSONBody(w, r, &req); err != nil {
+			jsonError(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.SetAutoClaim(req.AutoClaim)
+		if err := cfg.Save(); err != nil {
+			jsonError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, SettingsResponse{
+			AutoClaim: cfg.GetAutoClaim(),
+		})
+	default:
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func formatDuration(d time.Duration) string {

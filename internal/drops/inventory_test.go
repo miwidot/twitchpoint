@@ -48,7 +48,7 @@ func newServiceForClaimTest(cfg *config.Config) *Service {
 // If anyone reverts the in-place mutation (e.g. by re-introducing the
 // `go func() { … }()` pattern) this test fails immediately.
 func TestAutoClaim_RegressionABILoop(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AutoClaim: true}
 	s := newServiceForClaimTest(cfg)
 	claimer := &stubClaimer{}
 
@@ -98,7 +98,7 @@ func TestAutoClaim_RegressionABILoop(t *testing.T) {
 // drop a real failure and the campaign would be marked completed
 // despite the user not having received the benefit.
 func TestAutoClaim_FailedClaimDoesNotMutate(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AutoClaim: true}
 	s := newServiceForClaimTest(cfg)
 	claimer := &stubClaimer{returnError: errors.New("network blew up")}
 
@@ -144,7 +144,7 @@ func TestAutoClaim_FailedClaimDoesNotMutate(t *testing.T) {
 // This is the "don't false-cooldown a healthy multi-stage campaign"
 // guard — V1 in our prior discussion.
 func TestAutoClaim_MultiDropChainAdvances(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{AutoClaim: true}
 	s := newServiceForClaimTest(cfg)
 	claimer := &stubClaimer{}
 
@@ -186,5 +186,44 @@ func TestAutoClaim_MultiDropChainAdvances(t *testing.T) {
 	out := sel.filterEligibleCampaigns(campaigns)
 	if len(out) != 1 {
 		t.Fatalf("multi-stage campaign with drop #2 still earnable must remain eligible, got %d", len(out))
+	}
+}
+
+// TestAutoClaim_DisabledSkipsClaim guards the AutoClaim=false path —
+// when the user has disabled auto-claim, a 100%-complete drop with a
+// valid instance ID must NOT be claimed, IsClaimed must remain false
+// locally, and the campaign must NOT be marked completed.
+func TestAutoClaim_DisabledSkipsClaim(t *testing.T) {
+	cfg := &config.Config{AutoClaim: false}
+	s := newServiceForClaimTest(cfg)
+	claimer := &stubClaimer{}
+
+	campaigns := []twitch.DropCampaign{
+		{
+			ID: "campaign-no-autoclaim", Name: "Manual Claim Test",
+			Status: "ACTIVE", IsAccountConnected: true,
+			GameName: "Escape from Tarkov",
+			EndAt:    time.Now().Add(2 * time.Hour),
+			Drops: []twitch.TimeBasedDrop{{
+				ID:                     "drop-1",
+				RequiredMinutesWatched: 60,
+				CurrentMinutesWatched:  60, // complete
+				DropInstanceID:         "instance-xyz",
+				IsClaimed:              false,
+				BenefitName:            "Skip-Me Skin",
+			}},
+		},
+	}
+
+	s.autoClaimWith(campaigns, claimer)
+
+	if len(claimer.calls) != 0 {
+		t.Fatalf("AutoClaim=false must skip ClaimDrop, got %d calls", len(claimer.calls))
+	}
+	if campaigns[0].Drops[0].IsClaimed {
+		t.Error("AutoClaim=false must leave IsClaimed=false")
+	}
+	if cfg.IsCampaignCompleted("campaign-no-autoclaim") {
+		t.Error("AutoClaim=false must NOT mark campaign as completed — user hasn't claimed yet")
 	}
 }

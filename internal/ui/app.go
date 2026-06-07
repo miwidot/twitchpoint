@@ -493,7 +493,15 @@ func (m Model) dropsToggle(drops []drops.ActiveDrop, settings []dropsSetting) Mo
 			s := settings[m.dropsSettingsCursor]
 			s.toggle(m.farmer.Config())
 			_ = m.farmer.Config().Save()
-			m.errMsg = fmt.Sprintf("%s — restart required", s.label)
+			if s.restart {
+				m.errMsg = fmt.Sprintf("%s — restart required", s.label)
+			} else {
+				state := "off"
+				if s.get(m.farmer.Config()) {
+					state = "on"
+				}
+				m.errMsg = fmt.Sprintf("%s → %s", s.label, state)
+			}
 			m.errExpiry = time.Now().Add(3 * time.Second)
 		}
 	}

@@ -37,6 +37,7 @@ type Config struct {
 	WebBind            string         `json:"web_bind,omitempty"`            // web bind address (default 127.0.0.1; set to 0.0.0.0 for LAN access)
 	IrcEnabled         bool           `json:"irc_enabled"`                   // enable IRC for viewer presence (default true)
 	DropsEnabled       bool           `json:"drops_enabled"`                 // enable drop mining (default true)
+	AutoClaim          bool           `json:"auto_claim"`                    // claim 100%-complete drops automatically (default true)
 	DisabledCampaigns  []string       `json:"disabled_campaigns,omitempty"`  // campaign IDs to skip
 	CompletedCampaigns []string       `json:"completed_campaigns,omitempty"` // campaign IDs already fully claimed
 	PinnedCampaignID   string         `json:"pinned_campaign_id,omitempty"`  // v1.7.0 (deprecated v1.8.0; ignored by selector but kept for backward compat)
@@ -71,6 +72,7 @@ func Load(path string) (*Config, error) {
 		WebBind:      "127.0.0.1", // default — localhost-only; set "0.0.0.0" for LAN
 		IrcEnabled:   true,        // default
 		DropsEnabled: true,        // default
+		AutoClaim:    true,        // default
 	}
 
 	data, err := os.ReadFile(path)
@@ -105,6 +107,9 @@ func Load(path string) (*Config, error) {
 	if _, hasDrops := raw["drops_enabled"]; !hasDrops {
 		cfg.DropsEnabled = true
 	}
+	if _, hasAutoClaim := raw["auto_claim"]; !hasAutoClaim {
+		cfg.AutoClaim = true
+	}
 	if _, hasBind := raw["web_bind"]; !hasBind || strings.TrimSpace(cfg.WebBind) == "" {
 		cfg.WebBind = "127.0.0.1"
 	}
@@ -123,7 +128,8 @@ func Load(path string) (*Config, error) {
 	_, hasWebPort := raw["web_port"]
 	_, hasIrcEnabled := raw["irc_enabled"]
 	_, hasDropsEnabled := raw["drops_enabled"]
-	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled || !hasDropsEnabled {
+	_, hasAutoClaim := raw["auto_claim"]
+	if !hasWebEnabled || !hasWebPort || !hasIrcEnabled || !hasDropsEnabled || !hasAutoClaim {
 		needsSave = true
 	}
 
@@ -537,6 +543,26 @@ func (c *Config) SetDropsEnabled(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.DropsEnabled = v
+}
+
+// GetAutoClaim returns the auto-claim-enabled flag. When false, the
+// inventory cycle skips ClaimDrop calls for 100%-complete drops — the
+// user has to claim manually via the Twitch UI. Campaign completion
+// detection still works (it goes through inventory state, not the
+// local claim mutation), so manually-claimed campaigns are still
+// marked completed at the next cycle.
+func (c *Config) GetAutoClaim() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AutoClaim
+}
+
+// SetAutoClaim toggles the auto-claim-enabled flag. The change takes
+// effect on the next inventory cycle — no farmer restart needed.
+func (c *Config) SetAutoClaim(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AutoClaim = v
 }
 
 // GetIrcEnabled returns the IRC-presence-enabled flag.

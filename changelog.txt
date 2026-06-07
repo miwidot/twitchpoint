@@ -1,3 +1,43 @@
+== 2026-06-07 15:56 == Bump: v2.1.1 → v2.1.2 ==
+
+Patch release adding a runtime auto-claim toggle. Default ON — the
+flag mirrors v2.1.1 behaviour for anyone who never touches it.
+
+Use case: users who want to manually claim drops via the Twitch UI
+(e.g. to time the claim for a specific reward portal sync) can now
+disable auto-claim without recompiling or hand-editing config.json.
+
+Changes:
+
+1. New config field auto_claim (default true). Auto-migrated into
+   existing configs on next Load() — old config files get the field
+   written back transparently.
+
+2. internal/drops/inventory.go: autoClaimWith reads the flag once
+   per cycle. When false, ClaimDrop is skipped and the local
+   IsClaimed mutation is suppressed; campaign-completion marking
+   is also held back since "all claimed" isn't true anymore. The
+   manual-claim path (user clicks Claim on Twitch.tv) still works —
+   d.IsClaimed comes from Twitch's inventory response, so the next
+   cycle picks up manual claims and marks completion as usual.
+
+3. TUI Drops tab: new Settings row "Auto-claim completed drops".
+   Space toggles. Marked as live (no restart hint) — the inventory
+   cycle reads the flag fresh each run.
+
+4. Web UI: new GET/PUT /api/settings endpoint exposing the flag.
+   Drops tab gains a Settings panel with a toggle switch; click or
+   Space/Enter toggles, persists, re-renders.
+
+5. New regression test TestAutoClaim_DisabledSkipsClaim guards the
+   off path (zero ClaimDrop calls, IsClaimed stays false, campaign
+   not marked completed). Existing AutoClaim tests updated to set
+   AutoClaim=true explicitly (zero-value Config{} now defaults to
+   off, so the regression suite needs to be opt-in).
+
+Per CLAUDE.md: built across darwin/arm64, darwin/amd64, linux/amd64,
+linux/arm64, windows/amd64.
+
 == 2026-05-31 01:43 == Bump: v2.1.0 → v2.1.1 ==
 
 Patch release covering the drops-discovery rewrite landed after

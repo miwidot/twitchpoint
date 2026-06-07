@@ -452,6 +452,18 @@
         .toggle.on::after { left: 18px; background: var(--bg); }
         .toggle.disabled-ui { cursor: not-allowed; opacity: 0.4; }
 
+        .settings-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--rule-soft);
+        }
+        .settings-row:last-child { border-bottom: none; }
+        .settings-label { flex: 1; min-width: 0; }
+        .settings-label > div:first-child { font-weight: 600; }
+
         .games-list { list-style: none; padding: 0; margin: 0 0 16px 0; }
         .games-item {
             display: flex;
@@ -781,6 +793,19 @@
                         <div class="games-suggestions" id="games-suggestions"></div>
                     </div>
                 </div>
+
+                <div class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">Settings<span class="dim">live · takes effect at next inventory cycle</span></div>
+                    </div>
+                    <div class="settings-row" id="setting-autoclaim-row">
+                        <div class="settings-label">
+                            <div>Auto-claim completed drops</div>
+                            <div class="dim" style="font-size:12px">When off, 100%-complete drops stay in inventory until you claim them via Twitch.</div>
+                        </div>
+                        <div class="toggle" id="setting-autoclaim-toggle" role="switch" aria-checked="true" tabindex="0"></div>
+                    </div>
+                </div>
             </section>
 
             <section class="tab-panel" id="panel-help">
@@ -853,6 +878,7 @@
             stats: {},
             logs: [],
             wantedGames: [],
+            settings: { auto_claim: true },
             suggestions: [],
             sugCursor: -1,
             sugQuery: '',
@@ -1465,21 +1491,57 @@
             hideSuggestions();
         }
 
+        // ─── Settings: auto-claim toggle ─────────────────────────
+        const autoclaimToggle = $('#setting-autoclaim-toggle');
+        function renderAutoClaim() {
+            const on = !!state.settings.auto_claim;
+            autoclaimToggle.classList.toggle('on', on);
+            autoclaimToggle.setAttribute('aria-checked', on ? 'true' : 'false');
+        }
+        async function toggleAutoClaim() {
+            if (autoclaimToggle.classList.contains('disabled-ui')) return;
+            autoclaimToggle.classList.add('disabled-ui');
+            const next = !state.settings.auto_claim;
+            try {
+                const r = await fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ auto_claim: next }),
+                });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                state.settings = await r.json();
+                renderAutoClaim();
+            } catch (e) {
+                console.error('toggle auto_claim failed', e);
+            } finally {
+                autoclaimToggle.classList.remove('disabled-ui');
+            }
+        }
+        autoclaimToggle.addEventListener('click', toggleAutoClaim);
+        autoclaimToggle.addEventListener('keydown', e => {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                toggleAutoClaim();
+            }
+        });
+
         // ─── Refresh loop ────────────────────────────────────────
         async function refresh() {
             try {
-                const [stats, channels, drops, logs, wanted] = await Promise.all([
+                const [stats, channels, drops, logs, wanted, settings] = await Promise.all([
                     fetch('/api/stats').then(r => r.json()),
                     fetch('/api/channels').then(r => r.json()),
                     fetch('/api/drops').then(r => r.json()),
                     fetch('/api/logs').then(r => r.json()),
                     fetch('/api/wanted_games').then(r => r.json()),
+                    fetch('/api/settings').then(r => r.json()),
                 ]);
                 state.stats = stats;
                 state.channels = channels;
                 state.drops = drops;
                 state.logs = logs;
                 state.wantedGames = wanted.games || [];
+                state.settings = settings;
 
                 renderStats();
                 renderChannels();
@@ -1487,6 +1549,7 @@
                 renderDrops();
                 renderLogs();
                 renderWantedGames();
+                renderAutoClaim();
             } catch (e) {
                 console.error('refresh failed', e);
             }

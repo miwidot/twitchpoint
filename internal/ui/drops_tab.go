@@ -36,6 +36,14 @@ func dropsSettings(_ *config.Config) []dropsSetting {
 			restart: true,
 		},
 		{
+			// Auto-claim is checked at runtime by the inventory cycle, so
+			// the toggle is live — no restart hint.
+			label:   "Auto-claim completed drops",
+			get:     func(c *config.Config) bool { return c.GetAutoClaim() },
+			toggle:  func(c *config.Config) { c.SetAutoClaim(!c.GetAutoClaim()) },
+			restart: false,
+		},
+		{
 			label:   "IRC viewer presence",
 			get:     func(c *config.Config) bool { return c.GetIrcEnabled() },
 			toggle:  func(c *config.Config) { c.SetIrcEnabled(!c.GetIrcEnabled()) },
