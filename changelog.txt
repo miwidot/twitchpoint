@@ -1,3 +1,33 @@
+== 2026-06-08 00:24 == Bump: v2.1.2 → v2.1.3 ==
+
+Hotfix for v2.1.2's AutoClaim toggle: drops were still being claimed
+even with the flag off. The 15-min inventory-cycle gate worked, but
+the second claim path — the real-time PubSub drop-claim event handler
+in internal/drops/progress.go — was not wired to the flag. Whichever
+path fired first (typically PubSub, since it triggers at 100% live)
+still claimed the drop.
+
+Fix:
+
+1. Extracted the PubSub claim step into a small helper
+   claimViaPubSub(claimer, instanceID) that consults
+   cfg.GetAutoClaim() before calling ClaimDrop. The rest of
+   HandleDropClaim (session-advance polling + ProcessDrops kick)
+   still runs so the bot's local view stays in sync — only the
+   actual claim is skipped.
+
+2. New regression tests TestClaimViaPubSub_DisabledSkipsClaim and
+   TestClaimViaPubSub_EnabledClaims. Both PubSub and inventory-cycle
+   claim paths now have explicit on/off coverage.
+
+Behaviour is otherwise unchanged from v2.1.2 — AutoClaim default ON,
+existing configs unaffected. Anyone who already pulled v2.1.2 and
+toggled AutoClaim off should update — drops were being claimed
+silently via PubSub despite the UI saying "off".
+
+Per CLAUDE.md: built across darwin/arm64, darwin/amd64, linux/amd64,
+linux/arm64, windows/amd64.
+
 == 2026-06-07 15:56 == Bump: v2.1.1 → v2.1.2 ==
 
 Patch release adding a runtime auto-claim toggle. Default ON — the

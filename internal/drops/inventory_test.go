@@ -189,6 +189,41 @@ func TestAutoClaim_MultiDropChainAdvances(t *testing.T) {
 	}
 }
 
+// TestClaimViaPubSub_DisabledSkipsClaim covers the second claim path
+// (PubSub-driven drop-claim event, triggered when Twitch's WS pushes
+// "drop is claimable"). The original toggle wiring missed this path —
+// the inventory-cycle gate stopped claims at the 15-min poll but the
+// real-time PubSub event still claimed. This test guards against a
+// regression of that exact gap.
+func TestClaimViaPubSub_DisabledSkipsClaim(t *testing.T) {
+	cfg := &config.Config{AutoClaim: false}
+	s := newServiceForClaimTest(cfg)
+	claimer := &stubClaimer{}
+
+	s.claimViaPubSub(claimer, "instance-pubsub-xyz")
+
+	if len(claimer.calls) != 0 {
+		t.Fatalf("AutoClaim=false must skip PubSub ClaimDrop, got %d calls", len(claimer.calls))
+	}
+}
+
+// TestClaimViaPubSub_EnabledClaims is the positive case — AutoClaim=true
+// must let the PubSub claim through unchanged.
+func TestClaimViaPubSub_EnabledClaims(t *testing.T) {
+	cfg := &config.Config{AutoClaim: true}
+	s := newServiceForClaimTest(cfg)
+	claimer := &stubClaimer{}
+
+	s.claimViaPubSub(claimer, "instance-pubsub-abc")
+
+	if len(claimer.calls) != 1 {
+		t.Fatalf("AutoClaim=true must call ClaimDrop once, got %d calls", len(claimer.calls))
+	}
+	if claimer.calls[0] != "instance-pubsub-abc" {
+		t.Errorf("ClaimDrop got %q, want %q", claimer.calls[0], "instance-pubsub-abc")
+	}
+}
+
 // TestAutoClaim_DisabledSkipsClaim guards the AutoClaim=false path —
 // when the user has disabled auto-claim, a 100%-complete drop with a
 // valid instance ID must NOT be claimed, IsClaimed must remain false

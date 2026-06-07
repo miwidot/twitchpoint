@@ -128,6 +128,22 @@ func (s *Service) PollProgressOnce() {
 	}
 }
 
+// claimViaPubSub performs the actual ClaimDrop call for a PubSub-driven
+// claim event, gated by the AutoClaim config flag. Extracted so unit
+// tests can swap the claimer for a stub and verify the gate without
+// having to drive the full HandleDropClaim flow (sleeps + polling).
+func (s *Service) claimViaPubSub(claimer dropClaimer, instanceID string) {
+	if !s.cfg.GetAutoClaim() {
+		s.log("[Drops/WS] AutoClaim disabled — skipping claim for instance %s (claim manually via Twitch)", instanceID)
+		return
+	}
+	if err := claimer.ClaimDrop(instanceID); err != nil {
+		s.log("[Drops/WS] Failed to claim drop: %v", err)
+		return
+	}
+	s.log("[Drops/WS] Claimed drop instance %s", instanceID)
+}
+
 // HandleDropClaim is the sequential, TDM-aligned drop-claim flow. It:
 //  1. Claims the drop (synchronous — must succeed before we re-evaluate state)
 //  2. Sleeps 4s (Twitch's backend takes a moment to advance the drop session)
@@ -138,13 +154,14 @@ func (s *Service) PollProgressOnce() {
 //
 // This sequencing prevents the v1.8.0 race where parallel claim +
 // processDrops goroutines saw stale unclaimed state.
+//
+// When the AutoClaim config flag is false, step 1 is skipped — the
+// PubSub claim event is logged and the rest of the flow continues so
+// session progression is still observed correctly. The claimable drop
+// sits in inventory until the user claims it manually via Twitch.tv.
 func (s *Service) HandleDropClaim(data twitch.DropClaimData) {
 	if data.DropInstanceID != "" {
-		if err := s.gql.ClaimDrop(data.DropInstanceID); err != nil {
-			s.log("[Drops/WS] Failed to claim drop: %v", err)
-		} else {
-			s.log("[Drops/WS] Claimed drop instance %s", data.DropInstanceID)
-		}
+		s.claimViaPubSub(s.gql, data.DropInstanceID)
 	}
 
 	// Wait for Twitch to advance the session.
