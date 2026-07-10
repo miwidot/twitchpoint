@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +31,12 @@ const (
 	browserUserAgent = "Dalvik/2.1.0 (Linux; U; Android 16; SM-S911B Build/TP1A.220624.014) tv.twitch.android.app/25.3.0/2503006"
 )
 
-// SpadeTracker sends minute-watched heartbeats for CHANNEL-POINTS WATCH
-// credit. It POSTs the legacy event payload to the beacon/spade endpoint
-// resolved at Start() (see fetchSpadeURL). Drop-minute credit is a
-// separate pipeline — drops.Watcher uses the sendSpadeEvents GQL mutation
-// with INT user_id + game_id and does not go through this tracker.
+// SpadeTracker sends minute-watched heartbeats for watch credit. It
+// POSTs the legacy event payload to the beacon/spade endpoint resolved
+// at Start() (see fetchSpadeURL). Since 2026-07-10 this pipeline carries
+// BOTH channel-points WATCH credit AND drop-minute credit (Twitch killed
+// crediting via the sendSpadeEvents GQL mutation, so the drops pick now
+// holds a heartbeat slot here too — see drops/apply.go step 8).
 // See sendHeartbeat for the long-form pipeline rationale.
 type SpadeTracker struct {
 	userID     string
@@ -207,21 +209,23 @@ func (s *SpadeTracker) heartbeatLoop(ch *spadeChannel) {
 
 const heartbeatMaxRetries = 2
 
-// sendHeartbeat posts the minute-watched event for channel-points credit.
+// sendHeartbeat posts the minute-watched event for watch credit.
 //
-// Twitch has TWO separate credit pipelines and they verify differently:
+// Pipeline history:
 //
-//   - Channel-points WATCH credit goes through the legacy
-//     spade.twitch.tv/track (or beacon.twitch.tv/track) POST endpoint
-//     with `player: "site"` / `location: "channel"`. Drops do NOT credit
-//     through this path — that was the v1.5/v1.6 confusion.
-//   - Drop-minute credit goes through the `sendSpadeEvents` GraphQL
-//     mutation with `game_id` and INT user_id. drops.Watcher uses that
-//     path independently.
-//
-// SpadeTracker only handles channel-points farming, so it sticks with
-// POST. The drops Watcher takes its picked channel exclusively (Spade
-// skips it) so there's no double-credit risk.
+//   - Pre-2026-07-10, Twitch had TWO separate credit pipelines: channel-
+//     points WATCH via this POST endpoint (`player: "site"` /
+//     `location: "channel"`), drop minutes via the `sendSpadeEvents`
+//     GraphQL mutation (drops.Watcher's path).
+//   - 2026-07-10: Twitch stopped crediting drop minutes via the GQL
+//     mutation entirely (DevilXD/TwitchDropsMiner#1099 broke the same
+//     day). Drop credit now ALSO flows through this POST pipeline — but
+//     only when the payload carries the game attribution fields (`game`,
+//     `game_id`) and an INT `user_id`. A real browser has always sent
+//     these fields, and channel-points credit is unaffected by them.
+//     Independently confirmed by INKCR0W/TwitchDropsMinerGo commits
+//     f590d9b + 63b3287 (2026-07-10): their minimal payload got 204
+//     without crediting; adding game/game_id made drops credit.
 //
 // Restored 2026-04-29 after the v2.0 ABI fix accidentally collapsed both
 // pipelines onto sendSpadeEvents — drops kept crediting, but channel-
@@ -239,22 +243,34 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 	channelID := ch.channelID
 	channelLogin := ch.channelLogin
 	broadcastID := ch.broadcastID
+	gameName := ch.gameName
+	gameID := ch.gameID
 	s.mu.Unlock()
+
+	// INT user_id, not string — same rule as the GQL variant (gql.go):
+	// Twitch's drop-credit pipeline validates the type; a string user_id
+	// returns 204 but the credit is silently dropped.
+	uidInt, _ := strconv.ParseInt(s.userID, 10, 64)
 
 	payload := []map[string]interface{}{
 		{
 			"event": "minute-watched",
 			"properties": map[string]interface{}{
-				"channel_id":   channelID,
-				"broadcast_id": broadcastID,
-				"player":       "site",
-				"user_id":      s.userID,
-				"channel":      channelLogin,
-				"hidden":       false,
-				"live":         true,
-				"location":     "channel",
-				"logged_in":    true,
-				"muted":        false,
+				"channel_id":     channelID,
+				"broadcast_id":   broadcastID,
+				"player":         "site",
+				"user_id":        uidInt,
+				"channel":        channelLogin,
+				"client_time":    time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+				"game":           gameName,
+				"game_id":        gameID,
+				"hidden":         false,
+				"is_live":        true,
+				"live":           true,
+				"location":       "channel",
+				"logged_in":      true,
+				"minutes_logged": 1,
+				"muted":          false,
 			},
 		},
 	}
