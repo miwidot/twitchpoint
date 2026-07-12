@@ -38,6 +38,10 @@ func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) Ap
 				// Clear IsWatching so rotation can pick this channel up
 				// again as a normal Spade slot.
 				ch.SetWatching(false)
+				// The pick owned a Spade heartbeat slot (see step 8);
+				// release it. Rotation restarts one if the channel gets
+				// a points slot again.
+				s.spade.StopWatching(prevPickID)
 			}
 			s.UnsubscribeBroadcastSettings(prevPickID)
 		}
@@ -149,6 +153,8 @@ func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) Ap
 		if prevCh, ok := s.channels.Get(prevPickID); ok {
 			prevCh.ClearDropInfo()
 			prevCh.SetWatching(false)
+			// Release the pick-owned Spade heartbeat slot (see step 8).
+			s.spade.StopWatching(prevPickID)
 		}
 		s.UnsubscribeBroadcastSettings(prevPickID)
 	}
@@ -157,12 +163,30 @@ func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) Ap
 	s.SubscribeBroadcastSettings(pick.ChannelID)
 
 	// 8. Hand the channel to the drops Watcher.
+	//
+	// 2026-07-10: Twitch stopped crediting drop minutes via the GQL
+	// sendSpadeEvents mutation (the Watcher's send_watch path) — sessions
+	// stay nil or the minute counter freezes, on every campaign.
+	// DevilXD/TwitchDropsMiner#1099 is the same breakage. Drop credit now
+	// flows through the Spade POST pipeline instead, provided the payload
+	// carries game/game_id and an INT user_id (see sendHeartbeat). The
+	// pick therefore now gets Spade heartbeats IN ADDITION to the Watcher
+	// (which still does the DropCurrentSessionContext progress polling) —
+	// pre-change this line was s.spade.StopWatching(snap.ChannelID).
 	if s.watcher != nil {
-		s.spade.StopWatching(snap.ChannelID)
 		s.prober.Stop(snap.Login)
 		ch.SetWatching(true) // for UI display
+		// Watcher first: Rotate() keys off watcher.CurrentChannelID to
+		// reserve a heartbeat slot for the pick (see points/rotation.go),
+		// so it must already report the new pick when we kick rotation.
 		s.watcher.Start(snap.ChannelID, snap.Login, snap.BroadcastID, snap.GameName, snap.GameID)
-		s.log("[Drops/Watch] handing %s to drops Watcher (exclusive)", snap.DisplayName)
+		if s.triggerRotation != nil {
+			s.triggerRotation()
+		}
+		if !s.spade.StartWatching(snap.ChannelID, snap.Login, snap.BroadcastID, snap.GameName, snap.GameID) {
+			s.log("[Drops/Watch] WARNING: no free Spade slot for %s — drop minutes will not credit", snap.DisplayName)
+		}
+		s.log("[Drops/Watch] handing %s to drops Watcher (exclusive+spade)", snap.DisplayName)
 	}
 
 	// Reset the silent-pick stall clock so PollProgressOnce gives this
@@ -218,6 +242,10 @@ func (s *Service) RefreshWatcherBroadcast(channelID, login string) {
 		ch.SetOnlineWithGameID(info.BroadcastID, info.GameName, info.GameID, info.ViewerCount, info.StreamCreatedAt)
 	}
 	s.watcher.UpdateBroadcast(channelID, info.BroadcastID, info.GameName, info.GameID)
+	// Keep the pick's Spade heartbeats (step 8) on the fresh broadcast_id
+	// AND game attribution too — stale broadcast_id or game_id makes Twitch
+	// silently drop the events.
+	s.spade.UpdateBroadcastID(channelID, info.BroadcastID, info.GameName, info.GameID)
 }
 
 // HandleGameChange reacts to a broadcast-settings-update PubSub event.

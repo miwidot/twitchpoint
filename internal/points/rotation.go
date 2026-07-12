@@ -154,9 +154,18 @@ func (s *Service) Rotate() {
 	// Build the desired watch set: P0 → PS → P1 → P2 (rotated cursor).
 	desired := make(map[string]*channels.State)
 
+	// Since 2026-07-10 the drop pick needs a Spade heartbeat slot of its
+	// own (drop credit moved onto the Spade POST pipeline — see
+	// drops/apply.go step 8), so rotation must leave one slot free while
+	// a pick is active. The pick itself is excluded from the lists above.
+	slotLimit := maxSpadeSlots
+	if dropChanID != "" {
+		slotLimit--
+	}
+
 	slotsUsed := 0
 	for _, ch := range priority0 {
-		if slotsUsed >= maxSpadeSlots {
+		if slotsUsed >= slotLimit {
 			break
 		}
 		desired[ch.ChannelID] = ch
@@ -168,7 +177,7 @@ func (s *Service) Rotate() {
 	// (30min hard cap), then drops back to P2 next tick.
 	sortStreakCandidates(priorityStreak)
 	for _, ch := range priorityStreak {
-		if slotsUsed >= maxSpadeSlots {
+		if slotsUsed >= slotLimit {
 			break
 		}
 		desired[ch.ChannelID] = ch
@@ -176,14 +185,14 @@ func (s *Service) Rotate() {
 	}
 
 	for _, ch := range priority1 {
-		if slotsUsed >= maxSpadeSlots {
+		if slotsUsed >= slotLimit {
 			break
 		}
 		desired[ch.ChannelID] = ch
 		slotsUsed++
 	}
 
-	remainingSlots := maxSpadeSlots - slotsUsed
+	remainingSlots := slotLimit - slotsUsed
 	if remainingSlots > 0 && len(priority2) > 0 {
 		s.mu.Lock()
 		idx := s.rotationIndex % len(priority2)
@@ -212,7 +221,7 @@ func (s *Service) Rotate() {
 				ch.SetWatching(false)
 			} else {
 				snap := ch.Snapshot()
-				s.spade.UpdateBroadcastID(snap.ChannelID, snap.BroadcastID)
+				s.spade.UpdateBroadcastID(snap.ChannelID, snap.BroadcastID, snap.GameName, snap.GameID)
 			}
 		}
 	}
