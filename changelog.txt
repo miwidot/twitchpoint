@@ -1,3 +1,47 @@
+== 2026-07-12 16:14 == Bump: v2.1.3 → v2.1.4 ==
+
+CRITICAL hotfix: restore drop-minute credit after Twitch's 2026-07-10/11
+server-side change.
+
+Symptom: from 2026-07-11 21:05 onward the drops Watcher kept sending
+heartbeats without errors, but progress froze at 0/0 on EVERY campaign —
+DropCurrentSessionContext returned nil / no session opened. Channel
+points kept crediting normally.
+
+Root cause: Twitch stopped honoring drop-minute credit through the
+sendSpadeEvents GraphQL mutation. The mutation still returns statusCode
+204, but the credit is silently discarded. This hit every miner tool the
+same day (reference miner reverted to the Spade POST beacon on 2026-07-11;
+see DropCurrentSession / minute-watched discussions). Drop credit now
+flows through the same legacy Spade POST beacon that channel-points WATCH
+already uses — but only if the payload carries game attribution.
+
+Fix (PR #5):
+
+1. internal/twitch/spade.go — the SpadeTracker minute-watched payload now
+   carries game / game_id, an INT (not string) user_id, and
+   client_time / is_live / minutes_logged. Without game/game_id Twitch
+   answers 204 but never credits a game-attributed drop.
+
+2. internal/drops/apply.go — the drop pick now HOLDS a Spade heartbeat
+   slot (step 8) instead of stopping it. RefreshWatcherBroadcast pushes
+   fresh broadcast_id AND game/game_id into the tracker so mid-session
+   stream restarts and game changes don't leave heartbeats on a stale ID.
+
+3. internal/points/rotation.go — rotation reserves one of the two
+   heartbeat slots for the active pick, and UpdateBroadcastID now also
+   refreshes game attribution so a mid-session game change reaches the
+   payload.
+
+The GQL Watcher keeps running — still used for DropCurrentSessionContext
+progress polling; its GQL heartbeat is now harmless (no longer the credit
+path).
+
+Verified live: the Gray Zone Warfare "Summer Stage 2" campaign that sat
+frozen at 0/0 all day resumed crediting 1 minute per minute immediately
+after deploying the fix.
+
+
 == 2026-06-08 00:24 == Bump: v2.1.2 → v2.1.3 ==
 
 Hotfix for v2.1.2's AutoClaim toggle: drops were still being claimed
