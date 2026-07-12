@@ -221,7 +221,7 @@ func (s *Service) Rotate() {
 				ch.SetWatching(false)
 			} else {
 				snap := ch.Snapshot()
-				s.spade.UpdateBroadcastID(snap.ChannelID, snap.BroadcastID)
+				s.spade.UpdateBroadcastID(snap.ChannelID, snap.BroadcastID, snap.GameName, snap.GameID)
 			}
 		}
 	}

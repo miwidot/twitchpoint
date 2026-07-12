@@ -243,8 +243,9 @@ func (s *Service) RefreshWatcherBroadcast(channelID, login string) {
 	}
 	s.watcher.UpdateBroadcast(channelID, info.BroadcastID, info.GameName, info.GameID)
 	// Keep the pick's Spade heartbeats (step 8) on the fresh broadcast_id
-	// too — stale IDs make Twitch silently drop the events.
-	s.spade.UpdateBroadcastID(channelID, info.BroadcastID)
+	// AND game attribution too — stale broadcast_id or game_id makes Twitch
+	// silently drop the events.
+	s.spade.UpdateBroadcastID(channelID, info.BroadcastID, info.GameName, info.GameID)
 }
 
 // HandleGameChange reacts to a broadcast-settings-update PubSub event.

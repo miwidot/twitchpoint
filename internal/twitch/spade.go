@@ -405,10 +405,20 @@ func (s *SpadeTracker) fetchSpadeURL() (string, error) {
 }
 
 // UpdateBroadcastID updates the broadcast ID for an already-watched channel.
-func (s *SpadeTracker) UpdateBroadcastID(channelID, broadcastID string) {
+func (s *SpadeTracker) UpdateBroadcastID(channelID, broadcastID, gameName, gameID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ch, ok := s.channels[channelID]; ok {
 		ch.broadcastID = broadcastID
+		// Also refresh game attribution — a mid-session game change must
+		// reach the heartbeat payload, otherwise Twitch keeps seeing the
+		// stale game_id and silently drops the drop credit. Guard against
+		// empty values so a partial refresh can't wipe a good game_id.
+		if gameName != "" {
+			ch.gameName = gameName
+		}
+		if gameID != "" {
+			ch.gameID = gameID
+		}
 	}
 }
