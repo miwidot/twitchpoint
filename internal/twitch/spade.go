@@ -252,7 +252,8 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 	// returns 204 but the credit is silently dropped.
 	uidInt, err := strconv.ParseInt(s.userID, 10, 64)
 	if err != nil {
-	return
+		s.log("[Spade] skip heartbeat for %s: non-numeric user_id %q: %v", ch.channelLogin, s.userID, err)
+		return
 	}
 
 	payload := []map[string]interface{}{
