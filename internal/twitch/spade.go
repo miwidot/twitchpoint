@@ -250,7 +250,11 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 	// INT user_id, not string — same rule as the GQL variant (gql.go):
 	// Twitch's drop-credit pipeline validates the type; a string user_id
 	// returns 204 but the credit is silently dropped.
-	uidInt, _ := strconv.ParseInt(s.userID, 10, 64)
+	uidInt, err := strconv.ParseInt(s.userID, 10, 64)
+	if err != nil {
+		s.log("[Spade] skip heartbeat for %s: non-numeric user_id %q: %v", ch.channelLogin, s.userID, err)
+		return
+	}
 
 	payload := []map[string]interface{}{
 		{
