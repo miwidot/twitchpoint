@@ -100,6 +100,77 @@ func (d *TimeBasedDrop) IsComplete() bool {
 	return d.RequiredMinutesWatched > 0 && d.CurrentMinutesWatched >= d.RequiredMinutesWatched
 }
 
+// applyClaimedBenefitFallback marks a campaign's drops as claimed based on
+// the account's gameEventDrops benefit-award history. This is a fallback:
+// after a fresh claim Twitch's dashboard sometimes keeps reporting
+// `self.isClaimed=false` for a few seconds to minutes (the same lag window
+// where getCurrentDropSession returns nil), so the bot would otherwise
+// re-pick a campaign whose drop is actually already claimed.
+// gameEventDrops is the permanent benefit-award history and reflects the
+// claim immediately.
+//
+// The award signal is only trustworthy under three guards — without them
+// it false-positives whole campaigns as "fully claimed" and the selector
+// skips them (GitHub issue #7):
+//
+//  1. Time window: the award (lastAwardedAt) must fall inside the drop's
+//     [StartAt, EndAt) window (campaign window when the drop has none).
+//     Otherwise a daily-rolling drop is marked claimed because yesterday's
+//     instance was awarded under the same benefit ID.
+//
+//  2. Completion: a drop below 100% cannot have been claimed — Twitch only
+//     issues a claimable DropInstanceID at completion. Marking a
+//     mid-progress drop (e.g. 62%) claimed is always wrong.
+//
+//  3. Benefit uniqueness: when several drops in the SAME campaign share one
+//     benefit ID (e.g. R6S "Esports Pack" awarded at 5 escalating watch
+//     tiers), a single award can't tell us WHICH tier was claimed. The
+//     signal is ambiguous, so skip it and trust the inventory's per-drop
+//     isClaimed instead. This is the exact shape that triggered issue #7.
+func applyClaimedBenefitFallback(c *DropCampaign, claimedBenefits map[string]time.Time) {
+	// Count benefit-ID occurrences within this campaign so guard 3 can
+	// detect the ambiguous many-drops-one-benefit case.
+	benefitCount := make(map[string]int)
+	for i := range c.Drops {
+		if bid := c.Drops[i].BenefitID; bid != "" {
+			benefitCount[bid]++
+		}
+	}
+
+	for j := range c.Drops {
+		drop := &c.Drops[j]
+		if drop.IsClaimed || drop.BenefitID == "" {
+			continue
+		}
+		if !drop.IsComplete() {
+			continue // guard 2: below 100% can't have been claimed
+		}
+		if benefitCount[drop.BenefitID] > 1 {
+			continue // guard 3: shared benefit ID — award is ambiguous
+		}
+		awarded, ok := claimedBenefits[drop.BenefitID]
+		if !ok {
+			continue
+		}
+		// guard 1: award must fall inside the drop's own window. Without
+		// per-drop windows, fall back to the campaign window.
+		start := drop.StartAt
+		end := drop.EndAt
+		if start.IsZero() {
+			start = c.StartAt
+		}
+		if end.IsZero() {
+			end = c.EndAt
+		}
+		if start.IsZero() || end.IsZero() {
+			continue // no window to check, keep dashboard truth
+		}
+		if (awarded.Equal(start) || awarded.After(start)) && awarded.Before(end) {
+			drop.IsClaimed = true
+		}
+	}
+}
+
 // ProgressPercent returns the drop progress as a percentage (0-100).
 func (d *TimeBasedDrop) ProgressPercent() int {
 	if d.RequiredMinutesWatched <= 0 {
@@ -229,52 +300,9 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 			}
 		}
 
-		// Step 4: gameEventDrops claim-detection fallback, time-window
-		// scoped. After a recent claim Twitch's dashboard sometimes
-		// keeps reporting `self.isClaimed=false` for a few seconds to
-		// minutes (the same window where getCurrentDropSession returns
-		// nil), so the bot otherwise re-picks a campaign whose drop
-		// is actually already claimed. gameEventDrops is the
-		// permanent benefit-award history and reflects the claim
-		// immediately.
-		//
-		// The v1.8.0 regression we're avoiding: marking a daily-
-		// rolling drop (Marble Day, etc.) as already-claimed because
-		// yesterday's instance was awarded under the same benefit ID.
-		// Fix: only honour the fallback when lastAwardedAt is inside
-		// THIS drop's [StartAt, EndAt) window. That ties the claim
-		// signal to the actual instance, not the benefit ID alone —
-		// matches TDM's approach (src/models/drop.py:49 reads
-		// gameEventDrops timestamp and compares against the drop's
-		// own period).
-		for j := range dashboardCampaigns[i].Drops {
-			drop := &dashboardCampaigns[i].Drops[j]
-			if drop.IsClaimed || drop.BenefitID == "" {
-				continue
-			}
-			awarded, ok := claimedBenefits[drop.BenefitID]
-			if !ok {
-				continue
-			}
-			// If the drop has explicit per-drop windows, the award
-			// must fall inside [StartAt, EndAt). Without windows,
-			// fall back to the campaign window so daily-rolling
-			// campaigns don't false-positive.
-			start := drop.StartAt
-			end := drop.EndAt
-			if start.IsZero() {
-				start = dashboardCampaigns[i].StartAt
-			}
-			if end.IsZero() {
-				end = dashboardCampaigns[i].EndAt
-			}
-			if start.IsZero() || end.IsZero() {
-				continue // no window to check, keep dashboard truth
-			}
-			if (awarded.Equal(start) || awarded.After(start)) && awarded.Before(end) {
-				drop.IsClaimed = true
-			}
-		}
+		// Step 4: gameEventDrops claim-detection fallback (see
+		// applyClaimedBenefitFallback for the full rationale + guards).
+		applyClaimedBenefitFallback(&dashboardCampaigns[i], claimedBenefits)
 	}
 
 	// Step 5: union with Inventory campaigns that the Dashboard summary
