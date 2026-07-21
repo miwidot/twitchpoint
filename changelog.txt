@@ -1,3 +1,36 @@
+== 2026-07-21 19:03 == Bump: v2.1.4 → v2.1.5 ==
+
+Bug-fix release.
+
+1. Campaigns falsely marked "fully claimed" and skipped (GitHub issue #7,
+   PR #8).
+
+   Symptom: a campaign whose drops were still in progress (e.g. R6S
+   "Esports Pack 2026 S1.2" at 62% / 83%) got logged as
+   "fully claimed — marked as completed" and skipped by the selector.
+
+   Cause: the gameEventDrops claim-detection fallback matched purely on
+   BenefitID against the campaign window. Campaigns that award ONE
+   benefit across several escalating watch tiers share a single
+   BenefitID, so a single award flipped EVERY tier to IsClaimed=true.
+
+   Fix: the fallback (now internal/twitch/drops.go
+   applyClaimedBenefitFallback) gained two guards beyond the existing
+   time-window check — (a) a drop below 100% can't have been claimed, and
+   (b) when several drops in one campaign share a BenefitID the award is
+   ambiguous and is ignored (inventory's per-drop isClaimed stays
+   authoritative). New regression tests in internal/twitch/drops_test.go.
+
+2. Non-numeric user_id no longer silently drops the Spade heartbeat
+   (PR #9, based on community PR #6 by @FadingToJosh).
+
+   strconv.ParseInt's error on user_id was discarded; a bad value would
+   send user_id=0 and never credit. The heartbeat is now skipped and the
+   skip is logged so it's diagnosable.
+
+3. Web UI: added a browser-tab favicon (PR #9 / @FadingToJosh).
+
+
 == 2026-07-12 16:14 == Bump: v2.1.3 → v2.1.4 ==
 
 CRITICAL hotfix: restore drop-minute credit after Twitch's 2026-07-10/11
