@@ -190,31 +190,44 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 		break
 	}
 
-	pct := 0
-	if required > 0 {
-		pct = (progress * 100) / required
-		if pct > 100 {
-			pct = 100
-		}
-	}
-
-	eta := required - progress
-	if eta < 0 {
-		eta = 0
-	}
-
-	return ActiveDrop{
+	row := ActiveDrop{
 		CampaignID:         c.ID,
 		CampaignName:       c.Name,
 		GameName:           c.GameName,
 		DropName:           dropName,
 		Progress:           progress,
 		Required:           required,
-		Percent:            pct,
 		EndAt:              c.EndAt,
 		IsEnabled:          true,
 		IsAccountConnected: c.IsAccountConnected,
 		IsPinned:           c.ID == pinnedID && pinnedID != "",
-		EtaMinutes:         eta,
 	}
+	row.recomputeDerived()
+	return row
+}
+
+// recomputeDerived recalculates Percent and EtaMinutes from Progress and
+// Required. Both are pure functions of those two fields, so storing them
+// independently invites divergence: a progress event that advances
+// Progress without recomputing Percent/EtaMinutes (e.g. when Required was
+// momentarily 0) leaves the row showing a stale "248/300min (88%)" where
+// the percentage no longer matches the minutes. Every writer of Progress
+// or Required MUST call this before the row is published so the three
+// fields can never disagree on screen.
+func (d *ActiveDrop) recomputeDerived() {
+	if d.Required <= 0 {
+		d.Percent = 0
+		d.EtaMinutes = 0
+		return
+	}
+	pct := (d.Progress * 100) / d.Required
+	if pct > 100 {
+		pct = 100
+	}
+	d.Percent = pct
+	eta := d.Required - d.Progress
+	if eta < 0 {
+		eta = 0
+	}
+	d.EtaMinutes = eta
 }

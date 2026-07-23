@@ -246,17 +246,10 @@ func (s *Service) ApplyProgressUpdate(data twitch.DropProgressData) {
 			s.activeDrops[i].Required = resolvedRequired
 		}
 		s.activeDrops[i].Progress = data.CurrentMinutesWatched
-		if s.activeDrops[i].Required > 0 {
-			pct := (data.CurrentMinutesWatched * 100) / s.activeDrops[i].Required
-			if pct > 100 {
-				pct = 100
-			}
-			s.activeDrops[i].Percent = pct
-			s.activeDrops[i].EtaMinutes = s.activeDrops[i].Required - data.CurrentMinutesWatched
-			if s.activeDrops[i].EtaMinutes < 0 {
-				s.activeDrops[i].EtaMinutes = 0
-			}
-		}
+		// Percent + EtaMinutes are derived from Progress/Required — always
+		// recompute them together so the row can't show a stale percentage
+		// next to fresh minutes (the "248/300min (88%)" display bug).
+		s.activeDrops[i].recomputeDerived()
 		updated = true
 		break
 	}
