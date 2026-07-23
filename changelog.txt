@@ -1,3 +1,26 @@
+== 2026-07-23 19:36 == Bump: v2.1.5 → v2.1.6 ==
+
+Bug-fix release: drops-tab display consistency (PR #10).
+
+The drops tab could show a percentage out of sync with the minutes —
+e.g. "248/300min (88%)" (248/300 is 82%, not 88%), with an ETA that
+matched neither. Purely cosmetic; drop credit itself was unaffected.
+
+Cause: ActiveDrop.Percent and ActiveDrop.EtaMinutes are pure functions
+of Progress and Required, but were stored independently and updated out
+of lockstep. ApplyProgressUpdate advanced Progress on every WebSocket
+event yet only recomputed Percent/EtaMinutes when Required>0, so a
+progress event that arrived while Required was momentarily 0 (the
+payload often omits it) advanced the minutes and left the percentage
+and ETA frozen at their previous values.
+
+Fix: ActiveDrop.recomputeDerived() is now the single source of truth for
+Percent/EtaMinutes and is called after every write of Progress or
+Required (the campaignToRow build path and ApplyProgressUpdate). The
+three fields can no longer disagree on screen. New regression tests in
+internal/drops/rows_progress_test.go.
+
+
 == 2026-07-21 19:03 == Bump: v2.1.4 → v2.1.5 ==
 
 Bug-fix release.
