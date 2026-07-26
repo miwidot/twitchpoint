@@ -1,3 +1,33 @@
+== 2026-07-26 16:51 == Bump: v2.1.6 → v2.1.7 ==
+
+Bug-fix release: stop re-farming already-owned campaigns (PR #11).
+
+Regression from v2.1.5's issue-#7 fix. After Twitch auto-grants a drop
+reward it resets the campaign's self.currentMinutesWatched to 0 while
+leaving self.isClaimed=false and dropInstanceID=null — a fully farmed
+campaign becomes byte-for-byte identical to an untouched one.
+
+applyClaimedBenefitFallback is meant to resolve this via gameEventDrops,
+but guard 2 (!IsComplete) returned early before the award was consulted:
+with watched==0, IsComplete() is false, so the already-owned campaign was
+re-picked forever and the stall detector churned channels (observed: 8
+channels in 22 minutes, all "no credit — progress stuck at 0/0").
+
+Fix: exempt watched==0 from guard 2.
+  - 0 < watched < required → genuine mid-progress, award ignored (the
+    issue #7 shape; still blocked)
+  - watched == 0 → never-watched OR zeroed-after-award; guard 1 (award in
+    the campaign/drop window) and guard 3 (shared benefit ID ambiguous)
+    decide
+
+Issue #7 stays fixed: R6S "Esports Pack" shares one benefit ID across
+tiers, so guard 3 short-circuits the zeroed tiers; partial-progress tiers
+are still caught by the amended guard 2. A never-watched drop can only be
+marked claimed if its unique benefit shows an in-window award — i.e. the
+account genuinely owns it. New regression tests ZeroedCounterAfterAward +
+NeverWatchedNoAward in internal/twitch/drops_test.go.
+
+
 == 2026-07-23 19:36 == Bump: v2.1.5 → v2.1.6 ==
 
 Bug-fix release: drops-tab display consistency (PR #10).
