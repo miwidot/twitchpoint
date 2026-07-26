@@ -195,6 +195,18 @@ func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []tw
 		}
 		if !hasWatchable {
 			logWantedReject(c, "no_earnable")
+			// Per-drop diagnostics for wanted-game campaigns (added
+			// 2026-07-11 while chasing the Marble Day "no_earnable"
+			// mystery): shows exactly which IsEarnable clause rejects
+			// each drop — required-minutes missing, claim flags, time
+			// window or precondition IDs.
+			if s.diagFn != nil && hasWantedFilter && wantedSet[strings.ToLower(strings.TrimSpace(c.GameName))] {
+				for _, d := range c.Drops {
+					s.diagFn("[Drops/Diag]   drop id=%.8s req=%d claimed=%t cur=%d window=%s..%s preconds=%v",
+						d.ID, d.RequiredMinutesWatched, d.IsClaimed, d.CurrentMinutesWatched,
+						d.StartAt.Format("01-02T15:04"), d.EndAt.Format("01-02T15:04"), shortIDs(d.PreconditionDrops))
+				}
+			}
 			stats.NoEarnableDrops++
 			continue
 		}
@@ -444,3 +456,12 @@ func hasBadgeOrEmoteBenefit(c twitch.DropCampaign) bool {
 // from the most recent Select. 0 with Eligible>0 means the filter passed
 // campaigns but no live drops-enabled streamer was found for any of them.
 func (s *Selector) LastPoolSize() int { return s.lastPoolSize }
+
+// shortIDs maps a list of drop IDs to their 8-char prefixes for log lines.
+func shortIDs(ids []string) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = shortID(id)
+	}
+	return out
+}

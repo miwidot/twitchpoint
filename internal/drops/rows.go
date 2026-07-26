@@ -32,39 +32,12 @@ type ActiveDrop struct {
 	// auto-discovered and the marker would be noise).
 	IsAutoDiscovered bool `json:"is_auto_discovered"`
 	Status             string    `json:"status"`               // ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED / BLOCKED
-	// BlockReason explains a BLOCKED status in one short phrase
-	// ("account not linked", …) so the UI can show WHY a wanted-game
-	// campaign isn't being farmed instead of hiding it (2026-07-11).
+	// BlockReason explains a BLOCKED (or IDLE) status in one short phrase
+	// so the UI can show WHY a wanted-game campaign isn't being farmed.
 	BlockReason        string    `json:"block_reason,omitempty"`
 	IsPinned           bool      `json:"is_pinned"`
 	QueueIndex         int       `json:"queue_index"`          // 1-based for ACTIVE/QUEUED/IDLE; 0 otherwise
 	EtaMinutes         int       `json:"eta_minutes"`          // RequiredMinutesWatched - CurrentMinutesWatched of next-to-claim drop
-}
-
-// recomputeDerived recalculates Percent and EtaMinutes from Progress and
-// Required. Both are pure functions of those two fields, so storing them
-// independently invites divergence: a progress event that advances
-// Progress without recomputing Percent/EtaMinutes (e.g. when Required was
-// momentarily 0) leaves the row showing a stale "248/300min (88%)" where
-// the percentage no longer matches the minutes. Every writer of Progress
-// or Required MUST call this before the row is published so the three
-// fields can never disagree on screen.
-func (d *ActiveDrop) recomputeDerived() {
-	if d.Required <= 0 {
-		d.Percent = 0
-		d.EtaMinutes = 0
-		return
-	}
-	pct := (d.Progress * 100) / d.Required
-	if pct > 100 {
-		pct = 100
-	}
-	d.Percent = pct
-	eta := d.Required - d.Progress
-	if eta < 0 {
-		eta = 0
-	}
-	d.EtaMinutes = eta
 }
 
 // RowsConfig is the slice of config behavior BuildRows depends on.
@@ -136,16 +109,8 @@ func BuildRows(
 			continue
 		}
 
-		// Same eligibility as Selector.filterEligibleCampaigns: account-link
-		// OR badge/emote benefit; plus the no-watchable-drops check.
-		//
-		// Transparency (2026-07-11): wanted-game campaigns failing one of
-		// these gates used to vanish from the UI entirely — the user
-		// couldn't tell why a visibly-running campaign wasn't farmed
-		// (live case: Anno 117, Ubisoft account not linked). They now
-		// surface as BLOCKED rows with a human-readable reason. Campaigns
-		// of non-wanted games keep vanishing (noise), disabled/completed
-		// ones keep their regular status rows.
+		// Campaigns with no watchable drops (sub-only, or all drops claimed)
+		// can't be farmed. Needed by the block classification below.
 		hasWatchable := false
 		for _, d := range c.Drops {
 			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
@@ -153,22 +118,30 @@ func BuildRows(
 				break
 			}
 		}
-		// Zwei Klassen unterscheiden (2026-07-17):
-		//   BLOCKED = echter Handlungsbedarf des Users (Konto nicht verknüpft —
-		//     der Path-of-Exile/Anno-Fall: farmbar erst nach dem Verknüpfen).
-		//     Bleibt in der UI auffällig (gelb).
-		//   IDLE    = harmlos nicht-farmbar (alle Drops erhalten / gerade kein
-		//     Drop im Fenster). KEIN Handlungsbedarf — v.a. die täglichen
-		//     Marble-Kampagnen nach dem Claim. Unauffällig, kein Alarm.
+
+		// A wanted-game campaign that cannot be farmed is now surfaced
+		// instead of silently dropped, so the user can see WHY. Both gates
+		// (eligibility — same parity as Selector.filterEligibleCampaigns —
+		// and "nothing watchable") feed one classification:
+		//
+		//   BLOCKED = the user has to act (game account not linked). Shown
+		//             prominently, because this silently costs drops.
+		//   IDLE    = harmless: every drop already claimed, or nothing in
+		//             its time window right now. No action needed.
+		//
+		// Campaigns of games that are NOT in the wanted list keep being
+		// hidden — surfacing those would just be noise. Disabled and
+		// completed campaigns keep their own status.
 		blockStatus, blockReason := "", ""
 		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
-			blockStatus, blockReason = "BLOCKED", "Konto nicht verknüpft"
+			blockStatus, blockReason = "BLOCKED", "account not linked"
 		} else if !hasWatchable {
-			blockStatus, blockReason = "IDLE", "nichts offen"
+			blockStatus, blockReason = "IDLE", "nothing open"
 		}
 		if blockStatus != "" && !cfg.IsCampaignDisabled(c.ID) && !cfg.IsCampaignCompleted(c.ID) {
 			if !useAutoMarker {
-				// No wanted list configured — keep the old hide-it behavior.
+				// No wanted list configured — keep the previous behaviour
+				// of hiding non-farmable campaigns entirely.
 				continue
 			}
 			if seenWatchableNames[c.Name] {
@@ -258,4 +231,30 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 	}
 	row.recomputeDerived()
 	return row
+}
+
+// recomputeDerived recalculates Percent and EtaMinutes from Progress and
+// Required. Both are pure functions of those two fields, so storing them
+// independently invites divergence: a progress event that advances
+// Progress without recomputing Percent/EtaMinutes (e.g. when Required was
+// momentarily 0) leaves the row showing a stale "248/300min (88%)" where
+// the percentage no longer matches the minutes. Every writer of Progress
+// or Required MUST call this before the row is published so the three
+// fields can never disagree on screen.
+func (d *ActiveDrop) recomputeDerived() {
+	if d.Required <= 0 {
+		d.Percent = 0
+		d.EtaMinutes = 0
+		return
+	}
+	pct := (d.Progress * 100) / d.Required
+	if pct > 100 {
+		pct = 100
+	}
+	d.Percent = pct
+	eta := d.Required - d.Progress
+	if eta < 0 {
+		eta = 0
+	}
+	d.EtaMinutes = eta
 }
