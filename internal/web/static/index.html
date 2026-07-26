@@ -431,6 +431,7 @@
         .status-pill.idle       { color: var(--text-muted); border: 1px solid var(--rule-soft); }
         .status-pill.disabled   { color: var(--text-dim); border: 1px solid var(--rule-soft); }
         .status-pill.completed  { color: var(--text-dim); border: 1px solid transparent; opacity: 0.5; }
+        .status-pill.blocked    { color: #d0a030; border: 1px solid #d0a030; }
 
         .toggle {
             position: relative;
@@ -1204,6 +1205,7 @@
                 const campaignTd = el('td');
                 campaignTd.appendChild(document.createTextNode(d.campaign_name));
                 if (d.is_auto_discovered) campaignTd.appendChild(el('span', { class: 'auto-tag', text: 'Auto' }));
+                if (d.block_reason) campaignTd.appendChild(el('span', { class: 'auto-tag', text: d.block_reason }));
 
                 const progress = d.required > 0
                     ? d.progress + '/' + d.required + ' · ' + d.percent + '%'
@@ -1227,7 +1229,9 @@
             }
             const activeCount = state.drops.filter(d => d.status === 'ACTIVE').length;
             const queuedCount = state.drops.filter(d => d.status === 'QUEUED').length;
-            $('#drops-meta').textContent = activeCount + ' active · ' + queuedCount + ' queued · ' + state.drops.length + ' total';
+            const blockedCount = state.drops.filter(d => d.status === 'BLOCKED').length;
+            $('#drops-meta').textContent = activeCount + ' active · ' + queuedCount + ' queued ·'
+                + (blockedCount ? ' ' + blockedCount + ' blocked ·' : '') + ' ' + state.drops.length + ' total';
         }
 
         $('#drops-body').addEventListener('click', async (e) => {
