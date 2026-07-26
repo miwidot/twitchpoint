@@ -124,3 +124,51 @@ func TestApplyClaimedBenefitFallback_AwardOutsideWindow(t *testing.T) {
 		t.Fatal("award before the campaign window must not mark the drop claimed")
 	}
 }
+
+// TestApplyClaimedBenefitFallback_ZeroedCounterAfterAward: Twitch zeroes the
+// campaign counter after auto-granting a reward, so a fully farmed drop reports
+// watched=0 with isClaimed=false. The in-window award is the only remaining
+// evidence that the reward is already owned — guard 2 must not swallow it, or
+// the bot re-farms an already-owned campaign forever (progress stuck at 0/0).
+func TestApplyClaimedBenefitFallback_ZeroedCounterAfterAward(t *testing.T) {
+	c := &DropCampaign{
+		StartAt: campStart,
+		EndAt:   campEnd,
+		Drops: []TimeBasedDrop{
+			{ID: "d1", BenefitID: "unique-badge", RequiredMinutesWatched: 900, CurrentMinutesWatched: 0},
+		},
+	}
+	claimed := map[string]time.Time{"unique-badge": awardInWin}
+
+	applyClaimedBenefitFallback(c, claimed)
+
+	if !c.Drops[0].IsClaimed {
+		t.Fatal("zeroed-counter drop with in-window award should be marked claimed")
+	}
+}
+
+// TestApplyClaimedBenefitFallback_NeverWatchedNoAward: a never-watched drop
+// (watched=0) whose benefit has NO award must stay open — the watched==0
+// exemption must not mark drops the account doesn't own. Guards the case of a
+// partially-farmed campaign whose later tiers aren't earned yet.
+func TestApplyClaimedBenefitFallback_NeverWatchedNoAward(t *testing.T) {
+	c := &DropCampaign{
+		StartAt: campStart,
+		EndAt:   campEnd,
+		Drops: []TimeBasedDrop{
+			{ID: "d1", BenefitID: "earned-badge", RequiredMinutesWatched: 60, CurrentMinutesWatched: 0},
+			{ID: "d2", BenefitID: "unearned-badge", RequiredMinutesWatched: 900, CurrentMinutesWatched: 0},
+		},
+	}
+	// Only d1's benefit was awarded; d2 has no award entry.
+	claimed := map[string]time.Time{"earned-badge": awardInWin}
+
+	applyClaimedBenefitFallback(c, claimed)
+
+	if !c.Drops[0].IsClaimed {
+		t.Fatal("d1 (awarded in-window) should be marked claimed")
+	}
+	if c.Drops[1].IsClaimed {
+		t.Fatal("d2 (no award) must stay open so the campaign keeps farming")
+	}
+}

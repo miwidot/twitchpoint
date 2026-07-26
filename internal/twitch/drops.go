@@ -118,9 +118,14 @@ func (d *TimeBasedDrop) IsComplete() bool {
 //     Otherwise a daily-rolling drop is marked claimed because yesterday's
 //     instance was awarded under the same benefit ID.
 //
-//  2. Completion: a drop below 100% cannot have been claimed — Twitch only
-//     issues a claimable DropInstanceID at completion. Marking a
-//     mid-progress drop (e.g. 62%) claimed is always wrong.
+//  2. Partial progress: a drop with 0 < watched < required is genuinely
+//     mid-progress and cannot have been claimed — marking it (e.g. 62%)
+//     claimed is always wrong. watched==0 is EXEMPT: after Twitch
+//     auto-grants a reward it zeroes the campaign's currentMinutesWatched
+//     (and leaves isClaimed=false, dropInstanceID=null), so a fully farmed
+//     drop is byte-for-byte identical to a never-watched one. The in-window
+//     award is then the only evidence the reward is already owned; guards 1
+//     and 3 gate that signal, so we must not swallow it here.
 //
 //  3. Benefit uniqueness: when several drops in the SAME campaign share one
 //     benefit ID (e.g. R6S "Esports Pack" awarded at 5 escalating watch
@@ -142,8 +147,8 @@ func applyClaimedBenefitFallback(c *DropCampaign, claimedBenefits map[string]tim
 		if drop.IsClaimed || drop.BenefitID == "" {
 			continue
 		}
-		if !drop.IsComplete() {
-			continue // guard 2: below 100% can't have been claimed
+		if drop.CurrentMinutesWatched > 0 && !drop.IsComplete() {
+			continue // guard 2: partial progress can't have been claimed (watched==0 exempt — see doc)
 		}
 		if benefitCount[drop.BenefitID] > 1 {
 			continue // guard 3: shared benefit ID — award is ambiguous
