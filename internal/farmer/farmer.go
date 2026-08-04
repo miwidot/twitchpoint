@@ -99,6 +99,7 @@ func (f *Farmer) Start() error {
 	f.logFile = logFile
 	f.logDate = time.Now().Format("2006-01-02")
 	f.writeLogFile("=== TwitchPoint Farmer started ===")
+	pruneOldLogs(f.writeLogFile)
 
 	// Initialize GQL client. Reads through accessors — even though
 	// Start() is single-goroutine before any other goroutine spawns,
@@ -903,6 +904,13 @@ func (f *Farmer) writeLogFile(msg string) {
 			f.logFile.Close()
 			f.logFile = newFile
 			f.logDate = today
+			// Beim Tageswechsel aufräumen. Ohne das wuchsen die Logs
+			// unbegrenzt (Befund 28.07.2026: 127 MB über 11 Tage, ~5 MB
+			// pro Tag) — auf einem Pi mit einer einzigen SSD, auf der der
+			// ganze Homeserver liegt. Läuft unter fileLogMu, deshalb
+			// bewusst ohne Umweg über writeLogFile (das würde denselben
+			// Mutex erneut nehmen wollen).
+			pruneOldLogs(nil)
 		}
 	}
 
