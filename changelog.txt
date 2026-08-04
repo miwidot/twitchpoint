@@ -1,3 +1,54 @@
+== 2026-08-04 18:30 == Bump: v2.1.7 → v2.1.8 ==
+
+Bug-fix + diagnostics release (community PRs #12, #13 by @threechord82).
+
+PR #12 — three independent fixes:
+
+1. Selector test suite repaired. Four tests had been failing since the
+   v2.0 persisted-hash GameDirectory switch: production queries the
+   directory by the game's URL slug, but the test fixtures were keyed by
+   display name, so the fake source returned no streams and buildPool
+   produced an empty pool. fakeStreamSource now resolves the slug back to
+   the fixture key (via SlugFromGameName). Test-only; go test ./... is
+   green again. (These were previously — and wrongly — assumed to be
+   date-dependent fixture failures.)
+
+2. Premature campaign completion guarded. autoClaimWith wrote a campaign
+   to completed_campaigns as soon as every VISIBLE drop was claimed, but
+   Twitch sometimes omits requiredMinutesWatched for a campaign's later
+   drops, so after claiming drop 3 of 5 it concluded "everything claimed"
+   and abandoned the remaining two. Completion now also requires
+   !InInventory (Twitch no longer lists it in-progress — same anchor
+   MarkCompletedIfFinishedExternally uses) and claimedSeen > 0. No farming
+   loop: a finished-but-still-listed campaign is skipped by the selector
+   anyway and marked on a later cycle.
+
+3. Docker image builds for the requested target architecture. The
+   Dockerfile hard-coded GOARCH=amd64; it now takes GOOS/GOARCH from
+   BuildKit's TARGETOS/TARGETARCH (with linux/amd64 defaults), and the
+   builder stage is pinned to --platform=$BUILDPLATFORM so the Go
+   toolchain cross-compiles natively instead of running under QEMU.
+   arm64 (Raspberry Pi, Apple Silicon, arm64 VPS) now works.
+
+PR #13 — visibility improvements (no change to farming behaviour):
+
+4. BLOCKED status in the web UI. A wanted-game campaign that can't be
+   farmed because the game account isn't linked was indistinguishable
+   from a harmlessly IDLE one — silently costing drops. Such campaigns
+   are now surfaced as BLOCKED (amber) with the reason "account not
+   linked", and the drops-tab header counts blocked campaigns. Narrowly
+   scoped: only wanted-game campaigns; with no wanted list configured the
+   previous hide-it behaviour is unchanged; block_reason is omitempty so
+   the /api/drops payload is unchanged for non-blocked campaigns.
+
+5. Per-drop diagnostics on the no_earnable rejection. When a wanted-game
+   campaign is rejected because no drop passes IsEarnable, each drop is
+   now logged with the exact fields IsEarnable checks (required minutes,
+   claim flag, current minutes, time window, precondition IDs). Gated to
+   diagFn != nil + wanted-game campaigns only, so normal operation stays
+   quiet.
+
+
 == 2026-07-26 16:51 == Bump: v2.1.6 → v2.1.7 ==
 
 Bug-fix release: stop re-farming already-owned campaigns (PR #11).
