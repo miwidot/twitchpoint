@@ -31,7 +31,10 @@ type ActiveDrop struct {
 	// is non-empty (with an empty list, ALL eligible campaigns are
 	// auto-discovered and the marker would be noise).
 	IsAutoDiscovered bool `json:"is_auto_discovered"`
-	Status             string    `json:"status"`               // ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED
+	Status             string    `json:"status"`               // ACTIVE / QUEUED / IDLE / DISABLED / COMPLETED / BLOCKED
+	// BlockReason explains a BLOCKED (or IDLE) status in one short phrase
+	// so the UI can show WHY a wanted-game campaign isn't being farmed.
+	BlockReason        string    `json:"block_reason,omitempty"`
 	IsPinned           bool      `json:"is_pinned"`
 	QueueIndex         int       `json:"queue_index"`          // 1-based for ACTIVE/QUEUED/IDLE; 0 otherwise
 	EtaMinutes         int       `json:"eta_minutes"`          // RequiredMinutesWatched - CurrentMinutesWatched of next-to-claim drop
@@ -106,17 +109,8 @@ func BuildRows(
 			continue
 		}
 
-		// Same eligibility as Selector.filterEligibleCampaigns: account-link
-		// OR badge/emote benefit. Skipping this parity caused 80%+ of
-		// campaigns to vanish from the UI even though the selector was
-		// happily picking them in the background.
-		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
-			continue
-		}
-
-		// Skip campaigns with no watchable drops (sub-only, or all drops claimed).
-		// These can't be farmed, so showing them in the queue is just noise.
-		// EXCEPTION: keep them if disabled or completed so the user can see why.
+		// Campaigns with no watchable drops (sub-only, or all drops claimed)
+		// can't be farmed. Needed by the block classification below.
 		hasWatchable := false
 		for _, d := range c.Drops {
 			if d.RequiredMinutesWatched > 0 && !d.IsClaimed {
@@ -124,7 +118,40 @@ func BuildRows(
 				break
 			}
 		}
-		if !hasWatchable && !cfg.IsCampaignDisabled(c.ID) && !cfg.IsCampaignCompleted(c.ID) {
+
+		// A wanted-game campaign that cannot be farmed is now surfaced
+		// instead of silently dropped, so the user can see WHY. Both gates
+		// (eligibility — same parity as Selector.filterEligibleCampaigns —
+		// and "nothing watchable") feed one classification:
+		//
+		//   BLOCKED = the user has to act (game account not linked). Shown
+		//             prominently, because this silently costs drops.
+		//   IDLE    = harmless: every drop already claimed, or nothing in
+		//             its time window right now. No action needed.
+		//
+		// Campaigns of games that are NOT in the wanted list keep being
+		// hidden — surfacing those would just be noise. Disabled and
+		// completed campaigns keep their own status.
+		blockStatus, blockReason := "", ""
+		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
+			blockStatus, blockReason = "BLOCKED", "account not linked"
+		} else if !hasWatchable {
+			blockStatus, blockReason = "IDLE", "nothing open"
+		}
+		if blockStatus != "" && !cfg.IsCampaignDisabled(c.ID) && !cfg.IsCampaignCompleted(c.ID) {
+			if !useAutoMarker {
+				// No wanted list configured — keep the previous behaviour
+				// of hiding non-farmable campaigns entirely.
+				continue
+			}
+			if seenWatchableNames[c.Name] {
+				continue
+			}
+			seenWatchableNames[c.Name] = true
+			row := campaignToRow(c, pinnedID)
+			row.Status = blockStatus
+			row.BlockReason = blockReason
+			idle = append(idle, row)
 			continue
 		}
 
