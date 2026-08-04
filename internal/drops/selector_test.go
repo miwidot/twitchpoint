@@ -131,16 +131,30 @@ func TestFilterEligibleCampaigns(t *testing.T) {
 // fakeStreamSource is a deterministic in-memory stream source for tests.
 type fakeStreamSource struct {
 	byGame  map[string][]twitch.GameStream
-	calls   map[string]int                     // game name → how often queried
+	calls   map[string]int                     // fixture key (display name) → how often queried
 	byLogin map[string]*twitch.ChannelInfo     // login → ChannelInfo for ACL lookups
 }
 
-func (f *fakeStreamSource) GetGameStreamsDropsEnabled(gameName string, limit int) ([]twitch.GameStream, error) {
+// GetGameStreamsDropsEnabled receives the game's URL slug — since the v2.0
+// persisted-hash GameDirectory switch, production queries the directory by
+// slug, not display name. Fixtures stay keyed by display name for
+// readability; the fake resolves the slug back to the fixture key (and
+// counts the call under it) so assertions can keep using display names.
+func (f *fakeStreamSource) GetGameStreamsDropsEnabled(gameSlug string, limit int) ([]twitch.GameStream, error) {
 	if f.calls == nil {
 		f.calls = make(map[string]int)
 	}
-	f.calls[gameName]++
-	streams := f.byGame[gameName]
+	key := gameSlug
+	streams, ok := f.byGame[key]
+	if !ok {
+		for name, s := range f.byGame {
+			if twitch.SlugFromGameName(name) == gameSlug {
+				key, streams = name, s
+				break
+			}
+		}
+	}
+	f.calls[key]++
 	if len(streams) > limit {
 		return streams[:limit], nil
 	}

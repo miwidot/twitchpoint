@@ -67,6 +67,7 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 
 		allClaimed := true
 		hasWatchable := false
+		claimedSeen := 0
 		for di := range c.Drops {
 			d := &c.Drops[di]
 			if d.RequiredMinutesWatched <= 0 {
@@ -74,6 +75,7 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 			}
 			hasWatchable = true
 			if d.IsClaimed {
+				claimedSeen++
 				continue
 			}
 			if d.IsComplete() && d.DropInstanceID != "" {
@@ -97,6 +99,7 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 					// stages (Selector, SnapshotPick) see the fresh
 					// claim without another inventory round-trip.
 					d.IsClaimed = true
+					claimedSeen++
 				}
 			} else {
 				// Drop is unclaimed AND not complete (or no instance
@@ -105,7 +108,26 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 			}
 		}
 
-		if hasWatchable && allClaimed {
+		// Guard against premature completion. Twitch sometimes omits
+		// requiredMinutesWatched for a campaign's LATER drops, so the loop
+		// above sees "everything watchable is claimed" while drops 4 and 5
+		// are still ahead — the campaign is then filtered as completed
+		// forever and the remaining drops are abandoned mid-progress
+		// (observed on a 5-tier Marble Day campaign).
+		//
+		// Two extra conditions make the signal trustworthy:
+		//   - !InInventory: while Twitch still lists the campaign as
+		//     in-progress there is more to farm. Same anchor
+		//     MarkCompletedIfFinishedExternally already relies on.
+		//   - claimedSeen > 0: a campaign whose metadata glitched to
+		//     "no watchable drops" must not complete itself without a
+		//     single observed claim.
+		//
+		// A campaign that is genuinely finished but still in the inventory
+		// is simply re-evaluated next cycle; the selector already skips it
+		// because no drop reports IsEarnable, so it cannot cause a farming
+		// loop in the meantime.
+		if hasWatchable && allClaimed && claimedSeen > 0 && !c.InInventory {
 			s.cfg.MarkCampaignCompleted(c.ID)
 			_ = s.cfg.Save()
 			s.log("[Drops] Campaign %q fully claimed — marked as completed", c.Name)
