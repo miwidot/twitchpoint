@@ -95,8 +95,39 @@ func (s *Service) processOnce() {
 		s.writeLogFile(fmt.Sprintf("[Drops] Inventory returned %d campaigns", len(campaigns)))
 	}
 
+	// 0. Overlay our own claim record onto Twitch's answer. Must run BEFORE
+	//    auto-claim and the selector so every later stage reasons about
+	//    corrected data — see localclaims.go for why Twitch alone isn't
+	//    enough once a campaign leaves the in-progress inventory.
+	if n := applyLocalClaims(campaigns, s.cfg); n > 0 {
+		s.log("[Drops] %d Drop(s) laut eigener Aufzeichnung bereits erhalten — Twitch meldete sie als offen", n)
+	}
+
 	// 1. Auto-claim any drops that are complete and have an instance ID.
-	s.AutoClaimAndMarkCompleted(campaigns)
+	justClaimed := s.AutoClaimAndMarkCompleted(campaigns)
+
+	// 1b. Persist what is claimed now — including anything auto-claim just
+	//     got. Waiting for the next cycle would lose the last tier of a
+	//     campaign that leaves the inventory in the meantime.
+	newEntries := recordObservedClaims(campaigns, s.cfg, justClaimed)
+	changed := len(newEntries) > 0
+	if pruned := s.cfg.PruneClaimedDrops(claimRecordMaxAge); pruned > 0 {
+		s.log("[Drops] Claim-Aufzeichnung: %d veraltete Einträge entfernt", pruned)
+		changed = true
+	}
+	if changed {
+		if err := s.cfg.Save(); err != nil {
+			s.log("[Drops] Claim-Aufzeichnung konnte nicht gespeichert werden: %v", err)
+		}
+	}
+
+	// 1c. Erfolgsliste fortschreiben. Nur informativ — ein Schreibfehler darf
+	//     das Farmen nicht stören, deshalb nur eine Log-Zeile.
+	if len(newEntries) > 0 {
+		if err := s.history.Append(newEntries); err != nil {
+			s.log("[Drops] Erfolgsliste konnte nicht geschrieben werden: %v", err)
+		}
+	}
 
 	// 2a. Compare the previous pick's drop progress against this cycle's
 	//     inventory. If Twitch did not credit any new minutes, put the
