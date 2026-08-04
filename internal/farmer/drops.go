@@ -30,6 +30,12 @@ func (f *Farmer) GetActiveDrops() []drops.ActiveDrop {
 	return f.drops.GetActiveDrops()
 }
 
+// GetClaimHistory liefert die Erfolgsliste ("Erhalten") — alle je erhaltenen
+// Drops mit Datum, Spiel, Kampagne und Belohnung, neueste zuerst.
+func (f *Farmer) GetClaimHistory() ([]drops.ClaimHistoryEntry, error) {
+	return f.drops.ClaimHistory()
+}
+
 // GetEligibleGames returns the unique sorted list of game names from
 // the current cycle's inventory cache. Used as the default
 // autocomplete pool for the wanted-games UI.

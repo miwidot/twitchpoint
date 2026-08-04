@@ -38,6 +38,14 @@ type ActiveDrop struct {
 	IsPinned           bool      `json:"is_pinned"`
 	QueueIndex         int       `json:"queue_index"`          // 1-based for ACTIVE/QUEUED/IDLE; 0 otherwise
 	EtaMinutes         int       `json:"eta_minutes"`          // RequiredMinutesWatched - CurrentMinutesWatched of next-to-claim drop
+	// ClaimedDrops / WatchableDrops show how far a campaign has come, e.g.
+	// "3/5". Only drops with a watch-time requirement are counted — sub-gated
+	// or reward-only tiers can't be farmed, so counting them would make a
+	// finished campaign look unfinished. Added because a tiered campaign that
+	// is fully claimed can otherwise look identical to an untouched one, which
+	// is exactly what made the MarbleFest re-farming bug invisible. (lokal)
+	ClaimedDrops   int `json:"claimed_drops"`
+	WatchableDrops int `json:"watchable_drops"`
 }
 
 // RowsConfig is the slice of config behavior BuildRows depends on.
@@ -217,6 +225,8 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 		break
 	}
 
+	claimed, watchable := claimedCounts(c) // lokal: "x/y erhalten"-Anzeige
+
 	row := ActiveDrop{
 		CampaignID:         c.ID,
 		CampaignName:       c.Name,
@@ -228,6 +238,8 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 		IsEnabled:          true,
 		IsAccountConnected: c.IsAccountConnected,
 		IsPinned:           c.ID == pinnedID && pinnedID != "",
+		ClaimedDrops:       claimed,
+		WatchableDrops:     watchable,
 	}
 	row.recomputeDerived()
 	return row

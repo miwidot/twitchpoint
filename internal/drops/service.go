@@ -37,6 +37,9 @@ type Service struct {
 	// Subordinate services (built by NewService).
 	Selector *Selector
 	Stall    *StallTracker
+	// history ist die Erfolgsliste ("Erhalten") neben der config.json —
+	// informativ, wird nie gekürzt, siehe history.go.
+	history *claimHistory
 
 	// State (protected by mu).
 	mu                 sync.RWMutex
@@ -103,6 +106,16 @@ type ServiceDeps struct {
 // spawned by farmer.Start — kicks queue up and the worker picks
 // them up once it starts.
 func NewService(deps ServiceDeps) *Service {
+	s := newServiceInner(deps)
+	// Erfolgsliste sofort prüfen statt erst beim nächsten Claim — siehe
+	// ensureWritable in history.go.
+	if err := s.history.ensureWritable(); err != nil && deps.Log != nil {
+		deps.Log("[Drops] WARNUNG: Erfolgsliste nicht beschreibbar (%v) — erhaltene Drops werden nicht mitgeschrieben", err)
+	}
+	return s
+}
+
+func newServiceInner(deps ServiceDeps) *Service {
 	return &Service{
 		cfg:                    deps.Cfg,
 		gql:                    deps.GQL,
@@ -118,6 +131,7 @@ func NewService(deps ServiceDeps) *Service {
 		triggerRotation:        deps.TriggerRotation,
 		Selector:               NewSelector(deps.Cfg, deps.GQL),
 		Stall:                  NewStallTracker(deps.Log),
+		history:                newClaimHistory(deps.Cfg.Path()),
 		processQueue:           make(chan struct{}, 1),
 	}
 }
