@@ -30,8 +30,8 @@ func (f *Farmer) GetActiveDrops() []drops.ActiveDrop {
 	return f.drops.GetActiveDrops()
 }
 
-// GetClaimHistory liefert die Erfolgsliste ("Erhalten") — alle je erhaltenen
-// Drops mit Datum, Spiel, Kampagne und Belohnung, neueste zuerst.
+// GetClaimHistory returns the received-drops history ("Received") — every
+// drop ever received, with date, game, campaign, and reward, newest first.
 func (f *Farmer) GetClaimHistory() ([]drops.ClaimHistoryEntry, error) {
 	return f.drops.ClaimHistory()
 }

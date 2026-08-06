@@ -116,7 +116,7 @@ func TestRecordObservedClaims_CapturesFreshClaims(t *testing.T) {
 		},
 	}}
 	rec := newFakeClaimRecord("old")
-	justClaimed := map[string]bool{"fresh": true} // von Auto-Claim in diesem Zyklus
+	justClaimed := map[string]bool{"fresh": true} // from auto-claim in this cycle
 
 	entries := recordObservedClaims(camps, rec, justClaimed)
 	if len(entries) != 1 {
@@ -129,8 +129,8 @@ func TestRecordObservedClaims_CapturesFreshClaims(t *testing.T) {
 		t.Fatal("an unclaimed drop must never be recorded")
 	}
 
-	// Die Namen müssen mitgeschrieben werden — nach Ablauf der Kampagne sind
-	// sie bei Twitch nicht mehr zu holen und die Kennung allein wäre wertlos.
+	// The names must be recorded too — once the campaign expires they're no
+	// longer retrievable from Twitch, and the ID alone would be worthless.
 	e := entries[0]
 	if e.DropID != "fresh" || e.Reward != "30 Tournament Coins" ||
 		e.Campaign != "MarbleFest - July'26-Day2" || e.Game != "Marbles on Stream" {
@@ -143,16 +143,16 @@ func TestRecordObservedClaims_CapturesFreshClaims(t *testing.T) {
 		t.Fatal("history entry needs a timestamp")
 	}
 
-	// Zweiter Durchlauf: nichts neu, also kein Eintrag — sonst würde die
-	// Erfolgsliste bei jedem Zyklus dieselben Drops erneut aufführen.
+	// Second pass: nothing new, so no entry — otherwise the received-drops
+	// history would list the same drops again on every cycle.
 	if again := recordObservedClaims(camps, rec, justClaimed); len(again) != 0 {
 		t.Fatalf("re-recording the same claims must produce no entries, got %d", len(again))
 	}
 }
 
-// TestRecordObservedClaims_ExternalClaimMarked: einen Drop, den der Nutzer
-// selbst bei Twitch abgeholt hat, sehen wir nur als "ist geclaimt" im Inventar.
-// Er gehört trotzdem in die Erfolgsliste, aber als "extern" gekennzeichnet.
+// TestRecordObservedClaims_ExternalClaimMarked: a drop the user picked up on
+// Twitch themselves, we only see as "is claimed" in the inventory. It still
+// belongs in the received-drops history, but marked as "extern".
 func TestRecordObservedClaims_ExternalClaimMarked(t *testing.T) {
 	camps := []twitch.DropCampaign{{
 		ID: "camp", Name: "Anno 117 - Summer Drops", GameName: "Anno 117: Pax Romana",
@@ -162,7 +162,7 @@ func TestRecordObservedClaims_ExternalClaimMarked(t *testing.T) {
 	}}
 	rec := newFakeClaimRecord()
 
-	entries := recordObservedClaims(camps, rec, nil) // nil = Auto-Claim hat nichts geholt
+	entries := recordObservedClaims(camps, rec, nil) // nil = auto-claim got nothing
 	if len(entries) != 1 {
 		t.Fatalf("expected one entry, got %d", len(entries))
 	}
@@ -174,9 +174,9 @@ func TestRecordObservedClaims_ExternalClaimMarked(t *testing.T) {
 	}
 }
 
-// TestClaimHistory_AppendAndRead: Anhängen und Lesen über eine echte Datei,
-// inklusive der beiden Eigenschaften, auf die es ankommt — neueste zuerst,
-// und eine kaputte Zeile macht nicht die ganze Liste unlesbar.
+// TestClaimHistory_AppendAndRead: append and read via a real file, including
+// the two properties that matter — newest first, and a broken line doesn't
+// make the whole list unreadable.
 func TestClaimHistory_AppendAndRead(t *testing.T) {
 	dir := t.TempDir()
 	h := newClaimHistory(filepath.Join(dir, "config.json"))
@@ -189,12 +189,12 @@ func TestClaimHistory_AppendAndRead(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 
-	// Kaputte Zeile dazwischenschmuggeln (z.B. abgebrochener Schreibvorgang).
+	// Smuggle in a broken line (e.g. an interrupted write).
 	f, err := os.OpenFile(h.path, os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	f.WriteString("{das ist kein JSON\n")
+	f.WriteString("{this is not JSON\n")
 	f.Close()
 
 	got, err := h.Read(0)
@@ -208,14 +208,14 @@ func TestClaimHistory_AppendAndRead(t *testing.T) {
 		t.Fatalf("newest entry must come first, got %q", got[0].DropID)
 	}
 
-	// Grenze greift.
+	// Limit is respected.
 	if lim, _ := h.Read(1); len(lim) != 1 {
 		t.Fatalf("limit ignored, got %d entries", len(lim))
 	}
 }
 
-// TestClaimHistory_MissingFileIsNoError: vor dem ersten erhaltenen Drop gibt es
-// die Datei nicht — die Weboberfläche soll dann eine leere Liste sehen, keinen Fehler.
+// TestClaimHistory_MissingFileIsNoError: before the first drop is received
+// the file doesn't exist — the web UI should then see an empty list, not an error.
 func TestClaimHistory_MissingFileIsNoError(t *testing.T) {
 	h := newClaimHistory(filepath.Join(t.TempDir(), "config.json"))
 	got, err := h.Read(0)
@@ -228,14 +228,14 @@ func TestClaimHistory_MissingFileIsNoError(t *testing.T) {
 }
 
 // TestClaimedCounts_IgnoresNonWatchableDrops: sub-gated / reward-only tiers
-// carry no watch-time requirement. Counting them would show "5/6 erhalten" for
+// carry no watch-time requirement. Counting them would show "5/6 received" for
 // a campaign that is actually done, which is the opposite of what the display
 // is for.
 func TestClaimedCounts_IgnoresNonWatchableDrops(t *testing.T) {
 	c := twitch.DropCampaign{Drops: []twitch.TimeBasedDrop{
 		{ID: "d1", RequiredMinutesWatched: 120, IsClaimed: true},
 		{ID: "d2", RequiredMinutesWatched: 240, IsClaimed: true},
-		{ID: "sub", RequiredMinutesWatched: 0}, // nur mit Abo erreichbar
+		{ID: "sub", RequiredMinutesWatched: 0}, // only reachable with a sub
 	}}
 	claimed, watchable := claimedCounts(c)
 	if claimed != 2 || watchable != 2 {
@@ -243,29 +243,29 @@ func TestClaimedCounts_IgnoresNonWatchableDrops(t *testing.T) {
 	}
 }
 
-// TestClaimHistory_EnsureWritable: legt die Datei an, wenn sie fehlt, und meldet
-// einen Fehler, wenn sie nicht beschreibbar ist. Zweiteres ist der Fall vom
-// 28.07.2026 (falscher Eigentümer + cap_drop ALL im Container).
+// TestClaimHistory_EnsureWritable: creates the file when it's missing, and
+// reports an error when it's not writable. The latter is the case from
+// 2026-07-28 (wrong owner + cap_drop ALL in the container).
 func TestClaimHistory_EnsureWritable(t *testing.T) {
 	dir := t.TempDir()
 	h := newClaimHistory(filepath.Join(dir, "config.json"))
 
 	if err := h.ensureWritable(); err != nil {
-		t.Fatalf("Datei sollte angelegt werden können: %v", err)
+		t.Fatalf("file should be creatable: %v", err)
 	}
 	if _, err := os.Stat(h.path); err != nil {
-		t.Fatalf("Datei wurde nicht angelegt: %v", err)
+		t.Fatalf("file was not created: %v", err)
 	}
 
-	// Schreibrecht entziehen → muss gemeldet werden. Als root greifen
-	// Dateirechte nicht, deshalb übersprungen (CI läuft oft als root).
+	// Revoke write permission → must be reported. File permissions don't
+	// apply as root, so this is skipped (CI often runs as root).
 	if os.Geteuid() == 0 {
-		t.Skip("als root greifen Dateirechte nicht")
+		t.Skip("file permissions don't apply as root")
 	}
 	if err := os.Chmod(h.path, 0444); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.ensureWritable(); err == nil {
-		t.Fatal("nicht beschreibbare Datei muss einen Fehler melden")
+		t.Fatal("an unwritable file must report an error")
 	}
 }

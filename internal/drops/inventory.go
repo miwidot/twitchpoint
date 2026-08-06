@@ -37,9 +37,9 @@ type dropClaimer interface {
 // MarkCompletedIfFinishedExternally for the picked channel's
 // "finished-while-watching" path; this method only marks completion
 // when every watchable drop is observably claimed.
-// Rückgabe (lokal): die Kennungen der in diesem Durchlauf selbst geclaimten
-// Drops. Die Erfolgsliste unterscheidet damit "selbst geholt" von
-// "war schon geclaimt".
+// Return value (local): the IDs of the drops self-claimed in this pass.
+// The received-drops history distinguishes "self-claimed" from
+// "was already claimed" this way.
 func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) map[string]bool {
 	return s.autoClaimWith(campaigns, s.gql)
 }
@@ -55,7 +55,7 @@ func (s *Service) AutoClaimAndMarkCompleted(campaigns []twitch.DropCampaign) map
 // detection reads d.IsClaimed which is sourced from Twitch's
 // inventory response, not from our local mutation.
 func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropClaimer) map[string]bool {
-	claimedNow := make(map[string]bool) // lokal: fürs Claim-Gedächtnis / Erfolgsliste
+	claimedNow := make(map[string]bool) // local: for the claim record / received-drops history
 	autoClaim := s.cfg.GetAutoClaim()
 	for ci := range campaigns {
 		c := &campaigns[ci]
@@ -104,7 +104,7 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 					// claim without another inventory round-trip.
 					d.IsClaimed = true
 					claimedSeen++
-					claimedNow[d.ID] = true // lokal: für die Erfolgsliste
+					claimedNow[d.ID] = true // local: for the received-drops history
 				}
 			} else {
 				// Drop is unclaimed AND not complete (or no instance
@@ -138,7 +138,7 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 			s.log("[Drops] Campaign %q fully claimed — marked as completed", c.Name)
 		}
 	}
-	return claimedNow // lokal
+	return claimedNow // local
 }
 
 // MarkCompletedIfFinishedExternally is called by the progress poller when

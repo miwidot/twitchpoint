@@ -432,10 +432,10 @@
         .status-pill.disabled   { color: var(--text-dim); border: 1px solid var(--rule-soft); }
         .status-pill.completed  { color: var(--text-dim); border: 1px solid transparent; opacity: 0.5; }
         .status-pill.blocked    { color: #d0a030; border: 1px solid #d0a030; }
-        /* Alle farmbaren Stufen erhalten — unauffällig grün statt Alarm */
+        /* All farmable tiers received — subtle green instead of an alert */
         .auto-tag.claimed-all   { color: #4f9d5a; border-color: #4f9d5a; }
 
-        /* Reiter "Erhalten" */
+        /* "Received" tab */
         .claimed-search { display: flex; gap: 8px; margin-bottom: 20px; }
         .claimed-search input {
             flex: 1;
@@ -468,7 +468,7 @@
         }
         .claimed-row .time { color: var(--text-dim); font-size: 11px; min-width: 42px; }
         .claimed-row .reward { color: var(--text); flex: 1; min-width: 180px; }
-        /* Spiel heller als die Kampagne: danach sucht man beim Überfliegen */
+        /* Game brighter than the campaign: that's what you scan for at a glance */
         .claimed-row .game-name { color: var(--text-muted); font-size: 12px; min-width: 200px; text-align: right; }
         .claimed-row .campaign-name { color: var(--text-dim); font-size: 11px; min-width: 190px; text-align: right; }
         .claimed-row .ext { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -751,7 +751,7 @@
             </button>
             <button class="tab" data-tab="claimed">
                 <span class="tab-num">03</span>
-                <span class="tab-label">Erhalten</span>
+                <span class="tab-label">Received</span>
             </button>
             <button class="tab" data-tab="help">
                 <span class="tab-num">04</span>
@@ -858,11 +858,11 @@
             <section class="tab-panel" id="panel-claimed">
                 <div class="panel">
                     <div class="panel-head">
-                        <div class="panel-title">Erhaltene Drops<span class="dim" id="claimed-meta">—</span></div>
+                        <div class="panel-title">Received Drops<span class="dim" id="claimed-meta">—</span></div>
                     </div>
                     <div class="claimed-search">
-                        <input type="text" id="claimed-input" placeholder="Suchen nach Spiel, Kampagne oder Belohnung… (z.B. Marbles, Anno)" autocomplete="off">
-                        <button class="btn" id="claimed-clear">Zurücksetzen</button>
+                        <input type="text" id="claimed-input" placeholder="Search by game, campaign, or reward… (e.g. Marbles, Anno)" autocomplete="off">
+                        <button class="btn" id="claimed-clear">Reset</button>
                     </div>
                     <div id="claimed-list"></div>
                 </div>
@@ -938,7 +938,7 @@
             stats: {},
             logs: [],
             wantedGames: [],
-            claimed: [], // Erfolgsliste, siehe Reiter "Erhalten"
+            claimed: [], // received-drops history, see "Received" tab
             settings: { auto_claim: true },
             suggestions: [],
             sugCursor: -1,
@@ -1270,15 +1270,15 @@
                     ? d.progress + '/' + d.required + ' · ' + d.percent + '%'
                     : '—';
 
-                // Wie viele Stufen der Kampagne sind erhalten? Macht sichtbar,
-                // ob eine gestaffelte Kampagne durch ist — ohne das sieht eine
-                // fertige Kampagne aus wie eine unangetastete.
+                // How many tiers of the campaign have been received? Makes it
+                // visible whether a tiered campaign is done — without this a
+                // finished campaign looks identical to an untouched one.
                 const dropsTd = el('td', null, el('span', { class: 'num', text: progress }));
                 if (d.watchable_drops > 0) {
                     const done = d.claimed_drops >= d.watchable_drops;
                     dropsTd.appendChild(el('span', {
                         class: 'auto-tag' + (done ? ' claimed-all' : ''),
-                        text: d.claimed_drops + '/' + d.watchable_drops + ' erhalten',
+                        text: d.claimed_drops + '/' + d.watchable_drops + ' received',
                     }));
                 }
 
@@ -1601,9 +1601,10 @@
             }
         });
 
-        // ─── Reiter "Erhalten" ───────────────────────────────────
-        // Gefiltert und gruppiert wird hier im Browser: Die Liste ist klein
-        // (wenige Zeilen pro Tag), so reagiert das Suchfeld ohne Server-Runde.
+        // ─── "Received" tab ───────────────────────────────────
+        // Filtering and grouping happen here in the browser: the list is
+        // small (a few lines per day), so the search field responds
+        // without a server round-trip.
         let claimedFilter = '';
 
         function renderClaimed() {
@@ -1619,21 +1620,21 @@
                 : all;
 
             $('#claimed-meta').textContent = q
-                ? rows.length + ' von ' + all.length + ' Treffern'
-                : all.length + ' Drops erhalten';
+                ? rows.length + ' of ' + all.length + ' matches'
+                : all.length + ' drops received';
 
             box.innerHTML = '';
             if (rows.length === 0) {
                 box.appendChild(el('div', {
                     class: 'claimed-empty',
                     text: all.length === 0
-                        ? 'Noch nichts erhalten — sobald ein Drop geclaimt wird, steht er hier.'
-                        : 'Kein Treffer für „' + claimedFilter + '".',
+                        ? 'Nothing received yet — once a drop is claimed, it shows up here.'
+                        : 'No match for "' + claimedFilter + '".',
                 }));
                 return;
             }
 
-            // Nach Tag gruppieren; die Liste kommt schon neueste-zuerst.
+            // Group by day; the list is already newest-first.
             let currentDay = null;
             let dayBox = null;
             for (const e of rows) {
@@ -1649,19 +1650,20 @@
                     dayBox = el('div');
                     box.appendChild(dayBox);
                 }
-                // Das Spiel ist die wichtigste Orientierung — nach zwei Wochen
-                // sagt eine Kampagne wie "TD2 - Y8 Season 2" niemandem mehr,
-                // um welches Spiel es ging. Deshalb deutlicher als die Kampagne.
+                // The game is the most important point of orientation — after
+                // two weeks a campaign name like "TD2 - Y8 Season 2" no
+                // longer tells anyone which game it was. Hence more
+                // prominent than the campaign.
                 const row = el('div', { class: 'claimed-row' },
                     el('span', { class: 'time', text: d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) }),
-                    el('span', { class: 'reward', text: e.reward || '(ohne Namen)' }),
+                    el('span', { class: 'reward', text: e.reward || '(unnamed)' }),
                     el('span', { class: 'game-name', text: e.game || '—' }),
                     el('span', { class: 'campaign-name', text: e.campaign || '' })
                 );
                 if (e.source === 'extern') {
-                    row.appendChild(el('span', { class: 'ext', text: 'bei Twitch geholt' }));
+                    row.appendChild(el('span', { class: 'ext', text: 'claimed on Twitch' }));
                 } else if (e.source === 'backfill') {
-                    row.appendChild(el('span', { class: 'ext', text: 'aus Log' }));
+                    row.appendChild(el('span', { class: 'ext', text: 'from log' }));
                 }
                 dayBox.appendChild(row);
             }

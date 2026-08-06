@@ -634,7 +634,7 @@ func (c *Config) HasChannel(login string) bool {
 	return false
 }
 
-// --- Claim-Gedächtnis (siehe Kommentar an ClaimedDrops) ---
+// --- Claim record (see comment on ClaimedDrops) ---
 
 // IsDropClaimed reports whether we have ever observed this drop as claimed.
 func (c *Config) IsDropClaimed(dropID string) bool {

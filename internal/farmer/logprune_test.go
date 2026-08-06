@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-// TestPruneOldLogs entscheidet über echte Dateien in einem Wegwerf-Verzeichnis.
-// Wichtigster Punkt: Es darf NUR das eigene Namensmuster treffen — im
-// logs-Verzeichnis soll nichts verschwinden, was der Nutzer dort selbst
-// abgelegt hat.
+// TestPruneOldLogs decides based on real files in a disposable directory.
+// Most important point: it must ONLY match its own filename pattern —
+// nothing the user placed in the logs directory themselves should
+// disappear.
 func TestPruneOldLogs(t *testing.T) {
 	dir := t.TempDir()
 	old, err := os.Getwd()
@@ -30,14 +30,14 @@ func TestPruneOldLogs(t *testing.T) {
 		return time.Now().AddDate(0, 0, -daysAgo).Format("2006-01-02")
 	}
 
-	// name → soll überleben?
+	// name → should survive?
 	files := map[string]bool{
-		"debug-" + stamp(0) + ".log":  true,  // heute
-		"debug-" + stamp(13) + ".log": true,  // knapp innerhalb
-		"debug-" + stamp(14) + ".log": true,  // exakte Grenze: 14 Tage alt bleibt
-		"debug-" + stamp(15) + ".log": false, // zu alt
-		"debug-" + stamp(90) + ".log": false, // deutlich zu alt
-		// Fremde Dateien: müssen unangetastet bleiben, egal wie alt.
+		"debug-" + stamp(0) + ".log":  true,  // today
+		"debug-" + stamp(13) + ".log": true,  // just within
+		"debug-" + stamp(14) + ".log": true,  // exact boundary: 14 days old stays
+		"debug-" + stamp(15) + ".log": false, // too old
+		"debug-" + stamp(90) + ".log": false, // way too old
+		// Foreign files: must stay untouched, no matter how old.
 		"debug-" + stamp(90) + ".log.bak": true,
 		"notizen.txt":                     true,
 		"claimed-history.jsonl":           true,
@@ -56,16 +56,16 @@ func TestPruneOldLogs(t *testing.T) {
 		exists := err == nil
 		if exists != shouldSurvive {
 			if shouldSurvive {
-				t.Errorf("%q hätte bleiben müssen, ist aber weg", name)
+				t.Errorf("%q should have stayed but is gone", name)
 			} else {
-				t.Errorf("%q hätte gelöscht werden müssen, existiert aber noch", name)
+				t.Errorf("%q should have been deleted but still exists", name)
 			}
 		}
 	}
 }
 
-// TestPruneOldLogs_NoLogsDir: ohne logs-Verzeichnis darf nichts passieren und
-// nichts krachen (erster Start, bevor das Verzeichnis angelegt wurde).
+// TestPruneOldLogs_NoLogsDir: without a logs directory, nothing must happen
+// and nothing must crash (first start, before the directory was created).
 func TestPruneOldLogs_NoLogsDir(t *testing.T) {
 	dir := t.TempDir()
 	old, err := os.Getwd()
@@ -77,5 +77,5 @@ func TestPruneOldLogs_NoLogsDir(t *testing.T) {
 	}
 	defer os.Chdir(old)
 
-	pruneOldLogs(nil) // darf nicht panicken
+	pruneOldLogs(nil) // must not panic
 }

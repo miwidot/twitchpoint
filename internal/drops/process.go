@@ -100,7 +100,7 @@ func (s *Service) processOnce() {
 	//    corrected data — see localclaims.go for why Twitch alone isn't
 	//    enough once a campaign leaves the in-progress inventory.
 	if n := applyLocalClaims(campaigns, s.cfg); n > 0 {
-		s.log("[Drops] %d Drop(s) laut eigener Aufzeichnung bereits erhalten — Twitch meldete sie als offen", n)
+		s.log("[Drops] %d drop(s) already received per our own record — Twitch reported them as open", n)
 	}
 
 	// 1. Auto-claim any drops that are complete and have an instance ID.
@@ -112,20 +112,20 @@ func (s *Service) processOnce() {
 	newEntries := recordObservedClaims(campaigns, s.cfg, justClaimed)
 	changed := len(newEntries) > 0
 	if pruned := s.cfg.PruneClaimedDrops(claimRecordMaxAge); pruned > 0 {
-		s.log("[Drops] Claim-Aufzeichnung: %d veraltete Einträge entfernt", pruned)
+		s.log("[Drops] Claim record: removed %d stale entries", pruned)
 		changed = true
 	}
 	if changed {
 		if err := s.cfg.Save(); err != nil {
-			s.log("[Drops] Claim-Aufzeichnung konnte nicht gespeichert werden: %v", err)
+			s.log("[Drops] Claim record could not be saved: %v", err)
 		}
 	}
 
-	// 1c. Erfolgsliste fortschreiben. Nur informativ — ein Schreibfehler darf
-	//     das Farmen nicht stören, deshalb nur eine Log-Zeile.
+	// 1c. Append to the received-drops history. Informational only — a write
+	//     error must not interrupt farming, so it's just a log line.
 	if len(newEntries) > 0 {
 		if err := s.history.Append(newEntries); err != nil {
-			s.log("[Drops] Erfolgsliste konnte nicht geschrieben werden: %v", err)
+			s.log("[Drops] Received-drops history could not be written: %v", err)
 		}
 	}
 

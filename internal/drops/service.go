@@ -37,8 +37,8 @@ type Service struct {
 	// Subordinate services (built by NewService).
 	Selector *Selector
 	Stall    *StallTracker
-	// history ist die Erfolgsliste ("Erhalten") neben der config.json —
-	// informativ, wird nie gekürzt, siehe history.go.
+	// history is the received-drops history ("Received") next to config.json —
+	// informational, never truncated, see history.go.
 	history *claimHistory
 
 	// State (protected by mu).
@@ -107,10 +107,10 @@ type ServiceDeps struct {
 // them up once it starts.
 func NewService(deps ServiceDeps) *Service {
 	s := newServiceInner(deps)
-	// Erfolgsliste sofort prüfen statt erst beim nächsten Claim — siehe
-	// ensureWritable in history.go.
+	// Check the received-drops history right away instead of waiting for the
+	// next claim — see ensureWritable in history.go.
 	if err := s.history.ensureWritable(); err != nil && deps.Log != nil {
-		deps.Log("[Drops] WARNUNG: Erfolgsliste nicht beschreibbar (%v) — erhaltene Drops werden nicht mitgeschrieben", err)
+		deps.Log("[Drops] WARNING: received-drops history not writable (%v) — received drops will not be recorded", err)
 	}
 	return s
 }

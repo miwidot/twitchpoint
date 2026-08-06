@@ -43,8 +43,8 @@ const claimRecordMaxAge = 90 * 24 * time.Hour
 // *config.Config satisfies this; tests can stub it.
 type claimRecord interface {
 	IsDropClaimed(dropID string) bool
-	// RecordClaimedDrops liefert die Kennungen zurück, die NEU waren —
-	// damit je Drop genau ein Eintrag in der Erfolgsliste entsteht.
+	// RecordClaimedDrops returns the IDs that were NEW —
+	// so exactly one entry per drop lands in the received-drops history.
 	RecordClaimedDrops(dropIDs []string) []string
 }
 
@@ -80,7 +80,7 @@ func applyLocalClaims(campaigns []twitch.DropCampaign, rec claimRecord) int {
 
 // recordObservedClaims persists every drop that is currently marked claimed
 // and returns one history entry per NEWLY recorded drop, ready to append to the
-// Erfolgsliste. An empty result means nothing changed — no Save needed.
+// received-drops history. An empty result means nothing changed — no Save needed.
 //
 // Runs AFTER auto-claim so it also captures drops claimed in this very cycle.
 // That matters for exactly the failure case above: the last tier was claimed
@@ -88,14 +88,14 @@ func applyLocalClaims(campaigns []twitch.DropCampaign, rec claimRecord) int {
 // for the next cycle to observe it would have missed it for good.
 //
 // justClaimed carries the IDs auto-claim got in this cycle, so the history can
-// tell "selbst geclaimt" from "war schon geclaimt" (der Nutzer hat es bei
-// Twitch selbst abgeholt). Rein informativ.
+// tell "self-claimed" from "was already claimed" (the user picked it up on
+// Twitch themselves). Purely informational.
 func recordObservedClaims(campaigns []twitch.DropCampaign, rec claimRecord, justClaimed map[string]bool) []ClaimHistoryEntry {
 	if rec == nil {
 		return nil
 	}
-	// Namen zur Kennung mitnehmen: nach Ablauf der Kampagne sind sie bei
-	// Twitch nicht mehr zu holen, die Kennung allein wäre wertlos.
+	// Carry the names along with the ID: once the campaign expires they're no
+	// longer retrievable from Twitch, and the ID alone would be worthless.
 	type meta struct{ game, campaign, reward string }
 	info := make(map[string]meta)
 	var ids []string

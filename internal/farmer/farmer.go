@@ -904,12 +904,12 @@ func (f *Farmer) writeLogFile(msg string) {
 			f.logFile.Close()
 			f.logFile = newFile
 			f.logDate = today
-			// Beim Tageswechsel aufräumen. Ohne das wuchsen die Logs
-			// unbegrenzt (Befund 28.07.2026: 127 MB über 11 Tage, ~5 MB
-			// pro Tag) — auf einem Pi mit einer einzigen SSD, auf der der
-			// ganze Homeserver liegt. Läuft unter fileLogMu, deshalb
-			// bewusst ohne Umweg über writeLogFile (das würde denselben
-			// Mutex erneut nehmen wollen).
+			// Prune on day rollover. Without this the logs grew
+			// unbounded (finding from 2026-07-28: 127 MB over 11 days,
+			// ~5 MB per day) — on a Pi with a single SSD that also
+			// hosts the whole home server. Runs under fileLogMu, so
+			// deliberately not routed through writeLogFile (that would
+			// try to acquire the same mutex again).
 			pruneOldLogs(nil)
 		}
 	}

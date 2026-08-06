@@ -43,7 +43,7 @@ type ActiveDrop struct {
 	// or reward-only tiers can't be farmed, so counting them would make a
 	// finished campaign look unfinished. Added because a tiered campaign that
 	// is fully claimed can otherwise look identical to an untouched one, which
-	// is exactly what made the MarbleFest re-farming bug invisible. (lokal)
+	// is exactly what made the MarbleFest re-farming bug invisible. (local)
 	ClaimedDrops   int `json:"claimed_drops"`
 	WatchableDrops int `json:"watchable_drops"`
 }
@@ -225,7 +225,7 @@ func campaignToRow(c twitch.DropCampaign, pinnedID string) ActiveDrop {
 		break
 	}
 
-	claimed, watchable := claimedCounts(c) // lokal: "x/y erhalten"-Anzeige
+	claimed, watchable := claimedCounts(c) // local: "x/y received" display
 
 	row := ActiveDrop{
 		CampaignID:         c.ID,

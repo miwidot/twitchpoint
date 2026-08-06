@@ -10,53 +10,54 @@ import (
 	"time"
 )
 
-// Erfolgsliste ("Erhalten")
+// Received-drops history ("Received")
 //
-// Eine schmale, fortgeschriebene Liste aller erhaltenen Drops — eine Zeile je
-// Drop, für immer. Zweck ist rein informativ: nachschauen können, was man wann
-// bekommen hat, auch lange nachdem die Kampagne bei Twitch verschwunden ist.
+// A slim, append-only list of every drop we've ever received — one line per
+// drop, forever. Purpose is purely informational: being able to look up what
+// we got and when, even long after the campaign has vanished from Twitch.
 //
-// Bewusst getrennt vom Claim-Gedächtnis in der config (siehe localclaims.go):
-//   - Das Gedächtnis ist Arbeitsmaterial, muss schnell nachschlagbar sein und
-//     wird nach 90 Tagen aufgeräumt. Es enthält nur Kennung und Datum.
-//   - Diese Liste ist zum Anschauen und darf bleiben. Sie enthält die Namen,
-//     die es im Gedächtnis nicht gibt — und ohne sie hätte man nur
-//     nichtssagende Kennungen wie "40edc785-8645-11f1-…".
+// Deliberately separate from the claim record in the config (see
+// localclaims.go):
+//   - The record is working material, needs to be fast to look up, and is
+//     pruned after 90 days. It only holds the ID and date.
+//   - This list is for viewing and may stay forever. It holds the names that
+//     the record doesn't — without them all we'd have is meaningless IDs like
+//     "40edc785-8645-11f1-…".
 //
-// Warum überhaupt eine eigene Datei, wenn die Claims auch im Debug-Log stehen:
-// Die Tageslogs sind ~5 MB pro Tag, zu 99,9 % Rauschen, und werden nach 14
-// Tagen gelöscht. Die Erfolgsliste wächst um wenige Zeilen am Tag.
+// Why a dedicated file at all, when claims also show up in the debug log:
+// the daily logs are ~5 MB per day, 99.9% noise, and get deleted after 14
+// days. The received-drops history only grows by a few lines a day.
 //
-// Format: JSON Lines (eine JSON-Zeile je Eintrag). Fortschreiben ist damit ein
-// einfaches Anhängen, ein abgebrochener Schreibvorgang beschädigt höchstens die
-// letzte Zeile, und der Leser überspringt kaputte Zeilen einfach.
+// Format: JSON Lines (one JSON line per entry). That makes appending a
+// simple write; an interrupted write corrupts at most the last line, and the
+// reader just skips broken lines.
 
-// claimHistoryFile ist der Dateiname neben der config.json. Absichtlich NICHT
-// im logs-Verzeichnis: dort räumt die Aufbewahrungsgrenze auf.
+// claimHistoryFile is the filename next to config.json. Deliberately NOT in
+// the logs directory: the retention limit there cleans things up.
 const claimHistoryFile = "claimed-history.jsonl"
 
-// claimHistoryMax begrenzt, wie viele Einträge die Weboberfläche bekommt.
-// Die Datei selbst wird nie gekürzt.
+// claimHistoryMax caps how many entries the web UI receives.
+// The file itself is never truncated.
 const claimHistoryMax = 2000
 
-// ClaimHistoryEntry ist ein erhaltener Drop.
+// ClaimHistoryEntry is a received drop.
 type ClaimHistoryEntry struct {
-	At       time.Time `json:"at"`       // wann wir den Claim zuerst gesehen haben
-	Game     string    `json:"game"`     // z.B. "Marbles on Stream"
-	Campaign string    `json:"campaign"` // z.B. "MarbleFest - July'26-Day2"
-	Reward   string    `json:"reward"`   // z.B. "30 Tournament Coins"
-	DropID   string    `json:"drop_id"`  // zur Nachverfolgung im Log
-	Source   string    `json:"source"`   // "auto" = selbst geclaimt, "extern" = bei Twitch geclaimt
+	At       time.Time `json:"at"`       // when we first observed the claim
+	Game     string    `json:"game"`     // e.g. "Marbles on Stream"
+	Campaign string    `json:"campaign"` // e.g. "MarbleFest - July'26-Day2"
+	Reward   string    `json:"reward"`   // e.g. "30 Tournament Coins"
+	DropID   string    `json:"drop_id"`  // for tracing in the log
+	Source   string    `json:"source"`   // "auto" = self-claimed, "extern" = claimed on Twitch
 }
 
-// claimHistory schreibt und liest die Erfolgsliste. Der Mutex schützt gegen
-// gleichzeitiges Anhängen (Drops-Zyklus) und Lesen (Weboberfläche).
+// claimHistory writes and reads the received-drops history. The mutex
+// guards against concurrent appends (drops cycle) and reads (web UI).
 type claimHistory struct {
 	mu   sync.Mutex
 	path string
 }
 
-// newClaimHistory legt die Liste neben die angegebene config-Datei.
+// newClaimHistory places the list next to the given config file.
 func newClaimHistory(configPath string) *claimHistory {
 	dir := filepath.Dir(configPath)
 	if dir == "" || dir == "." {
@@ -65,20 +66,20 @@ func newClaimHistory(configPath string) *claimHistory {
 	return &claimHistory{path: filepath.Join(dir, claimHistoryFile)}
 }
 
-// ensureWritable prüft beim Start, ob die Liste angelegt bzw. fortgeschrieben
-// werden kann, und legt sie dabei gleich an.
+// ensureWritable checks at startup whether the list can be created or
+// appended to, and creates it right away in the process.
 //
-// Existiert: weil ein Rechteproblem sonst erst beim nächsten Claim auffällt —
-// und das kann Stunden später sein. Genau so passiert am 28.07.2026: Die Datei
-// war von außen mit falschem Eigentümer angelegt worden, der Fehler
-// ("permission denied") stand erst vier Stunden später im Log, und drei
-// erhaltene Drops fehlten in der Liste.
+// It exists because a permission problem would otherwise only surface at
+// the next claim — which can be hours later. Exactly this happened on
+// 2026-07-28: the file had been created externally with the wrong owner,
+// the error ("permission denied") only showed up in the log four hours
+// later, and three received drops were missing from the list.
 //
-// Fallstrick dahinter: Der Container läuft als root, aber der Stack setzt
-// `cap_drop: ALL`. Damit fehlt root auch CAP_DAC_OVERRIDE — er darf Dateirechte
-// also NICHT mehr ignorieren und wird wie ein normaler Benutzer behandelt. Eine
-// Datei, die jemand anderem gehört und nur 644 hat, ist damit unbeschreibbar,
-// obwohl "root" draufsteht.
+// The pitfall behind it: the container runs as root, but the stack sets
+// `cap_drop: ALL`. That strips root of CAP_DAC_OVERRIDE too — it can no
+// longer ignore file permissions and gets treated like a regular user. A
+// file owned by someone else with only mode 644 is then unwritable, even
+// though "root" is printed on the label.
 func (h *claimHistory) ensureWritable() error {
 	if h == nil {
 		return nil
@@ -95,9 +96,9 @@ func (h *claimHistory) ensureWritable() error {
 	return f.Close()
 }
 
-// Append hängt Einträge an. Fehler sind nicht fatal — eine fehlende
-// Erfolgsliste darf das Farmen nicht stören, deshalb gibt der Aufrufer den
-// Fehler höchstens ins Log.
+// Append adds entries. Errors are not fatal — a missing received-drops
+// history must not interrupt farming, so the caller at most logs the
+// error.
 func (h *claimHistory) Append(entries []ClaimHistoryEntry) error {
 	if h == nil || len(entries) == 0 {
 		return nil
@@ -118,7 +119,7 @@ func (h *claimHistory) Append(entries []ClaimHistoryEntry) error {
 	for _, e := range entries {
 		line, err := json.Marshal(e)
 		if err != nil {
-			continue // ein kaputter Eintrag darf die anderen nicht verhindern
+			continue // a broken entry must not prevent the others
 		}
 		w.Write(line)
 		w.WriteByte('\n')
@@ -126,8 +127,8 @@ func (h *claimHistory) Append(entries []ClaimHistoryEntry) error {
 	return w.Flush()
 }
 
-// Read liefert die Einträge, neueste zuerst, höchstens limit viele.
-// Eine fehlende Datei ist kein Fehler (noch nichts erhalten).
+// Read returns the entries, newest first, at most limit many.
+// A missing file is not an error (nothing received yet).
 func (h *claimHistory) Read(limit int) ([]ClaimHistoryEntry, error) {
 	if h == nil {
 		return nil, nil
@@ -146,7 +147,7 @@ func (h *claimHistory) Read(limit int) ([]ClaimHistoryEntry, error) {
 
 	var out []ClaimHistoryEntry
 	sc := bufio.NewScanner(f)
-	// Belohnungsnamen sind kurz; der Default-Puffer (64 KB) reicht weit.
+	// Reward names are short; the default buffer (64 KB) is more than enough.
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -154,7 +155,7 @@ func (h *claimHistory) Read(limit int) ([]ClaimHistoryEntry, error) {
 		}
 		var e ClaimHistoryEntry
 		if json.Unmarshal([]byte(line), &e) != nil {
-			continue // kaputte Zeile überspringen statt alles zu verlieren
+			continue // skip broken line instead of losing everything
 		}
 		out = append(out, e)
 	}
@@ -162,8 +163,8 @@ func (h *claimHistory) Read(limit int) ([]ClaimHistoryEntry, error) {
 		return nil, err
 	}
 
-	// Neueste zuerst: die Datei wird chronologisch fortgeschrieben, also
-	// einfach umdrehen statt zu sortieren.
+	// Newest first: the file is appended to chronologically, so just
+	// reverse instead of sorting.
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
@@ -173,8 +174,8 @@ func (h *claimHistory) Read(limit int) ([]ClaimHistoryEntry, error) {
 	return out, nil
 }
 
-// ClaimHistory liefert die Erfolgsliste für die Weboberfläche,
-// neueste zuerst. Öffentlich, weil der Web-Server sie braucht.
+// ClaimHistory returns the received-drops history for the web UI,
+// newest first. Exported because the web server needs it.
 func (s *Service) ClaimHistory() ([]ClaimHistoryEntry, error) {
 	return s.history.Read(claimHistoryMax)
 }

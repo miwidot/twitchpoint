@@ -336,9 +336,9 @@ func (s *Server) handleDrops(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, rows)
 }
 
-// handleClaimed liefert die Erfolgsliste. Gefiltert und gruppiert wird im
-// Browser — die Liste ist klein (wenige Zeilen pro Tag), das spart einen
-// Server-Roundtrip pro Tastendruck im Suchfeld.
+// handleClaimed returns the received-drops history. Filtering and grouping
+// happen in the browser — the list is small (a few lines per day), which
+// saves a server round-trip per keystroke in the search field.
 func (s *Server) handleClaimed(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -346,7 +346,7 @@ func (s *Server) handleClaimed(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := s.farmer.GetClaimHistory()
 	if err != nil {
-		jsonError(w, "Erfolgsliste nicht lesbar", http.StatusInternalServerError)
+		jsonError(w, "received-drops history not readable", http.StatusInternalServerError)
 		return
 	}
 	if entries == nil {
