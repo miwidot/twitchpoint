@@ -432,6 +432,47 @@
         .status-pill.disabled   { color: var(--text-dim); border: 1px solid var(--rule-soft); }
         .status-pill.completed  { color: var(--text-dim); border: 1px solid transparent; opacity: 0.5; }
         .status-pill.blocked    { color: #d0a030; border: 1px solid #d0a030; }
+        /* Alle farmbaren Stufen erhalten — unauffällig grün statt Alarm */
+        .auto-tag.claimed-all   { color: #4f9d5a; border-color: #4f9d5a; }
+
+        /* Reiter "Erhalten" */
+        .claimed-search { display: flex; gap: 8px; margin-bottom: 20px; }
+        .claimed-search input {
+            flex: 1;
+            background: var(--bg-elev);
+            border: 1px solid var(--rule);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 13px;
+            padding: 10px 12px;
+        }
+        .claimed-search input:focus { outline: none; border-color: var(--accent); }
+        .claimed-day {
+            font-size: 11px;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--accent);
+            font-weight: 700;
+            padding: 18px 0 8px;
+            border-bottom: 1px solid var(--rule-soft);
+            margin-bottom: 8px;
+        }
+        .claimed-day .count { color: var(--text-dim); font-weight: 400; margin-left: 10px; letter-spacing: 0.04em; }
+        .claimed-row {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--rule-soft);
+            font-size: 13px;
+        }
+        .claimed-row .time { color: var(--text-dim); font-size: 11px; min-width: 42px; }
+        .claimed-row .reward { color: var(--text); flex: 1; min-width: 180px; }
+        /* Spiel heller als die Kampagne: danach sucht man beim Überfliegen */
+        .claimed-row .game-name { color: var(--text-muted); font-size: 12px; min-width: 200px; text-align: right; }
+        .claimed-row .campaign-name { color: var(--text-dim); font-size: 11px; min-width: 190px; text-align: right; }
+        .claimed-row .ext { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+        .claimed-empty { color: var(--text-dim); padding: 24px 0; text-align: center; }
 
         .toggle {
             position: relative;
@@ -708,8 +749,12 @@
                 <span class="tab-num">02</span>
                 <span class="tab-label">Drops</span>
             </button>
-            <button class="tab" data-tab="help">
+            <button class="tab" data-tab="claimed">
                 <span class="tab-num">03</span>
+                <span class="tab-label">Erhalten</span>
+            </button>
+            <button class="tab" data-tab="help">
+                <span class="tab-num">04</span>
                 <span class="tab-label">Help</span>
             </button>
             <span class="tab-indicator" id="tab-indicator"></span>
@@ -810,6 +855,19 @@
                 </div>
             </section>
 
+            <section class="tab-panel" id="panel-claimed">
+                <div class="panel">
+                    <div class="panel-head">
+                        <div class="panel-title">Erhaltene Drops<span class="dim" id="claimed-meta">—</span></div>
+                    </div>
+                    <div class="claimed-search">
+                        <input type="text" id="claimed-input" placeholder="Suchen nach Spiel, Kampagne oder Belohnung… (z.B. Marbles, Anno)" autocomplete="off">
+                        <button class="btn" id="claimed-clear">Zurücksetzen</button>
+                    </div>
+                    <div id="claimed-list"></div>
+                </div>
+            </section>
+
             <section class="tab-panel" id="panel-help">
                 <div class="help-grid">
                     <div class="help-section">
@@ -880,6 +938,7 @@
             stats: {},
             logs: [],
             wantedGames: [],
+            claimed: [], // Erfolgsliste, siehe Reiter "Erhalten"
             settings: { auto_claim: true },
             suggestions: [],
             sugCursor: -1,
@@ -1211,11 +1270,23 @@
                     ? d.progress + '/' + d.required + ' · ' + d.percent + '%'
                     : '—';
 
+                // Wie viele Stufen der Kampagne sind erhalten? Macht sichtbar,
+                // ob eine gestaffelte Kampagne durch ist — ohne das sieht eine
+                // fertige Kampagne aus wie eine unangetastete.
+                const dropsTd = el('td', null, el('span', { class: 'num', text: progress }));
+                if (d.watchable_drops > 0) {
+                    const done = d.claimed_drops >= d.watchable_drops;
+                    dropsTd.appendChild(el('span', {
+                        class: 'auto-tag' + (done ? ' claimed-all' : ''),
+                        text: d.claimed_drops + '/' + d.watchable_drops + ' erhalten',
+                    }));
+                }
+
                 const channel = d.channel_login || '—';
                 const tr = el('tr', null,
                     campaignTd,
                     el('td', null, el('span', { class: 'game-cell', text: d.game_name || '—' })),
-                    el('td', null, el('span', { class: 'num', text: progress })),
+                    dropsTd,
                     el('td', null, el('span', { class: 'ch-name' + (channel === '—' ? ' offline' : '') }, twitchLink(d.channel_login, channel))),
                     el('td', null, el('span', { class: 'status-pill ' + status.toLowerCase(), text: status })),
                     el('td', { class: 'r' },
@@ -1530,16 +1601,94 @@
             }
         });
 
+        // ─── Reiter "Erhalten" ───────────────────────────────────
+        // Gefiltert und gruppiert wird hier im Browser: Die Liste ist klein
+        // (wenige Zeilen pro Tag), so reagiert das Suchfeld ohne Server-Runde.
+        let claimedFilter = '';
+
+        function renderClaimed() {
+            const box = $('#claimed-list');
+            if (!box) return;
+            const all = state.claimed || [];
+
+            const q = claimedFilter.trim().toLowerCase();
+            const rows = q
+                ? all.filter(e => (
+                      (e.game || '') + ' ' + (e.campaign || '') + ' ' + (e.reward || '')
+                  ).toLowerCase().includes(q))
+                : all;
+
+            $('#claimed-meta').textContent = q
+                ? rows.length + ' von ' + all.length + ' Treffern'
+                : all.length + ' Drops erhalten';
+
+            box.innerHTML = '';
+            if (rows.length === 0) {
+                box.appendChild(el('div', {
+                    class: 'claimed-empty',
+                    text: all.length === 0
+                        ? 'Noch nichts erhalten — sobald ein Drop geclaimt wird, steht er hier.'
+                        : 'Kein Treffer für „' + claimedFilter + '".',
+                }));
+                return;
+            }
+
+            // Nach Tag gruppieren; die Liste kommt schon neueste-zuerst.
+            let currentDay = null;
+            let dayBox = null;
+            for (const e of rows) {
+                const d = new Date(e.at);
+                const dayKey = d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+                if (dayKey !== currentDay) {
+                    currentDay = dayKey;
+                    const sameDay = rows.filter(x => new Date(x.at).toDateString() === d.toDateString()).length;
+                    box.appendChild(el('div', { class: 'claimed-day' },
+                        document.createTextNode(dayKey),
+                        el('span', { class: 'count', text: sameDay + (sameDay === 1 ? ' Drop' : ' Drops') })
+                    ));
+                    dayBox = el('div');
+                    box.appendChild(dayBox);
+                }
+                // Das Spiel ist die wichtigste Orientierung — nach zwei Wochen
+                // sagt eine Kampagne wie "TD2 - Y8 Season 2" niemandem mehr,
+                // um welches Spiel es ging. Deshalb deutlicher als die Kampagne.
+                const row = el('div', { class: 'claimed-row' },
+                    el('span', { class: 'time', text: d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) }),
+                    el('span', { class: 'reward', text: e.reward || '(ohne Namen)' }),
+                    el('span', { class: 'game-name', text: e.game || '—' }),
+                    el('span', { class: 'campaign-name', text: e.campaign || '' })
+                );
+                if (e.source === 'extern') {
+                    row.appendChild(el('span', { class: 'ext', text: 'bei Twitch geholt' }));
+                } else if (e.source === 'backfill') {
+                    row.appendChild(el('span', { class: 'ext', text: 'aus Log' }));
+                }
+                dayBox.appendChild(row);
+            }
+        }
+
+        $('#claimed-input').addEventListener('input', (e) => {
+            claimedFilter = e.target.value;
+            renderClaimed();
+        });
+        $('#claimed-clear').addEventListener('click', () => {
+            claimedFilter = '';
+            $('#claimed-input').value = '';
+            renderClaimed();
+            $('#claimed-input').focus();
+        });
+
         // ─── Refresh loop ────────────────────────────────────────
         async function refresh() {
             try {
-                const [stats, channels, drops, logs, wanted, settings] = await Promise.all([
+                const [stats, channels, drops, logs, wanted, settings, claimed] = await Promise.all([
                     fetch('/api/stats').then(r => r.json()),
                     fetch('/api/channels').then(r => r.json()),
                     fetch('/api/drops').then(r => r.json()),
                     fetch('/api/logs').then(r => r.json()),
                     fetch('/api/wanted_games').then(r => r.json()),
                     fetch('/api/settings').then(r => r.json()),
+                    fetch('/api/claimed').then(r => r.json()),
                 ]);
                 state.stats = stats;
                 state.channels = channels;
@@ -1547,6 +1696,7 @@
                 state.logs = logs;
                 state.wantedGames = wanted.games || [];
                 state.settings = settings;
+                state.claimed = claimed;
 
                 renderStats();
                 renderChannels();
@@ -1555,6 +1705,7 @@
                 renderLogs();
                 renderWantedGames();
                 renderAutoClaim();
+                renderClaimed();
             } catch (e) {
                 console.error('refresh failed', e);
             }

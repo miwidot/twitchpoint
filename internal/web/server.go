@@ -61,6 +61,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/channels/", s.handleChannel)
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
 	s.mux.HandleFunc("/api/drops", s.handleDrops)
+	s.mux.HandleFunc("/api/claimed", s.handleClaimed)
 	s.mux.HandleFunc("/api/drops/", s.handleDropAction)
 	s.mux.HandleFunc("/api/wanted_games", s.handleWantedGames)
 	s.mux.HandleFunc("/api/games/search", s.handleGamesSearch)
@@ -333,6 +334,25 @@ func (s *Server) handleDrops(w http.ResponseWriter, r *http.Request) {
 		rows = []drops.ActiveDrop{}
 	}
 	jsonResponse(w, rows)
+}
+
+// handleClaimed liefert die Erfolgsliste. Gefiltert und gruppiert wird im
+// Browser — die Liste ist klein (wenige Zeilen pro Tag), das spart einen
+// Server-Roundtrip pro Tastendruck im Suchfeld.
+func (s *Server) handleClaimed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entries, err := s.farmer.GetClaimHistory()
+	if err != nil {
+		jsonError(w, "Erfolgsliste nicht lesbar", http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []drops.ClaimHistoryEntry{}
+	}
+	jsonResponse(w, entries)
 }
 
 func (s *Server) handleDropAction(w http.ResponseWriter, r *http.Request) {

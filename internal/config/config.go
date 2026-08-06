@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const defaultConfigFile = "config.json"
@@ -42,6 +43,19 @@ type Config struct {
 	CompletedCampaigns []string       `json:"completed_campaigns,omitempty"` // campaign IDs already fully claimed
 	PinnedCampaignID   string         `json:"pinned_campaign_id,omitempty"`  // v1.7.0 (deprecated v1.8.0; ignored by selector but kept for backward compat)
 	GamesToWatch       []string       `json:"games_to_watch,omitempty"`      // v1.8.0 ordered priority list of game names; empty = remaining_time fallback
+	// ClaimedDrops is our own record of drops we have observed as claimed:
+	// drop ID → RFC3339 date of the observation. It exists because Twitch's
+	// data is not a reliable source once a campaign leaves the in-progress
+	// inventory: the dashboard/details payload that replaces it carries NO
+	// per-user state (isClaimed=false, currentMinutesWatched=0 on every
+	// drop). The gameEventDrops award history normally rescues that, but not
+	// for TIERED campaigns whose drops share one benefit ID (MarbleFest,
+	// R6S Esports Pack) — a single award can't say WHICH tier was earned, so
+	// that signal is deliberately discarded. Result before this record
+	// existed: a fully claimed daily campaign looked untouched and was
+	// re-farmed until it expired (observed 2026-07-28, MarbleFest Day1,
+	// ~6 hours of channel rotation without a single credited minute).
+	ClaimedDrops map[string]string `json:"claimed_drops,omitempty"`
 
 	path   string       // file path, not serialized
 	mu     sync.RWMutex // guards all mutable fields above; not serialized
@@ -618,4 +632,81 @@ func (c *Config) HasChannel(login string) bool {
 		}
 	}
 	return false
+}
+
+// --- Claim-Gedächtnis (siehe Kommentar an ClaimedDrops) ---
+
+// IsDropClaimed reports whether we have ever observed this drop as claimed.
+func (c *Config) IsDropClaimed(dropID string) bool {
+	if dropID == "" {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.ClaimedDrops[dropID]
+	return ok
+}
+
+// RecordClaimedDrops adds drop IDs to the record, stamped with the current
+// date. Returns the IDs that were NEW — the caller uses that both to decide
+// whether a Save() is worth the disk write and to append exactly one history
+// entry per drop, ever.
+//
+// Re-recording an already known ID deliberately does NOT refresh its
+// timestamp: the stamp marks when we FIRST saw the claim, which is what
+// PruneClaimedDrops reasons about.
+func (c *Config) RecordClaimedDrops(dropIDs []string) []string {
+	if len(dropIDs) == 0 {
+		return nil
+	}
+	stamp := time.Now().UTC().Format(time.RFC3339)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ClaimedDrops == nil {
+		c.ClaimedDrops = make(map[string]string, len(dropIDs))
+	}
+	var added []string
+	for _, id := range dropIDs {
+		if id == "" {
+			continue
+		}
+		if _, exists := c.ClaimedDrops[id]; !exists {
+			c.ClaimedDrops[id] = stamp
+			added = append(added, id)
+		}
+	}
+	return added
+}
+
+// PruneClaimedDrops drops records older than maxAge and returns how many were
+// removed. Daily campaigns mint fresh drop IDs every day, so without pruning
+// the record grows without bound (~5 IDs/day for MarbleFest alone).
+//
+// Pruning is safe for long-running campaigns: while such a campaign is still
+// in the in-progress inventory, Twitch keeps reporting its claimed drops as
+// claimed, and the recorder re-adds them every cycle. Only IDs that no source
+// has mentioned for maxAge disappear — by then their campaign is long expired.
+//
+// Entries with an unparsable stamp are treated as ancient and removed; that
+// only happens if the file was hand-edited.
+func (c *Config) PruneClaimedDrops(maxAge time.Duration) int {
+	cutoff := time.Now().UTC().Add(-maxAge)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	removed := 0
+	for id, stamp := range c.ClaimedDrops {
+		t, err := time.Parse(time.RFC3339, stamp)
+		if err != nil || t.Before(cutoff) {
+			delete(c.ClaimedDrops, id)
+			removed++
+		}
+	}
+	return removed
+}
+
+// ClaimedDropCount returns the size of the record (for status output).
+func (c *Config) ClaimedDropCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.ClaimedDrops)
 }
