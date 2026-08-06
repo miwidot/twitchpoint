@@ -1,3 +1,45 @@
+== 2026-08-06 09:13 == Bump: v2.1.8 → v2.1.9 ==
+
+Feature release (community PR #15 by @threechord82) + English translation.
+
+1. Local claim memory (feat(drops)). Twitch only reports a drop as claimed
+   while its campaign sits in the in-progress inventory; once every drop is
+   claimed the campaign drops off that list and the dashboard/details
+   payload that replaces it carries NO per-user state (isClaimed=false,
+   currentMinutesWatched=0 on every drop). The gameEventDrops fallback
+   rescues most cases but deliberately can't for TIERED campaigns whose
+   drops share one benefit ID (MarbleFest, R6S Esports Pack) — guard 3
+   discards that ambiguous signal. Result before this: a fully claimed
+   daily campaign looked untouched and got re-farmed until it expired
+   (observed 2026-07-28, MarbleFest Day1, ~6h of channel rotation without a
+   credited minute).
+
+   Fix: keep our own record of claimed drop IDs (claimed_drops in config,
+   dropID → date). applyLocalClaims overlays it onto Twitch's answer BEFORE
+   auto-claim and the selector run (only ever false→true), so a
+   known-claimed drop is never re-farmed. Records are pruned after 90 days;
+   long-running campaigns re-register every cycle so they never age out
+   while alive. Complements the completion guards from #11/#12.
+
+2. Received-drops history + "Received" web tab (feat(web)). A lightweight
+   success list of received drops (JSON Lines next to config.json: date,
+   game, campaign, reward, source) surfaced as a searchable tab.
+   Writability is checked at startup so a permissions problem is reported
+   immediately. Drop rows now also carry claimed/watchable counts (x/y) so
+   a fully-claimed tiered campaign no longer looks identical to an
+   untouched one.
+
+3. Debug-log pruning (feat(farmer)). Daily debug-YYYY-MM-DD.log files
+   (~5 MB/day) were never cleaned up. A pruner runs at startup and on each
+   day rollover, keeping 14 days. Retention is decided by the date in the
+   filename (not mtime, which a restore would reset) and the filename
+   pattern is matched strictly so nothing else can be removed.
+
+4. i18n: PR #15 landed with German comments, log strings, and an "Erhalten"
+   UI tab; all translated to English ("Erhalten" → "Received") to match the
+   project's English-only rule. Text-only, no logic change.
+
+
 == 2026-08-04 18:30 == Bump: v2.1.7 → v2.1.8 ==
 
 Bug-fix + diagnostics release (community PRs #12, #13 by @threechord82).
