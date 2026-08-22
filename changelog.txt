@@ -1,3 +1,55 @@
+== 2026-08-22 21:11 == Bump: v2.1.9 → v2.2.0 ==
+
+Watch-streak fix: gate the streak hunt on watched minutes, not stream age
+(PR #16).
+
+Symptom: channels kept losing their WATCH_STREAK and resetting. Observed
+on dr_schakal, smoka_tv and SchlaubiYo; the log signature is a channel
+rotating in and out with watch credit but no bonus (smoka_tv on 08-11:
+25 watch starts, 3 watch credits, no streak).
+
+Cause: the Streak-Hunt bucket retired a candidate 30 minutes after its
+stream STARTED (streakHuntWindow). That conflated two different Twitch
+rules. Twitch requires a broadcast to be watched for ~10 minutes to count
+towards a streak; its "30 minutes" figure is the gap needed BETWEEN two
+broadcasts for the next one to count as a separate stream — not a
+deadline for earning the bonus. The streak stays earnable for as long as
+the stream runs.
+
+Because only maxSpadeSlots (2) channels are creditable at once, every
+channel that went live while the slots were busy had its window expire
+unserved and was abandoned for that entire stream. It fell back to the P2
+round-robin, which grants ~5-minute slices — never the contiguous-ish 10
+minutes needed — so the streak broke and the next stream started at zero.
+
+Fix, matching what Twitch actually measures:
+
+1. channels.State tracks StreamWatched per broadcast. Each rotation slice
+   is folded in on SetWatching(false)/SetOffline, the slice in progress is
+   counted at snapshot time, and the total resets when a new broadcast
+   begins while surviving same-broadcast refreshes (rotation and the drops
+   watcher push the same ID repeatedly).
+
+2. isStreakCandidate retires a candidate at streakWatchTarget (12 minutes
+   watched) instead of by stream age, so a long-running but never-watched
+   stream stays a candidate.
+
+3. sortStreakCandidates orders by accumulated watch time DESC, so a scarce
+   slot finishes a nearly-earned streak instead of stranding several
+   half-way. Ties still fall back to OnlineSince ASC.
+
+4. Dropped the now-unused "now" parameter from isStreakCandidate and
+   orderFillCandidates.
+
+No starvation: a candidate holding a slot accumulates watch time every
+tick, so it either claims its bonus or reaches the target and retires to
+P2. The queue drains at roughly streakWatchTarget per slot per candidate.
+
+Note: this does not lift Twitch's hard 2-channel credit limit — it stops
+wasting it. Assigning priority 0/1 to specific channels (all are priority
+2 by default) further protects their streaks.
+
+
 == 2026-08-06 09:13 == Bump: v2.1.8 → v2.1.9 ==
 
 Feature release (community PR #15 by @threechord82) + English translation.
