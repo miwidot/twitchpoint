@@ -49,6 +49,15 @@ type State struct {
 	// stream "unclaimed" without an explicit reset.
 	StreakClaimedAt time.Time
 
+	// StreamWatched is how long we have watched the CURRENT stream in
+	// total, across however many rotation slices it took. Twitch grants
+	// the WATCH_STREAK bonus once a broadcast has been watched for
+	// ~10 minutes; that requirement is about accumulated WATCH TIME, not
+	// about how long ago the stream started, so this — not a wall-clock
+	// deadline — is what decides whether a streak is still obtainable.
+	// Reset when a new broadcast begins (see resetStreamWatchLocked).
+	StreamWatched time.Duration
+
 	// Drops
 	HasActiveDrop bool
 	DropName      string
@@ -98,6 +107,7 @@ func (s *State) SetOnline(broadcastID, gameName string, viewers int) {
 	if !s.IsOnline {
 		s.OnlineSince = time.Now()
 	}
+	s.resetStreamWatchIfNewBroadcastLocked(broadcastID)
 	s.IsOnline = true
 	s.BroadcastID = broadcastID
 	s.GameName = gameName
@@ -121,6 +131,7 @@ func (s *State) SetOnlineWithGameID(broadcastID, gameName, gameID string, viewer
 			s.OnlineSince = streamStartedAt
 		}
 	}
+	s.resetStreamWatchIfNewBroadcastLocked(broadcastID)
 	s.IsOnline = true
 	s.BroadcastID = broadcastID
 	s.GameName = gameName
@@ -128,10 +139,60 @@ func (s *State) SetOnlineWithGameID(broadcastID, gameName, gameID string, viewer
 	s.ViewerCount = viewers
 }
 
+// resetStreamWatchIfNewBroadcastLocked clears the accumulated watch time
+// when the channel starts a DIFFERENT broadcast than the one we were
+// tracking — either coming back from offline, or the streamer restarting
+// mid-session (new broadcast ID). Twitch counts the ~10 watched minutes
+// per broadcast, so carrying the previous stream's total over would make
+// the new stream look already-satisfied and skip its streak hunt.
+//
+// Refreshing the same broadcast ID (the common case — rotation and the
+// drops watcher push it repeatedly) must NOT reset the accumulator.
+// Caller holds s.mu.
+func (s *State) resetStreamWatchIfNewBroadcastLocked(broadcastID string) {
+	if !s.IsOnline || (broadcastID != "" && broadcastID != s.BroadcastID) {
+		s.StreamWatched = 0
+		s.WatchingSince = time.Time{}
+	}
+}
+
+// accumulateWatchLocked folds an in-progress watch slice into StreamWatched
+// and clears the running clock. Caller holds s.mu.
+func (s *State) accumulateWatchLocked() {
+	if s.WatchingSince.IsZero() {
+		return
+	}
+	if d := time.Since(s.WatchingSince); d > 0 {
+		s.StreamWatched += d
+	}
+	s.WatchingSince = time.Time{}
+}
+
+// StreamWatchedFor reports the total watch time for the current stream,
+// including the slice currently in progress. This is the value the
+// Streak-Hunt logic gates on.
+func (s *State) StreamWatchedFor() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.streamWatchedLocked()
+}
+
+// streamWatchedLocked is StreamWatchedFor without the lock. Caller holds s.mu.
+func (s *State) streamWatchedLocked() time.Duration {
+	total := s.StreamWatched
+	if s.IsWatching && !s.WatchingSince.IsZero() {
+		if d := time.Since(s.WatchingSince); d > 0 {
+			total += d
+		}
+	}
+	return total
+}
+
 // SetOffline marks the channel as offline.
 func (s *State) SetOffline() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.accumulateWatchLocked()
 	s.IsOnline = false
 	s.IsWatching = false
 	s.BroadcastID = ""
@@ -144,12 +205,16 @@ func (s *State) SetOffline() {
 func (s *State) SetWatching(watching bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !watching {
+		// Fold the finished slice into the per-stream total before the
+		// running clock is cleared — rotation swaps a channel out every
+		// few minutes, so the streak requirement is only ever met across
+		// several slices.
+		s.accumulateWatchLocked()
+	}
 	s.IsWatching = watching
 	if watching && s.WatchingSince.IsZero() {
 		s.WatchingSince = time.Now()
-	}
-	if !watching {
-		s.WatchingSince = time.Time{}
 	}
 }
 
@@ -236,6 +301,9 @@ type Snapshot struct {
 
 	// Streak-Hunt
 	StreakClaimedAt time.Time
+	// StreamWatched is the accumulated watch time for the current stream,
+	// including any slice in progress at snapshot time.
+	StreamWatched time.Duration
 
 	// Drops
 	HasActiveDrop bool
@@ -270,6 +338,7 @@ func (s *State) Snapshot() Snapshot {
 		OnlineSince:         s.OnlineSince,
 		WatchingSince:       s.WatchingSince,
 		StreakClaimedAt:     s.StreakClaimedAt,
+		StreamWatched:       s.streamWatchedLocked(),
 		HasActiveDrop:       s.HasActiveDrop,
 		DropName:            s.DropName,
 		DropProgress:        s.DropProgress,

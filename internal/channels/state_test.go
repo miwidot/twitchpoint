@@ -78,3 +78,86 @@ func TestState_SetOnlineWithGameID_FallsBackToNow(t *testing.T) {
 			snap.OnlineSince, before, after)
 	}
 }
+
+// TestState_StreamWatched_AccumulatesAcrossSlices: rotation swaps a
+// channel out every few minutes, so the streak requirement is only ever
+// met across several watch slices. Each slice must be folded into the
+// per-stream total when watching stops.
+func TestState_StreamWatched_AccumulatesAcrossSlices(t *testing.T) {
+	s := NewState("alice", "Alice", "111")
+	s.SetOnline("b1", "Game", 5)
+
+	for i := 0; i < 3; i++ {
+		s.SetWatching(true)
+		time.Sleep(3 * time.Millisecond)
+		s.SetWatching(false)
+	}
+
+	if got := s.StreamWatchedFor(); got < 9*time.Millisecond {
+		t.Errorf("StreamWatched = %v, want >= 9ms accumulated across 3 slices", got)
+	}
+}
+
+// TestState_StreamWatched_IncludesSliceInProgress: the gate must see the
+// time being watched right now, not only completed slices — otherwise a
+// channel holding a slot looks permanently unwatched.
+func TestState_StreamWatched_IncludesSliceInProgress(t *testing.T) {
+	s := NewState("alice", "Alice", "111")
+	s.SetOnline("b1", "Game", 5)
+	s.SetWatching(true)
+	time.Sleep(3 * time.Millisecond)
+
+	if got := s.StreamWatchedFor(); got < 3*time.Millisecond {
+		t.Errorf("StreamWatched = %v, want the in-progress slice counted", got)
+	}
+	if got := s.Snapshot().StreamWatched; got < 3*time.Millisecond {
+		t.Errorf("Snapshot.StreamWatched = %v, want the in-progress slice counted", got)
+	}
+}
+
+// TestState_StreamWatched_ResetsOnNewBroadcast: Twitch counts the watched
+// minutes per broadcast, so a new stream must start from zero — otherwise
+// the previous stream's total makes the new one look already satisfied and
+// its streak hunt is skipped.
+func TestState_StreamWatched_ResetsOnNewBroadcast(t *testing.T) {
+	s := NewState("alice", "Alice", "111")
+	s.SetOnline("b1", "Game", 5)
+	s.SetWatching(true)
+	time.Sleep(3 * time.Millisecond)
+	s.SetWatching(false)
+	if s.StreamWatchedFor() == 0 {
+		t.Fatal("precondition: expected watch time on the first stream")
+	}
+
+	// Streamer restarts: new broadcast ID while still "online".
+	s.SetOnline("b2", "Game", 5)
+	if got := s.StreamWatchedFor(); got != 0 {
+		t.Errorf("StreamWatched = %v after new broadcast, want 0", got)
+	}
+
+	// And across a proper offline → online cycle.
+	s.SetWatching(true)
+	time.Sleep(3 * time.Millisecond)
+	s.SetOffline()
+	s.SetOnline("b3", "Game", 5)
+	if got := s.StreamWatchedFor(); got != 0 {
+		t.Errorf("StreamWatched = %v after restart, want 0", got)
+	}
+}
+
+// TestState_StreamWatched_SurvivesBroadcastRefresh: rotation and the drops
+// watcher push the SAME broadcast ID repeatedly; that must not wipe the
+// accumulated total, or the channel could never reach the streak target.
+func TestState_StreamWatched_SurvivesBroadcastRefresh(t *testing.T) {
+	s := NewState("alice", "Alice", "111")
+	s.SetOnline("b1", "Game", 5)
+	s.SetWatching(true)
+	time.Sleep(3 * time.Millisecond)
+	s.SetWatching(false)
+	before := s.StreamWatchedFor()
+
+	s.SetOnline("b1", "Game", 7) // same broadcast, refreshed viewer count
+	if got := s.StreamWatchedFor(); got != before {
+		t.Errorf("StreamWatched = %v after same-broadcast refresh, want %v", got, before)
+	}
+}
