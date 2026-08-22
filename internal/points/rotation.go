@@ -20,18 +20,30 @@ const rotationInterval = 5 * time.Minute
 // not the legacy POST-spade pipeline that the Spade tracker uses.
 const maxSpadeSlots = 2
 
-// streakHuntWindow is the cutoff past which a channel is no longer
-// considered for the Streak-Hunt slot. Twitch's WATCH_STREAK bonus
-// fires after ~5min watch-time once a streak >=5 is established;
-// past 30min from stream-start the window is almost always closed,
-// so further blocking the slot for this channel wastes bandwidth.
-const streakHuntWindow = 30 * time.Minute
+// streakWatchTarget is how much accumulated watch time a stream needs
+// before we stop hunting its WATCH_STREAK. Twitch counts a broadcast
+// towards a viewer's streak once it has been watched for ~10 minutes;
+// we hunt a little past that so a channel whose bonus is slow to land
+// isn't dropped one minute early.
+//
+// This gates on WATCH TIME, deliberately not on wall-clock time since
+// stream start. Twitch's other "30 minutes" rule — the gap required
+// between two broadcasts for the next one to count as a separate
+// stream — is about stream boundaries, NOT a deadline for earning the
+// streak. An earlier version of this file conflated the two and gave
+// up on any channel more than 30 minutes into its stream: with only
+// maxSpadeSlots channels creditable at once, every channel that went
+// live while the slots were busy was abandoned for that whole stream,
+// its streak broke, and the next stream started from zero. The bonus
+// stays earnable for as long as the stream runs, so the only thing
+// that should retire a candidate is having actually watched it.
+const streakWatchTarget = 12 * time.Minute
 
 // isStreakCandidate reports whether a channel is eligible for the
 // Streak-Hunt bucket: online, not owned by the drops watcher, hasn't
-// claimed THIS stream's WATCH_STREAK yet, and is within the hunt
-// window. Pure function — caller passes "now" for testability.
-func isStreakCandidate(snap channels.Snapshot, now time.Time, dropChanID string) bool {
+// claimed THIS stream's WATCH_STREAK yet, and hasn't already been
+// watched long enough for the bonus to have landed.
+func isStreakCandidate(snap channels.Snapshot, dropChanID string) bool {
 	if !snap.IsOnline {
 		return false
 	}
@@ -42,24 +54,34 @@ func isStreakCandidate(snap channels.Snapshot, now time.Time, dropChanID string)
 		// Already claimed (or claimed exactly when online — treat as claimed).
 		return false
 	}
-	if now.Sub(snap.OnlineSince) >= streakHuntWindow {
+	// Retire the candidate only once we have genuinely watched the
+	// stream long enough that Twitch should have granted the bonus.
+	// Channels that never got a slot keep their claim on one no matter
+	// how long the stream has been running (see streakWatchTarget).
+	if snap.StreamWatched >= streakWatchTarget {
 		return false
 	}
 	return true
 }
 
-// sortStreakCandidates orders by OnlineSince ASC — oldest stream first,
-// since its 30min window is closest to expiring. Stable tie-break by
-// ChannelID for deterministic ordering when two candidates share a
-// timestamp (rare but possible in test setups).
+// sortStreakCandidates orders by accumulated watch time DESC — the
+// candidate closest to the streak target goes first, so a scarce slot
+// finishes a streak instead of leaving several channels stranded
+// half-way. Ties (notably the common all-zero case, where every
+// candidate is freshly online) fall back to OnlineSince ASC so the
+// longest-waiting stream is served first, then ChannelID for
+// deterministic ordering.
 func sortStreakCandidates(list []*channels.State) {
 	sort.Slice(list, func(i, j int) bool {
 		si := list[i].Snapshot()
 		sj := list[j].Snapshot()
-		if si.OnlineSince.Equal(sj.OnlineSince) {
-			return list[i].ChannelID < list[j].ChannelID
+		if si.StreamWatched != sj.StreamWatched {
+			return si.StreamWatched > sj.StreamWatched
 		}
-		return si.OnlineSince.Before(sj.OnlineSince)
+		if !si.OnlineSince.Equal(sj.OnlineSince) {
+			return si.OnlineSince.Before(sj.OnlineSince)
+		}
+		return list[i].ChannelID < list[j].ChannelID
 	})
 }
 
@@ -96,8 +118,6 @@ func (s *Service) Rotate() {
 		dropChanID = s.dropWatch.CurrentChannelID()
 	}
 
-	now := time.Now()
-
 	var priority0 []*channels.State      // P0: active drop (auto-promoted)
 	var priorityStreak []*channels.State // PS: fresh-online, unclaimed streak (NEW)
 	var priority1 []*channels.State
@@ -118,7 +138,7 @@ func (s *Service) Rotate() {
 			continue
 		}
 		// Streak-Hunt sits between P0 and P1 — fresh-online, unclaimed.
-		if isStreakCandidate(snap, now, dropChanID) {
+		if isStreakCandidate(snap, dropChanID) {
 			priorityStreak = append(priorityStreak, ch)
 			continue
 		}
@@ -172,9 +192,12 @@ func (s *Service) Rotate() {
 		slotsUsed++
 	}
 
-	// Streak-Hunt: FIFO by OnlineSince ASC. Never starves P1/P2 long-term
-	// because each candidate either claims (within ~5-15min) or times out
-	// (30min hard cap), then drops back to P2 next tick.
+	// Streak-Hunt: closest-to-target first (see sortStreakCandidates).
+	// Doesn't starve P1/P2 indefinitely: a candidate holding a slot
+	// accumulates watch time every tick, so it either claims its bonus or
+	// reaches streakWatchTarget and retires to P2. The queue therefore
+	// drains at roughly streakWatchTarget per slot per candidate, instead
+	// of every candidate being abandoned once the stream got old.
 	sortStreakCandidates(priorityStreak)
 	for _, ch := range priorityStreak {
 		if slotsUsed >= slotLimit {
@@ -297,14 +320,14 @@ func (s *Service) TryStartWatching(state *channels.State) {
 }
 
 // orderFillCandidates returns the input list sorted by:
-//  1. Streak-Hunt candidates first (FIFO by OnlineSince ASC)
+//  1. Streak-Hunt candidates first (closest to streakWatchTarget first)
 //  2. Everything else by ViewerCount DESC (existing behavior)
 //
-// Pure function for testability — caller passes "now" and dropChanID.
-func orderFillCandidates(in []*channels.State, now time.Time, dropChanID string) []*channels.State {
+// Pure function for testability — caller passes dropChanID.
+func orderFillCandidates(in []*channels.State, dropChanID string) []*channels.State {
 	var streak, rest []*channels.State
 	for _, ch := range in {
-		if isStreakCandidate(ch.Snapshot(), now, dropChanID) {
+		if isStreakCandidate(ch.Snapshot(), dropChanID) {
 			streak = append(streak, ch)
 		} else {
 			rest = append(rest, ch)
@@ -322,14 +345,13 @@ func orderFillCandidates(in []*channels.State, now time.Time, dropChanID string)
 // EventStreamDown frees a slot AND by the WATCH_STREAK event handler
 // to immediately rotate in the next streak candidate.
 //
-// Selection order: Streak-Hunt candidates first (FIFO by OnlineSince),
-// then remaining channels by ViewerCount desc.
+// Selection order: Streak-Hunt candidates first (closest to the watch
+// target), then remaining channels by ViewerCount desc.
 func (s *Service) FillSpadeSlots() {
 	dropChanID := ""
 	if s.dropWatch != nil {
 		dropChanID = s.dropWatch.CurrentChannelID()
 	}
-	now := time.Now()
 
 	var candidates []*channels.State
 	for _, ch := range s.channels.States() {
@@ -339,7 +361,7 @@ func (s *Service) FillSpadeSlots() {
 		}
 	}
 
-	for _, ch := range orderFillCandidates(candidates, now, dropChanID) {
+	for _, ch := range orderFillCandidates(candidates, dropChanID) {
 		if s.spade.ActiveSlots() <= 0 {
 			break
 		}
