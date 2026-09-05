@@ -39,6 +39,41 @@ const maxSpadeSlots = 2
 // that should retire a candidate is having actually watched it.
 const streakWatchTarget = 12 * time.Minute
 
+// minPointsHold is the shortest slot worth giving a channel at all.
+// Twitch credits channel-points WATCH only after ~5 minutes of continuous
+// viewing, so a channel rotated out before that earns nothing — the slot
+// time is simply thrown away. Observed on 2026-09-05: with ~6 channels
+// live at once and 480 slot-minutes available (30% utilisation), five
+// channels still ended a multi-hour stream with ZERO watch credits
+// because the rotation kept handing everyone slices of a minute or two.
+const minPointsHold = 6 * time.Minute
+
+// holdSlot reports whether a channel that already holds a Spade slot must
+// keep it this cycle instead of being rotated out. This turns the
+// rotation from "give everyone a sliver" into "finish one, then the next":
+//
+//   - A streak candidate keeps its slot until it has watched enough for
+//     the bonus (isStreakCandidate goes false at streakWatchTarget), so a
+//     streak is actually completed rather than approached repeatedly.
+//   - Every other channel keeps its slot until one points interval has had
+//     a chance to land (minPointsHold).
+//
+// Neither hold can last: both gates read watch time that only grows while
+// the channel is on air, so a held slot is always released after at most
+// streakWatchTarget. The drop pick (P0) still outranks a hold.
+func holdSlot(snap channels.Snapshot, dropChanID string) bool {
+	if !snap.IsWatching {
+		return false
+	}
+	if isStreakCandidate(snap, dropChanID) {
+		return true
+	}
+	if !snap.WatchingSince.IsZero() && time.Since(snap.WatchingSince) < minPointsHold {
+		return true
+	}
+	return false
+}
+
 // isStreakCandidate reports whether a channel is eligible for the
 // Streak-Hunt bucket: online, not owned by the drops watcher, hasn't
 // claimed THIS stream's WATCH_STREAK yet, and hasn't already been
@@ -185,6 +220,31 @@ func (s *Service) Rotate() {
 
 	slotsUsed := 0
 	for _, ch := range priority0 {
+		if slotsUsed >= slotLimit {
+			break
+		}
+		desired[ch.ChannelID] = ch
+		slotsUsed++
+	}
+
+	// Minimum-hold pass: channels already on air that have not yet been
+	// watched long enough to earn anything keep their slot before any new
+	// channel is considered (see holdSlot). Without this the round-robin
+	// reshuffles every cycle and nobody reaches Twitch's credit threshold.
+	var pinned []*channels.State
+	for _, list := range [][]*channels.State{priorityStreak, priority1, priority2} {
+		for _, ch := range list {
+			if _, already := desired[ch.ChannelID]; already {
+				continue
+			}
+			if holdSlot(ch.Snapshot(), dropChanID) {
+				pinned = append(pinned, ch)
+			}
+		}
+	}
+	// Closest to its target first, so a scarce slot finishes someone.
+	sortStreakCandidates(pinned)
+	for _, ch := range pinned {
 		if slotsUsed >= slotLimit {
 			break
 		}
