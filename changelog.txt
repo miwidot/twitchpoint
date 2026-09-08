@@ -1,3 +1,48 @@
+== 2026-09-08 13:14 == Bump: v2.2.0 → v2.3.0 ==
+
+Rotation now holds a Spade slot long enough to actually earn something
+(PR #17).
+
+Symptom: channels ended multi-hour streams with ZERO watch credits and a
+broken watch streak. Reported for cpt_blackshark, which was live
+2026-09-05 00:12-02:34, received five slot assignments, and earned
+nothing. Four other channels (sirhansvader, jakob0687, xxsidney91xx,
+bitoki) ended the same window on zero as well.
+
+Cause: rotation reshuffled the two Spade slots so often that channels got
+slices of a minute or two — below every threshold Twitch pays out on
+(channel points need ~5 continuous minutes; a watch streak ~10 watched
+minutes per broadcast). This was NOT a capacity problem: in that window
+about six channels were live at once, needing 12 x 12 = 144 slot-minutes
+against 480 available, i.e. 30% utilisation. The slot time existed, it
+was just sliced too thin to be credited.
+
+Fix: a minimum-hold pass runs between P0 and the streak bucket. A channel
+that already holds a slot keeps it until the slot has been worth
+something:
+  - a streak candidate holds until isStreakCandidate goes false, i.e.
+    until it reaches streakWatchTarget (12 min), so a streak is finished
+    rather than approached over and over;
+  - every other channel holds for minPointsHold (6 min) so one points
+    interval has a chance to land.
+
+This turns the rotation from "give everyone a sliver" into "finish one,
+then the next". It trades breadth for yield deliberately: fewer channels
+served per hour, but the ones served actually earn.
+
+Neither hold can stick. Both gates read watch time that only grows while
+the channel is on air, so a slot is released after at most
+streakWatchTarget, and a channel going offline releases immediately. The
+drop pick (P0) still outranks a hold, so drops are never delayed by a
+points channel holding a slot.
+
+Note on drops: while a drop pick is active the rotation runs on one slot
+instead of two, so holds are felt more. Measured impact is small — over
+22.08.-05.09. drop picks occurred on only 2 of 15 days, and even on the
+busiest of those (29.08.) drops occupied a slot for 174 of 1440 minutes
+(12% of the day).
+
+
 == 2026-08-22 21:11 == Bump: v2.1.9 → v2.2.0 ==
 
 Watch-streak fix: gate the streak hunt on watched minutes, not stream age
