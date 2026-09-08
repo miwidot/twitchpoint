@@ -203,3 +203,69 @@ func TestSelectFillCandidates_NoStreakCandidates_FallsBackToViewerCount(t *testi
 			ordered[0].ChannelID)
 	}
 }
+
+// TestHoldSlot_StreakCandidateHolds: a candidate that is on air keeps its
+// slot, so it can actually reach the streak target instead of being
+// rotated out and starting over next time.
+func TestHoldSlot_StreakCandidateHolds(t *testing.T) {
+	ch := channels.NewState("alice", "Alice", "111")
+	ch.SetPriority(2)
+	ch.SetOnline("b1", "G", 5)
+	ch.SetWatching(true)
+	if !holdSlot(ch.Snapshot(), "") {
+		t.Error("watching streak candidate must keep its slot")
+	}
+}
+
+// TestHoldSlot_NotWatchingNeverHolds: the hold only protects a slot that
+// is already occupied; it must never reserve one.
+func TestHoldSlot_NotWatchingNeverHolds(t *testing.T) {
+	ch := channels.NewState("alice", "Alice", "111")
+	ch.SetPriority(2)
+	ch.SetOnline("b1", "G", 5)
+	if holdSlot(ch.Snapshot(), "") {
+		t.Error("a channel that isn't watching must not hold a slot")
+	}
+}
+
+// TestHoldSlot_ClaimedChannelHoldsForPointsInterval: even with the streak
+// already claimed, a fresh slice is protected long enough for Twitch's
+// ~5-minute points interval to land — otherwise the slot time is wasted.
+func TestHoldSlot_ClaimedChannelHoldsForPointsInterval(t *testing.T) {
+	ch := channels.NewState("alice", "Alice", "111")
+	ch.SetPriority(2)
+	ch.SetOnline("b1", "G", 5)
+	ch.MarkStreakClaimed()
+	ch.SetWatching(true)
+	if !holdSlot(ch.Snapshot(), "") {
+		t.Error("fresh slice must be held until one points interval can land")
+	}
+}
+
+// TestHoldSlot_ReleasedAfterPointsInterval: once the interval has had its
+// chance, the slot is releasable again so rotation keeps moving.
+func TestHoldSlot_ReleasedAfterPointsInterval(t *testing.T) {
+	ch := channels.NewState("alice", "Alice", "111")
+	ch.SetPriority(2)
+	ch.SetOnline("b1", "G", 5)
+	ch.MarkStreakClaimed()
+	ch.SetWatching(true)
+	ch.WatchingSince = time.Now().Add(-minPointsHold - time.Minute)
+	if holdSlot(ch.Snapshot(), "") {
+		t.Error("slice past minPointsHold must be releasable")
+	}
+}
+
+// TestHoldSlot_StreakCandidateReleasedAtTarget: the streak hold cannot last
+// forever — reaching streakWatchTarget ends candidacy and frees the slot.
+func TestHoldSlot_StreakCandidateReleasedAtTarget(t *testing.T) {
+	ch := channels.NewState("alice", "Alice", "111")
+	ch.SetPriority(2)
+	ch.SetOnline("b1", "G", 5)
+	ch.SetWatching(true)
+	ch.StreamWatched = streakWatchTarget
+	ch.WatchingSince = time.Now().Add(-minPointsHold - time.Minute)
+	if holdSlot(ch.Snapshot(), "") {
+		t.Error("candidate that reached the target must release its slot")
+	}
+}
