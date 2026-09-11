@@ -100,12 +100,13 @@ func (s *Service) PollProgressOnce() {
 		return
 	}
 
-	s.ApplyProgressUpdate(twitch.DropProgressData{
-		CampaignID:             pickedCampID,
-		DropID:                 session.DropID,
-		CurrentMinutesWatched:  session.CurrentMinutesWatched,
-		RequiredMinutesWatched: session.RequiredMinutesWatched,
-	})
+	owned := s.campaignOwnsDrop(pickedCampID, session.DropID)
+	progress, done := progressFromSession(pickedCampID, session, owned)
+	s.ApplyProgressUpdate(progress)
+	if !owned && s.writeLogFile != nil {
+		s.writeLogFile(fmt.Sprintf("[Drops/Poll] session drop %s is not part of campaign %s — minutes applied, completion check skipped",
+			session.DropID, pickedCampID))
+	}
 
 	// When poll says the current drop is at 100%, do TWO things:
 	// 1. Try MarkCompletedIfFinishedExternally — fetches inventory + only
@@ -116,7 +117,7 @@ func (s *Service) PollProgressOnce() {
 	//    un-completed.
 	// 2. Trigger processDrops so the selector re-evaluates (next drop
 	//    in queue gets picked if this one is done, etc).
-	if session.RequiredMinutesWatched > 0 && session.CurrentMinutesWatched >= session.RequiredMinutesWatched {
+	if done {
 		if s.writeLogFile != nil {
 			s.writeLogFile(fmt.Sprintf("[Drops/Poll] drop complete on campaign %s (%d/%d)",
 				pickedCampID, session.CurrentMinutesWatched, session.RequiredMinutesWatched))
@@ -315,4 +316,32 @@ func (s *Service) LookupCampaignByDropID(dropID string) string {
 		}
 	}
 	return ""
+}
+
+func (s *Service) campaignOwnsDrop(campaignID, dropID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, d := range s.campaignCache[campaignID].Drops {
+		if d.ID == dropID {
+			return true
+		}
+	}
+	return false
+}
+
+// Twitch's session can name a drop from a sibling campaign of the same game.
+// Its minutes still track the watched channel, but its drop ID and required
+// minutes belong to the other campaign and must not drive completion.
+func progressFromSession(pickedCampID string, session *twitch.CurrentDropSession, ownedByPick bool) (twitch.DropProgressData, bool) {
+	p := twitch.DropProgressData{
+		CampaignID:            pickedCampID,
+		CurrentMinutesWatched: session.CurrentMinutesWatched,
+	}
+	if !ownedByPick {
+		return p, false
+	}
+	p.DropID = session.DropID
+	p.RequiredMinutesWatched = session.RequiredMinutesWatched
+	done := session.RequiredMinutesWatched > 0 && session.CurrentMinutesWatched >= session.RequiredMinutesWatched
+	return p, done
 }
