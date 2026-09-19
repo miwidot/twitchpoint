@@ -1,3 +1,53 @@
+== 2026-09-19 11:45 == Bump: v2.3.0 → v2.3.1 ==
+
+Stop falsely marking campaigns COMPLETED mid-progress (issue #18, PR #19
+by @1p0d). Also the root cause of the earlier #14.
+
+Symptom: a multi-drop campaign is written to completed_campaigns and
+dropped from farming while Twitch still lists it in progress. Observed on
+WARDOGS "Early Access 0.1" at 647/660 minutes (98%, 6 of 9 received) with
+three drops still unclaimed (660, 780, 900 minutes).
+
+Two defects combined.
+
+1. The progress poll used the session's drop without checking it belongs
+   to the picked campaign. Twitch's DropCurrentSessionContext can name a
+   drop from a SIBLING campaign of the same game; its minutes still track
+   the watched channel, but its drop ID and required minutes belong to the
+   other campaign. PollProgressOnce compared the pick's 648 watched
+   minutes against the sibling drop's 30-minute requirement and concluded
+   "complete" — 582 times over ten hours, once per poll.
+
+2. A failed inventory fetch was indistinguishable from "nothing in
+   progress". GetDropsInventory discarded the inventory error, and
+   getDropsFromInventory returned nil,nil,nil when the response had no
+   currentUser or inventory. Every campaign then read InInventory=false,
+   which MarkCompletedIfFinishedExternally treats as finished. Nothing was
+   logged. Exactly one empty inventory response out of ~1230 fetches that
+   day was enough, because defect 1 kept re-running the check every minute.
+
+Fix:
+
+- campaignOwnsDrop gates the completion check on the session drop actually
+  belonging to the picked campaign. When it doesn't, the watched minutes
+  are still applied (they belong to the channel), but the foreign drop ID
+  and required-minutes are not, and the completion check is skipped and
+  logged.
+- Inventory fetch errors are returned instead of discarded, and a response
+  missing currentUser/inventory is an error rather than an empty result.
+  Both callers already handle this correctly: processOnce logs and skips
+  the cycle, MarkCompletedIfFinishedExternally returns without marking.
+
+Side effect fixed: every false "complete" also triggered ProcessDrops, so
+while this lasted the farmer ran roughly two full dashboard/inventory/
+details fetch rounds per minute instead of one every 15 minutes.
+
+Note: this is preventive. Campaign IDs already written to
+completed_campaigns are not removed by the upgrade; the only way to undo
+one is still editing config.json (UnmarkCampaignCompleted has had no
+caller since 1e74d02). A "re-open" action is under discussion in #18.
+
+
 == 2026-09-08 13:14 == Bump: v2.2.0 → v2.3.0 ==
 
 Rotation now holds a Spade slot long enough to actually earn something
