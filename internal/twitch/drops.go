@@ -211,7 +211,12 @@ func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
 	}
 
 	// Fetch inventory for progress data + gameEventDrops
-	inventoryCampaigns, claimedBenefits, _ := g.getDropsFromInventory()
+	inventoryCampaigns, claimedBenefits, err := g.getDropsFromInventory()
+	if err != nil {
+		// Without the inventory every campaign reads as not-in-progress,
+		// which the completion checks take as finished.
+		return nil, err
+	}
 
 	// One-shot diag: dump every inventory campaign so we can spot
 	// "should-be-active campaign missing or mislabeled" cases.
@@ -549,37 +554,26 @@ func (g *GQLClient) getDropsFromInventory() ([]DropCampaign, map[string]time.Tim
 	if err != nil {
 		return nil, nil, fmt.Errorf("get drops inventory: %w", err)
 	}
+	return parseInventoryResponse(resp.Data)
+}
 
-	currentUser, ok := resp.Data["currentUser"]
-	if !ok || currentUser == nil {
-		return nil, nil, nil
-	}
-	userMap, ok := currentUser.(map[string]interface{})
+func parseInventoryResponse(data map[string]interface{}) ([]DropCampaign, map[string]time.Time, error) {
+	userMap, ok := data["currentUser"].(map[string]interface{})
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, fmt.Errorf("get drops inventory: response has no currentUser")
 	}
-
-	inventory, ok := userMap["inventory"]
-	if !ok || inventory == nil {
-		return nil, nil, nil
-	}
-	invMap, ok := inventory.(map[string]interface{})
+	invMap, ok := userMap["inventory"].(map[string]interface{})
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, fmt.Errorf("get drops inventory: response has no inventory")
 	}
 
 	// Parse gameEventDrops — permanent history of all claimed benefit IDs
 	claimedBenefits := parseGameEventDrops(invMap)
 
-	campaignsRaw, ok := invMap["dropCampaignsInProgress"]
-	if !ok || campaignsRaw == nil {
-		return nil, claimedBenefits, nil
-	}
-	campaignList, ok := campaignsRaw.([]interface{})
+	campaignList, ok := invMap["dropCampaignsInProgress"].([]interface{})
 	if !ok {
 		return nil, claimedBenefits, nil
 	}
-
 	return parseCampaignList(campaignList), claimedBenefits, nil
 }
 
