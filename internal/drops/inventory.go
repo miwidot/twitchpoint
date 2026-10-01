@@ -150,7 +150,7 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 // of marking never-started campaigns as completed just because they
 // aren't in the inventory yet.
 func (s *Service) MarkCompletedIfFinishedExternally(campaignID string) {
-	campaigns, err := s.gql.GetDropsInventory()
+	campaigns, err := s.gql.GetDropsInventory(s.cfg.GetGamesToWatch())
 	if err != nil {
 		return
 	}

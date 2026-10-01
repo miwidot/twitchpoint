@@ -56,6 +56,15 @@ type Config struct {
 	// re-farmed until it expired (observed 2026-07-28, MarbleFest Day1,
 	// ~6 hours of channel rotation without a single credited minute).
 	ClaimedDrops map[string]string `json:"claimed_drops,omitempty"`
+	// TVClientMode switches the Twitch identity from the Android app to the
+	// Smart-TV client. Needed only to obtain a NEW token: Twitch disabled the
+	// Android app's device-code login in September 2026, while the TV client's
+	// still works. The trade-off is that TV tokens get `dropCampaigns: null`
+	// from ViewerDropsDashboard, so campaign discovery falls back to the
+	// slower per-game route and only finds campaigns for games in
+	// games_to_watch. Existing Android tokens keep full discovery — leave
+	// this off unless you cannot log in. EXPERIMENTAL.
+	TVClientMode bool `json:"tv_client_mode,omitempty"`
 
 	path   string       // file path, not serialized
 	mu     sync.RWMutex // guards all mutable fields above; not serialized
@@ -709,4 +718,12 @@ func (c *Config) ClaimedDropCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.ClaimedDrops)
+}
+
+// GetTVClientMode reports whether the Smart-TV Twitch identity is selected.
+// See the TVClientMode field for why this exists and what it costs.
+func (c *Config) GetTVClientMode() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.TVClientMode
 }

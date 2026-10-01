@@ -1,3 +1,56 @@
+== 2026-10-01 13:14 == Bump: v2.3.1 → v2.4.0-beta.1 (BETA) ==
+
+EXPERIMENTAL: optional Smart-TV Twitch client, to restore first-time login.
+
+Background. In September 2026 Twitch disabled the device-code login for the
+Android app client ID, which is the one this miner uses. Existing tokens keep
+working indefinitely (they do not expire), so running installs are unaffected,
+but a fresh install cannot log in at all: the device-code request answers
+HTTP 400 "invalid client". The same change hit every other miner; see
+DevilXD/TwitchDropsMiner#1165.
+
+The obvious workaround — switching the client to Smart-TV — is a trap on its
+own: TV tokens get `dropCampaigns: null` from ViewerDropsDashboard, so the
+miner finds no new campaigns and only works through what is already in the
+inventory. Two upstream maintainers say as much, and the forks that shipped
+the switch promptly got "drops not detected" reports.
+
+What this release adds, all behind a flag that defaults to OFF:
+
+1. tv_client_mode (config). When enabled, the Twitch identity switches to the
+   Smart-TV client, whose device-code login still works. Client-Id and
+   User-Agent now travel together as one unit (internal/twitch/clienttype.go)
+   — mixing them is accepted by Twitch but silently earns no watch time,
+   which is how this class of bug stays invisible.
+
+2. Per-game campaign discovery for TV mode, replacing ViewerDropsDashboard.
+   For each game in games_to_watch it pulls the game's live drops-enabled
+   channels (DirectoryPage_Game) and asks the top ones which campaigns they
+   advertise (DropsHighlightService_AvailableDrops, which still answers for TV
+   tokens). Per-user state — progress, isClaimed, dropInstanceID, account link
+   — is merged in from the inventory afterwards, as before. Discovering a
+   campaign through a specific live channel also yields a watchable channel
+   for it for free.
+
+   Sub-reward campaigns are filtered out: they award on subscriptions, not
+   watch time, so no amount of watching earns them.
+
+Known limits of TV mode, inherent to the approach and not bugs:
+   - only games listed in games_to_watch are searched; with none set,
+     discovery has nothing to iterate
+   - a campaign running only outside a game's top 10 live channels is missed
+     until it appears in the inventory
+   - the campaign query carries no account-link state, so campaigns stay
+     visible until the inventory corrects them
+
+Leave tv_client_mode off unless you cannot log in. An existing Android token
+keeps full campaign discovery and is strictly better.
+
+Credit: the per-game discovery route was described by the GrubDrops
+maintainer in DevilXD/TwitchDropsMiner#1165. The logic here was written from
+that description and verified against the live API.
+
+
 == 2026-09-19 11:45 == Bump: v2.3.0 → v2.3.1 ==
 
 Stop falsely marking campaigns COMPLETED mid-progress (issue #18, PR #19

@@ -15,7 +15,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/web"
 )
 
-const appVersion = "2.3.1"
+const appVersion = "2.4.0-beta.1"
 
 func main() {
 	web.Version = appVersion
@@ -31,6 +31,16 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Select the Twitch identity BEFORE any request, including the login
+	// flow. Client-Id and User-Agent must match the client that minted the
+	// token — a mismatch is accepted by Twitch but silently earns no watch
+	// time. See internal/twitch/clienttype.go.
+	if cfg.GetTVClientMode() {
+		twitch.SetActiveClient(twitch.ClientTV)
+		fmt.Println("EXPERIMENTAL: using the Smart-TV Twitch client (tv_client_mode).")
+		fmt.Println("Campaign discovery is limited to games listed in games_to_watch.")
 	}
 
 	// Handle --token flag (manual token override)
@@ -92,7 +102,7 @@ func main() {
 
 	// Handle --login flag (force re-login via Device Code OAuth)
 	if *forceLogin {
-		token, err := twitch.DeviceCodeLogin(twitch.TVClientID)
+		token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
 		if err != nil {
 			log.Fatalf("Login failed: %v", err)
 		}
@@ -108,7 +118,7 @@ func main() {
 	if cfg.GetAuthToken() == "" {
 		fmt.Println("Welcome to TwitchPoint Farmer!")
 		fmt.Println()
-		token, err := twitch.DeviceCodeLogin(twitch.TVClientID)
+		token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
 		if err != nil {
 			log.Fatalf("Login failed: %v", err)
 		}
@@ -127,7 +137,7 @@ func main() {
 		if strings.Contains(err.Error(), "auth validation failed") {
 			fmt.Println("Auth token expired or invalid (Client-ID changed). Re-authenticating...")
 			fmt.Println()
-			token, err := twitch.DeviceCodeLogin(twitch.TVClientID)
+			token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Re-login failed: %v\n", err)
 				os.Exit(1)

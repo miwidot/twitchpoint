@@ -85,7 +85,7 @@ func (s *Service) ProcessLoop(stopCh <-chan struct{}) {
 // currentPickID without an outer process-lock (the per-field
 // s.mu still serializes UI reads vs commit writes).
 func (s *Service) processOnce() {
-	campaigns, err := s.gql.GetDropsInventory()
+	campaigns, err := s.gql.GetDropsInventory(s.cfg.GetGamesToWatch())
 	if err != nil {
 		s.log("[Drops] Failed to fetch inventory: %v", err)
 		return
