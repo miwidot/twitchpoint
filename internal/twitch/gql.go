@@ -19,7 +19,6 @@ import (
 
 const (
 	gqlURL     = "https://gql.twitch.tv/gql"
-	TVClientID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp" // Android App client-ID — bypasses integrity tokens, supports ViewerDropsDashboard
 	maxGQLBody = 8 * 1024 * 1024
 )
 
@@ -274,7 +273,7 @@ func fetchTwitchUniqueID() string {
 		return ""
 	}
 	// Use the same Android UA as the rest of our requests.
-	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("User-Agent", ActiveClient().UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1002,8 +1001,8 @@ func (g *GQLClient) setHeaders(req *http.Request) {
 	req.Header.Set("Accept-Language", "en-US")
 	req.Header.Set("Pragma", "no-cache")
 	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Client-Id", TVClientID)
-	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("Client-Id", ActiveClient().ClientID)
+	req.Header.Set("User-Agent", ActiveClient().UserAgent)
 	req.Header.Set("Client-Session-Id", g.clientSessionID)
 	req.Header.Set("X-Device-Id", g.deviceID)
 	req.Header.Set("Origin", "https://www.twitch.tv")

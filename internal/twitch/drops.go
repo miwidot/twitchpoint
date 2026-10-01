@@ -188,14 +188,30 @@ func (d *TimeBasedDrop) ProgressPercent() int {
 	return pct
 }
 
+// discoverCampaigns returns the campaign catalogue, choosing the method the
+// active client can actually use. ViewerDropsDashboard is richer (it carries
+// allow-lists and the account-link state) but answers `dropCampaigns: null`
+// for Smart-TV tokens, so those take the per-game route instead.
+func (g *GQLClient) discoverCampaigns(wantedGames []string) ([]DropCampaign, error) {
+	if IsTVClient() {
+		return g.discoverCampaignsByGame(wantedGames)
+	}
+	return g.getDropsDashboard()
+}
+
 // GetDropsInventory fetches ALL available drop campaigns with progress data.
 // Step 1: ViewerDropsDashboard → all campaigns the user is eligible for (no progress).
 // Step 2: Inventory → campaigns with progress + gameEventDrops (all ever-claimed benefit IDs).
 // Step 3: Merge progress from Inventory into Dashboard campaigns.
 // Step 4: Use gameEventDrops to detect already-completed drops not in Inventory.
 // Falls back to Inventory-only if Dashboard fails.
-func (g *GQLClient) GetDropsInventory() ([]DropCampaign, error) {
-	dashboardCampaigns, err := g.getDropsDashboard()
+//
+// wantedGames is only consulted when the Smart-TV client is active: TV
+// tokens get `dropCampaigns: null` from ViewerDropsDashboard, so discovery
+// goes per-game instead (see discoverCampaignsByGame). With the default
+// Android client the argument is ignored and the full catalogue is used.
+func (g *GQLClient) GetDropsInventory(wantedGames []string) ([]DropCampaign, error) {
+	dashboardCampaigns, err := g.discoverCampaigns(wantedGames)
 	if err != nil || dashboardCampaigns == nil {
 		// Fallback: inventory only (still has progress data)
 		if err != nil {

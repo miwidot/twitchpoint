@@ -195,7 +195,7 @@ func (p *StreamProber) probeOnce(login string) {
 	if err != nil {
 		return
 	}
-	chunkReq.Header.Set("User-Agent", browserUserAgent)
+	chunkReq.Header.Set("User-Agent", ActiveClient().UserAgent)
 	chunkReq.Header.Set("Origin", "https://www.twitch.tv")
 	chunkReq.Header.Set("Referer", "https://www.twitch.tv/")
 	chunkResp, err := p.httpClient.Do(chunkReq)
@@ -213,7 +213,7 @@ func (p *StreamProber) fetchText(u string, limit int64) (string, int, bool) {
 	if err != nil {
 		return "", 0, false
 	}
-	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("User-Agent", ActiveClient().UserAgent)
 	req.Header.Set("Origin", "https://www.twitch.tv")
 	req.Header.Set("Referer", "https://www.twitch.tv/")
 	resp, err := p.httpClient.Do(req)
@@ -275,7 +275,7 @@ func (p *StreamProber) primeChannelPage(login string) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("User-Agent", ActiveClient().UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Cookie", fmt.Sprintf("auth-token=%s; persistent=%s; unique_id=%s",

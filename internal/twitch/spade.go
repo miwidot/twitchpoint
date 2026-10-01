@@ -28,7 +28,6 @@ const (
 	// blocks drop credit (channel-points still credit because that uses a
 	// different verification path). TDM uses identical Dalvik UAs for this
 	// client-ID; see TDM config/client_info.py ClientType.ANDROID_APP.
-	browserUserAgent = "Dalvik/2.1.0 (Linux; U; Android 16; SM-S911B Build/TP1A.220624.014) tv.twitch.android.app/25.3.0/2503006"
 )
 
 // SpadeTracker sends minute-watched heartbeats for watch credit. It
@@ -293,7 +292,7 @@ func (s *SpadeTracker) sendHeartbeat(ch *spadeChannel) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("User-Agent", browserUserAgent)
+		req.Header.Set("User-Agent", ActiveClient().UserAgent)
 
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
@@ -335,7 +334,7 @@ func (s *SpadeTracker) fetchSpadeURL() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", browserUserAgent)
+	req.Header.Set("User-Agent", ActiveClient().UserAgent)
 	req.Header.Set("Accept", "text/html")
 
 	resp, err := s.httpClient.Do(req)
@@ -382,7 +381,7 @@ func (s *SpadeTracker) fetchSpadeURL() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create settings request: %w", err)
 	}
-	settingsReq.Header.Set("User-Agent", browserUserAgent)
+	settingsReq.Header.Set("User-Agent", ActiveClient().UserAgent)
 
 	settingsResp, err := s.httpClient.Do(settingsReq)
 	if err != nil {
