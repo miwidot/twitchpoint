@@ -1,3 +1,36 @@
+== 2026-10-09 21:30 == Bump: v2.4.0 → v2.4.1 ==
+
+Drops still did not credit after v2.4.0 — the prober consumed only one
+media segment per poll.
+
+v2.4.0 restored the prober for the picked channel, which was necessary
+but not sufficient: the counter stayed at 3/60 for another 24 minutes.
+The prober fetched the playlist, then took only the LAST segment from it
+(pickLastChunk) once every 12 seconds. A live stream publishes a segment
+every 2-6 seconds, and Twitch credits DISTINCT consumed segments — so we
+consumed roughly one of every four to six, and re-requested the same one
+whenever the playlist had not advanced. That is worth close to nothing.
+
+Fix: consume every segment not already requested.
+  - mediaSegments() parses all segment URLs from the media playlist in
+    playback order, replacing pickLastChunk (removed).
+  - unseenSegments() deduplicates per channel against a bounded cache
+    (maxSeenSegments = 300, trimmed oldest-first), so a repeated playlist
+    costs nothing and a multi-hour session cannot grow memory.
+  - Each new segment gets a HEAD — the approach upstream verified
+    restores credit (rangermix/TwitchDropsMiner#164), at negligible
+    bandwidth. The newest segment additionally keeps the byte-capped GET
+    that has always worked here, as insurance should HEAD alone stop
+    counting again.
+  - Poll interval 12s -> 10s, matching the cadence upstream validated.
+
+Upstream evidence for the mechanism: five minutes of successful telemetry
+POSTs left Twitch Inventory and CurrentDrop at 3 minutes, while
+deduplicated segment requests moved both from 3 to 7 over the next five
+minutes, and a full build advanced inventory from 8 to 13 minutes over
+331 seconds.
+
+
 == 2026-10-09 20:58 == Bump: v2.4.0-beta.1 → v2.4.0 ==
 
 CRITICAL: drop minutes stopped being credited — the picked channel's
