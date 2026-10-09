@@ -19,15 +19,34 @@ import (
 // TwitchDropsMiner has the same code in channel.py:_send_watch (currently
 // unused there). We turn it on for every pick.
 //
-// Bandwidth: ~5 KB / channel / minute (m3u8 + chunk-list, no actual video).
+// Since ~2026-10-05 Twitch only credits a watched minute when it has seen
+// requests for (nearly) every media segment of that minute, not just one
+// chunk every few seconds (rangermix/TwitchDropsMiner#163, PR #164). So on
+// every tick we read the media playlist and HEAD every segment we have not
+// touched yet — ~30 requests/min, headers only, no audio/video bodies. The
+// capped GET on the newest segment is kept as belt-and-braces for campaigns
+// whose anti-cheat wants to see actual bytes.
+//
+// Bandwidth: ~5 KB / channel / minute for playlists + HEADs, plus one
+// capped chunk GET (<=256 KB) per tick.
 
 const (
-	// The browser player fetches a new HLS chunk every ~2-6s. Twitch's drop
-	// anti-cheat appears to flag long gaps (>10s) as "user not watching" and
-	// refuses to initialize a drop session. 12s gives 5 probes/min — close to
-	// the browser's request rate without being overly chatty.
-	proberInterval = 12 * time.Second
+	// Twitch's low-latency media playlists hold a rolling window of ~2s
+	// segments. Polling every 10s stays well inside that window, so every
+	// segment of the stream is seen at least once (the HEAD loop below
+	// deduplicates the overlap).
+	proberInterval = 10 * time.Second
 	tokenCacheTTL  = 50 * time.Minute
+	// Resolve the media playlist URL from usher only every few minutes; the
+	// signed URL stays valid for a while and is refreshed on any 4xx.
+	mediaPlaylistTTL = 4 * time.Minute
+	// Bounded dedup cache of successfully HEADed segments per channel.
+	seenSegmentsCap = 256
+	// Per-segment HEAD timeout; one stalled CDN edge must not block the tick.
+	segmentHeadTimeout = 3 * time.Second
+	// Hard cap on HEADs per tick (first poll after a restart sees the whole
+	// window at once; a stale playlist could hold more).
+	maxSegmentHeadsPerTick = 64
 	// Cap the chunk read at 256 KB. Real chunks are 200-800 KB; reading the
 	// first 256 KB is enough to "consume" the segment per Twitch's tracking
 	// (their CDN logs the byte range you request).
@@ -44,6 +63,12 @@ type playbackToken struct {
 type proberChannel struct {
 	login  string
 	stopCh chan struct{}
+
+	// Prober-goroutine-private state (only touched from probeLoop).
+	mediaURL     string    // cached media (chunk) playlist URL
+	mediaFetched time.Time // when mediaURL was resolved from usher
+	seen         map[string]struct{}
+	seenOrder    []string // insertion order for bounded eviction
 }
 
 type StreamProber struct {
@@ -52,6 +77,7 @@ type StreamProber struct {
 	userID     string
 	deviceID   string
 	httpClient *http.Client
+	headClient *http.Client // short timeout, used for per-segment HEADs
 	logFunc    func(string, ...interface{})
 
 	mu       sync.Mutex
@@ -68,6 +94,7 @@ func NewStreamProber(gql *GQLClient, authToken, userID, deviceID string, logFunc
 		userID:     userID,
 		deviceID:   deviceID,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
+		headClient: &http.Client{Timeout: segmentHeadTimeout},
 		logFunc:    logFunc,
 		tokens:     make(map[string]*playbackToken),
 		channels:   make(map[string]*proberChannel),
@@ -90,6 +117,7 @@ func (p *StreamProber) Start(login string) {
 	ch := &proberChannel{
 		login:  login,
 		stopCh: make(chan struct{}),
+		seen:   make(map[string]struct{}),
 	}
 	p.channels[login] = ch
 	p.mu.Unlock()
@@ -134,7 +162,7 @@ func (p *StreamProber) probeLoop(ch *proberChannel) {
 	// state for this user/channel pair. Without it the heartbeats arrive at
 	// beacon but no session exists to credit them against.
 	p.primeChannelPage(ch.login)
-	p.probeOnce(ch.login)
+	p.probeOnce(ch)
 
 	ticker := time.NewTicker(proberInterval)
 	defer ticker.Stop()
@@ -142,7 +170,7 @@ func (p *StreamProber) probeLoop(ch *proberChannel) {
 	for {
 		select {
 		case <-ticker.C:
-			p.probeOnce(ch.login)
+			p.probeOnce(ch)
 		case <-ch.stopCh:
 			return
 		case <-p.stopCh:
@@ -151,11 +179,95 @@ func (p *StreamProber) probeLoop(ch *proberChannel) {
 	}
 }
 
-func (p *StreamProber) probeOnce(login string) {
+// probeOnce runs one tick: make sure we hold a media playlist URL, read the
+// playlist, HEAD every segment not seen before and GET (capped) the newest
+// one.
+func (p *StreamProber) probeOnce(ch *proberChannel) {
+	login := ch.login
+
+	if ch.mediaURL == "" || time.Since(ch.mediaFetched) > mediaPlaylistTTL {
+		if !p.resolveMediaPlaylist(ch) {
+			return
+		}
+	}
+
+	chunkBody, status, ok := p.fetchText(ch.mediaURL, 64*1024)
+	if !ok {
+		// Signed media URL expired / stream restarted: drop the cache and
+		// re-resolve on the next tick (or right now if it was merely stale).
+		ch.mediaURL = ""
+		if status == http.StatusNotFound || status == http.StatusForbidden || status == http.StatusUnauthorized {
+			if p.resolveMediaPlaylist(ch) {
+				chunkBody, _, ok = p.fetchText(ch.mediaURL, 64*1024)
+			}
+		}
+		if !ok {
+			p.log("[Prober] %s media playlist HTTP %d", login, status)
+			return
+		}
+	}
+
+	segments := parseSegmentURLs(chunkBody)
+	if len(segments) == 0 {
+		return
+	}
+
+	// HEAD every segment we have not successfully touched yet, oldest first
+	// so the sequence Twitch sees matches a real player.
+	newHeads, failed := 0, 0
+	for _, segURL := range segments {
+		key := segmentKey(segURL)
+		if _, dup := ch.seen[key]; dup {
+			continue
+		}
+		if newHeads+failed >= maxSegmentHeadsPerTick {
+			break
+		}
+		if p.headSegment(segURL) {
+			p.markSeen(ch, key)
+			newHeads++
+		} else {
+			failed++
+		}
+		select {
+		case <-ch.stopCh:
+			return
+		case <-p.stopCh:
+			return
+		default:
+		}
+	}
+
+	// GET (with byte cap) on the newest chunk — Twitch's drop anti-cheat
+	// used to count actual bytes downloaded against the user's session, and
+	// some campaigns may still. One capped GET per tick keeps that evidence.
+	chunkURL := segments[len(segments)-1]
+	chunkReq, err := http.NewRequest("GET", chunkURL, nil)
+	if err != nil {
+		return
+	}
+	setStreamHeaders(chunkReq)
+	chunkResp, err := p.httpClient.Do(chunkReq)
+	if err != nil {
+		p.log("[Prober] %s chunk GET failed: %v", login, err)
+		return
+	}
+	bytesRead, _ := io.Copy(io.Discard, io.LimitReader(chunkResp.Body, chunkReadLimit))
+	chunkResp.Body.Close()
+	p.log("[Prober] %s probe ok (segments: %d in playlist, %d new HEAD, %d failed, %d seen; chunk HTTP %d, %d bytes)",
+		login, len(segments), newHeads, failed, len(ch.seen), chunkResp.StatusCode, bytesRead)
+}
+
+// resolveMediaPlaylist fetches the usher master playlist and caches the
+// lowest-quality media playlist URL on the channel. A changed media URL
+// means a new broadcast (or new signed session) — the seen-cache is reset
+// so the new segment namespace starts clean.
+func (p *StreamProber) resolveMediaPlaylist(ch *proberChannel) bool {
+	login := ch.login
 	tok, err := p.getToken(login)
 	if err != nil {
 		p.log("[Prober] %s token fetch failed: %v", login, err)
-		return
+		return false
 	}
 
 	playlistURL := fmt.Sprintf(usherURLFmt, url.PathEscape(login), url.QueryEscape(tok.signature), url.QueryEscape(tok.value))
@@ -170,42 +282,51 @@ func (p *StreamProber) probeOnce(login string) {
 			// call Start again when stream comes back.
 			p.log("[Prober] %s stream offline (404)", login)
 		}
-		return
+		return false
 	}
 
-	chunkPlaylistURL := pickLowestQualityVariant(body)
-	if chunkPlaylistURL == "" {
-		return
+	mediaURL := pickLowestQualityVariant(body)
+	if mediaURL == "" {
+		return false
 	}
-
-	chunkBody, _, ok := p.fetchText(chunkPlaylistURL, 32*1024)
-	if !ok {
-		return
+	if mediaURL != ch.mediaURL {
+		ch.seen = make(map[string]struct{})
+		ch.seenOrder = ch.seenOrder[:0]
 	}
+	ch.mediaURL = mediaURL
+	ch.mediaFetched = time.Now()
+	return true
+}
 
-	chunkURL := pickLastChunk(chunkBody)
-	if chunkURL == "" {
-		return
-	}
-
-	// GET (with byte cap) on a real chunk — Twitch's drop anti-cheat counts
-	// actual bytes downloaded against the user's session, not just metadata
-	// requests. HEAD alone was insufficient — the browser downloads chunks.
-	chunkReq, err := http.NewRequest("GET", chunkURL, nil)
+// headSegment issues a HEAD for one media segment. Headers only — no audio
+// or video body is transferred. Returns true on any 2xx.
+func (p *StreamProber) headSegment(segURL string) bool {
+	req, err := http.NewRequest("HEAD", segURL, nil)
 	if err != nil {
-		return
+		return false
 	}
-	chunkReq.Header.Set("User-Agent", ActiveClient().UserAgent)
-	chunkReq.Header.Set("Origin", "https://www.twitch.tv")
-	chunkReq.Header.Set("Referer", "https://www.twitch.tv/")
-	chunkResp, err := p.httpClient.Do(chunkReq)
+	setStreamHeaders(req)
+	resp, err := p.headClient.Do(req)
 	if err != nil {
-		p.log("[Prober] %s chunk GET failed: %v", login, err)
-		return
+		return false
 	}
-	bytesRead, _ := io.Copy(io.Discard, io.LimitReader(chunkResp.Body, chunkReadLimit))
-	chunkResp.Body.Close()
-	p.log("[Prober] %s probe ok (chunk HTTP %d, %d bytes)", login, chunkResp.StatusCode, bytesRead)
+	resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+func (p *StreamProber) markSeen(ch *proberChannel, key string) {
+	ch.seen[key] = struct{}{}
+	ch.seenOrder = append(ch.seenOrder, key)
+	for len(ch.seenOrder) > seenSegmentsCap {
+		delete(ch.seen, ch.seenOrder[0])
+		ch.seenOrder = ch.seenOrder[1:]
+	}
+}
+
+func setStreamHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", ActiveClient().UserAgent)
+	req.Header.Set("Origin", "https://www.twitch.tv")
+	req.Header.Set("Referer", "https://www.twitch.tv/")
 }
 
 func (p *StreamProber) fetchText(u string, limit int64) (string, int, bool) {
@@ -213,9 +334,7 @@ func (p *StreamProber) fetchText(u string, limit int64) (string, int, bool) {
 	if err != nil {
 		return "", 0, false
 	}
-	req.Header.Set("User-Agent", ActiveClient().UserAgent)
-	req.Header.Set("Origin", "https://www.twitch.tv")
-	req.Header.Set("Referer", "https://www.twitch.tv/")
+	setStreamHeaders(req)
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return "", 0, false
@@ -307,15 +426,15 @@ func pickLowestQualityVariant(playlist string) string {
 	return ""
 }
 
-// pickLastChunk returns the URL of the last segment in an HLS chunk playlist.
-// Twitch serves both legacy .ts and modern .mp4 (CMAF) chunks depending on the
-// transcode pipeline — match by /segment/ path which is consistent across both.
-// Skips .m3u8 lines (next-playlist references) and #EXT-X-MAP init segments
-// (we want a real media segment, not the init).
-func pickLastChunk(playlist string) string {
-	lines := strings.Split(playlist, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
+// parseSegmentURLs returns every media segment URL of an HLS media playlist
+// in playlist order. Twitch serves both legacy .ts and modern .mp4 (CMAF)
+// chunks depending on the transcode pipeline — match by /segment/ path which
+// is consistent across both. Skips .m3u8 lines (next-playlist references);
+// #EXT-X-MAP init segments live on tag lines and are skipped implicitly.
+func parseSegmentURLs(playlist string) []string {
+	var out []string
+	for _, raw := range strings.Split(playlist, "\n") {
+		line := strings.TrimSpace(raw)
 		if !strings.HasPrefix(line, "https://") {
 			continue
 		}
@@ -323,8 +442,17 @@ func pickLastChunk(playlist string) string {
 			continue
 		}
 		if strings.Contains(line, "/segment/") {
-			return line
+			out = append(out, line)
 		}
 	}
-	return ""
+	return out
+}
+
+// segmentKey identifies a segment independent of per-request query noise
+// (signed URL parameters rotate while the segment path stays the same).
+func segmentKey(segURL string) string {
+	if i := strings.IndexByte(segURL, '?'); i >= 0 {
+		return segURL[:i]
+	}
+	return segURL
 }
