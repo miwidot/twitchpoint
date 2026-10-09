@@ -1,3 +1,44 @@
+== 2026-10-09 20:58 == Bump: v2.4.0-beta.1 → v2.4.0 ==
+
+CRITICAL: drop minutes stopped being credited — the picked channel's
+stream segments were no longer being fetched.
+
+Symptom: the miner picks a drops channel, the watcher reports a live
+session, DropCurrentSession answers every 60 seconds, and the drop
+counter still barely moves. Measured on this instance: the EXFIL
+Brothers Day 1 campaign went from 1 to 2 watched minutes between 15:19
+and 20:38 — one credited minute in over five hours, 28 picks, zero
+claims. Channel points kept working the whole time.
+
+Cause: around 2026-10-05 Twitch stopped crediting watch time from
+telemetry POSTs alone and began requiring the stream's media segments to
+actually be fetched. Our prober does exactly that (HLS playlist + a
+256 KB chunk every 12s) — but step 8 of ApplyPick explicitly STOPPED the
+prober for the drops pick, on the assumption that the Watcher plus Spade
+heartbeats were sufficient. They no longer are. Points channels kept
+their prober and kept crediting, which is why only drops broke.
+
+Evidence from this instance on 2026-10-09: prober lines for the points
+channel acid_fired = 1221, for the picked drops channels pestily and
+glorious_e = 0.
+
+Independently reproduced upstream in a controlled same-account,
+same-channel test (rangermix/TwitchDropsMiner#163): five minutes of
+successful telemetry POSTs left Inventory and CurrentDrop at 3 minutes;
+adding segment fetches moved both from 3 to 7 over the next five
+minutes.
+
+Fix: the prober now keeps running for the picked drops channel instead
+of being stopped. StreamProber.Start is idempotent, so the points
+rotation claiming the same channel is harmless.
+
+Also in this release, unchanged from v2.4.0-beta.1 and still OFF by
+default: the optional Smart-TV client mode (tv_client_mode) with
+per-game campaign discovery, for users who cannot log in since Twitch
+disabled the Android client's device-code flow. It remains experimental
+— see the v2.4.0-beta.1 notes for its trade-offs.
+
+
 == 2026-10-01 13:14 == Bump: v2.3.1 → v2.4.0-beta.1 (BETA) ==
 
 EXPERIMENTAL: optional Smart-TV Twitch client, to restore first-time login.

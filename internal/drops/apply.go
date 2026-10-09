@@ -173,8 +173,19 @@ func (s *Service) ApplyPick(pick *PoolEntry, campaigns []twitch.DropCampaign) Ap
 	// pick therefore now gets Spade heartbeats IN ADDITION to the Watcher
 	// (which still does the DropCurrentSessionContext progress polling) —
 	// pre-change this line was s.spade.StopWatching(snap.ChannelID).
+	//
+	// 2026-10-08: telemetry alone stopped crediting as well. Twitch now
+	// also wants the stream's media segments actually fetched — POSTs
+	// without segment traffic leave Inventory and CurrentDrop frozen (our
+	// pick sat at 3 minutes across five hours of "successful" heartbeats).
+	// So the prober must KEEP RUNNING for the pick; this line used to stop
+	// it, which is exactly the traffic Twitch was missing. Independently
+	// reproduced upstream in a controlled same-account test:
+	// rangermix/TwitchDropsMiner#163.
 	if s.watcher != nil {
-		s.prober.Stop(snap.Login)
+		// Deliberately NOT stopping the prober — see above. Its playlist +
+		// chunk fetches are what makes Twitch count the watched minutes.
+		s.prober.Start(snap.Login)
 		ch.SetWatching(true) // for UI display
 		// Watcher first: Rotate() keys off watcher.CurrentChannelID to
 		// reserve a heartbeat slot for the pick (see points/rotation.go),
