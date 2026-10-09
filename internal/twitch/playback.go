@@ -26,7 +26,7 @@ const (
 	// anti-cheat appears to flag long gaps (>10s) as "user not watching" and
 	// refuses to initialize a drop session. 12s gives 5 probes/min — close to
 	// the browser's request rate without being overly chatty.
-	proberInterval = 12 * time.Second
+	proberInterval = 10 * time.Second
 	tokenCacheTTL  = 50 * time.Minute
 	// Cap the chunk read at 256 KB. Real chunks are 200-800 KB; reading the
 	// first 256 KB is enough to "consume" the segment per Twitch's tracking
@@ -44,6 +44,14 @@ type playbackToken struct {
 type proberChannel struct {
 	login  string
 	stopCh chan struct{}
+
+	// seenSegments deduplicates media segments per channel. Twitch counts
+	// DISTINCT consumed segments, so re-requesting the same one is worth
+	// nothing — and skipping the ones in between is what starves the
+	// drop counter. Bounded via seenOrder so a long session cannot grow
+	// this without limit.
+	seenSegments map[string]struct{}
+	seenOrder    []string
 }
 
 type StreamProber struct {
@@ -88,8 +96,9 @@ func (p *StreamProber) Start(login string) {
 		return
 	}
 	ch := &proberChannel{
-		login:  login,
-		stopCh: make(chan struct{}),
+		login:        login,
+		stopCh:       make(chan struct{}),
+		seenSegments: make(map[string]struct{}),
 	}
 	p.channels[login] = ch
 	p.mu.Unlock()
@@ -183,21 +192,40 @@ func (p *StreamProber) probeOnce(login string) {
 		return
 	}
 
-	chunkURL := pickLastChunk(chunkBody)
-	if chunkURL == "" {
+	segments := mediaSegments(chunkBody)
+	if len(segments) == 0 {
 		return
 	}
 
-	// GET (with byte cap) on a real chunk — Twitch's drop anti-cheat counts
-	// actual bytes downloaded against the user's session, not just metadata
-	// requests. HEAD alone was insufficient — the browser downloads chunks.
-	chunkReq, err := http.NewRequest("GET", chunkURL, nil)
+	// Consume EVERY segment we have not already requested. Twitch credits
+	// distinct consumed segments: fetching only the newest one (what this
+	// did before) consumes roughly one segment per poll while the stream
+	// publishes several, which left the drop counter frozen for hours.
+	// Re-requesting a segment we already took is worth nothing, hence the
+	// per-channel dedup.
+	fresh := p.unseenSegments(login, segments)
+	if len(fresh) == 0 {
+		return // playlist has not advanced yet; nothing new to consume
+	}
+
+	// HEAD on each new segment is what upstream verified restores credit
+	// (rangermix/TwitchDropsMiner#164) and costs almost no bandwidth. The
+	// newest segment additionally gets a byte-capped GET, preserving the
+	// "real bytes downloaded" behaviour that has always worked here —
+	// cheap insurance in case HEAD alone stops counting again.
+	headed := 0
+	for _, seg := range fresh {
+		if p.requestSegment(seg, http.MethodHead) {
+			headed++
+		}
+	}
+
+	newest := fresh[len(fresh)-1]
+	chunkReq, err := http.NewRequest(http.MethodGet, newest, nil)
 	if err != nil {
 		return
 	}
-	chunkReq.Header.Set("User-Agent", ActiveClient().UserAgent)
-	chunkReq.Header.Set("Origin", "https://www.twitch.tv")
-	chunkReq.Header.Set("Referer", "https://www.twitch.tv/")
+	p.setPlayerHeaders(chunkReq)
 	chunkResp, err := p.httpClient.Do(chunkReq)
 	if err != nil {
 		p.log("[Prober] %s chunk GET failed: %v", login, err)
@@ -205,7 +233,72 @@ func (p *StreamProber) probeOnce(login string) {
 	}
 	bytesRead, _ := io.Copy(io.Discard, io.LimitReader(chunkResp.Body, chunkReadLimit))
 	chunkResp.Body.Close()
-	p.log("[Prober] %s probe ok (chunk HTTP %d, %d bytes)", login, chunkResp.StatusCode, bytesRead)
+	p.log("[Prober] %s probe ok (%d new segment(s), %d HEAD ok, chunk HTTP %d, %d bytes)",
+		login, len(fresh), headed, chunkResp.StatusCode, bytesRead)
+}
+
+// setPlayerHeaders makes a segment request look like the web player's.
+func (p *StreamProber) setPlayerHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", ActiveClient().UserAgent)
+	req.Header.Set("Origin", "https://www.twitch.tv")
+	req.Header.Set("Referer", "https://www.twitch.tv/")
+}
+
+// requestSegment issues one segment request and reports whether Twitch
+// accepted it. Bodies are never read — HEAD carries no payload, and the
+// caller downloads bytes separately for the newest segment only.
+func (p *StreamProber) requestSegment(segURL, method string) bool {
+	req, err := http.NewRequest(method, segURL, nil)
+	if err != nil {
+		return false
+	}
+	p.setPlayerHeaders(req)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// maxSeenSegments bounds the per-channel dedup cache. A Twitch live media
+// playlist advertises well under a minute of segments, so a few hundred
+// covers any realistic poll gap while keeping the memory flat over a
+// multi-hour session.
+const maxSeenSegments = 300
+
+// unseenSegments returns the segments not yet requested for this channel
+// and records them as seen. Order is preserved so the caller can treat the
+// last entry as the newest.
+func (p *StreamProber) unseenSegments(login string, segments []string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ch, ok := p.channels[strings.ToLower(login)]
+	if !ok {
+		return nil // channel stopped while we were fetching
+	}
+	if ch.seenSegments == nil {
+		ch.seenSegments = make(map[string]struct{})
+	}
+
+	var fresh []string
+	for _, seg := range segments {
+		if _, seen := ch.seenSegments[seg]; seen {
+			continue
+		}
+		ch.seenSegments[seg] = struct{}{}
+		ch.seenOrder = append(ch.seenOrder, seg)
+		fresh = append(fresh, seg)
+	}
+
+	// Trim oldest entries past the bound.
+	if excess := len(ch.seenOrder) - maxSeenSegments; excess > 0 {
+		for _, old := range ch.seenOrder[:excess] {
+			delete(ch.seenSegments, old)
+		}
+		ch.seenOrder = ch.seenOrder[excess:]
+	}
+	return fresh
 }
 
 func (p *StreamProber) fetchText(u string, limit int64) (string, int, bool) {
@@ -290,6 +383,28 @@ func (p *StreamProber) primeChannelPage(login string) {
 	p.log("[Prober] %s page-view ok (HTTP %d)", login, resp.StatusCode)
 }
 
+// mediaSegments returns every media segment URL in a media playlist, in
+// playback order. The previous implementation took only the LAST segment,
+// which meant one segment consumed per poll while the stream published
+// several — Twitch credits distinct consumed segments, so the drop counter
+// crawled to a standstill (stuck at 3/60 for hours on 2026-10-09).
+func mediaSegments(playlist string) []string {
+	var out []string
+	for _, raw := range strings.Split(playlist, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "https://") {
+			continue
+		}
+		if strings.Contains(line, ".m3u8") {
+			continue
+		}
+		if strings.Contains(line, "/segment/") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // pickLowestQualityVariant returns the URL of the lowest-bandwidth variant
 // (audio-only when available, else the lowest quality video) in an HLS
 // master playlist. The bot doesn't care about quality — only that Twitch
@@ -301,28 +416,6 @@ func pickLowestQualityVariant(playlist string) string {
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(line, "https://") {
-			return line
-		}
-	}
-	return ""
-}
-
-// pickLastChunk returns the URL of the last segment in an HLS chunk playlist.
-// Twitch serves both legacy .ts and modern .mp4 (CMAF) chunks depending on the
-// transcode pipeline — match by /segment/ path which is consistent across both.
-// Skips .m3u8 lines (next-playlist references) and #EXT-X-MAP init segments
-// (we want a real media segment, not the init).
-func pickLastChunk(playlist string) string {
-	lines := strings.Split(playlist, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(line, "https://") {
-			continue
-		}
-		if strings.Contains(line, ".m3u8") {
-			continue
-		}
-		if strings.Contains(line, "/segment/") {
 			return line
 		}
 	}
