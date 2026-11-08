@@ -50,6 +50,12 @@ func dropsSettings(_ *config.Config) []dropsSetting {
 			restart: false,
 		},
 		{
+			label:   "Badges & emotes last",
+			get:     func(c *config.Config) bool { return c.GetBadgeEmoteLast() },
+			toggle:  func(c *config.Config) { c.SetBadgeEmoteLast(!c.GetBadgeEmoteLast()) },
+			restart: false,
+		},
+		{
 			label:   "Skip subscription rewards",
 			get:     func(c *config.Config) bool { return c.GetSkipSubRewards() },
 			toggle:  func(c *config.Config) { c.SetSkipSubRewards(!c.GetSkipSubRewards()) },

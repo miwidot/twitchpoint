@@ -7,6 +7,7 @@ import "github.com/miwi/twitchpoint/internal/twitch"
 type RewardFilterConfig interface {
 	GetSkipBadgeEmote() bool
 	GetSkipSubRewards() bool
+	GetBadgeEmoteLast() bool
 }
 
 // Skip reasons returned by rewardSkipReason ("" = keep the campaign).

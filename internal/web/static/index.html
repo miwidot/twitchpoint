@@ -859,6 +859,13 @@
                         </div>
                         <div class="toggle" id="setting-skipbadge-toggle" role="switch" aria-checked="false" tabindex="0"></div>
                     </div>
+                    <div class="settings-row" id="setting-badgelast-row">
+                        <div class="settings-label">
+                            <div>Badges &amp; emotes last</div>
+                            <div class="dim" style="font-size:12px">Farm badge/emote-only campaigns only when no normal campaign has a live channel. No effect while "Skip badge &amp; emote" is on.</div>
+                        </div>
+                        <div class="toggle" id="setting-badgelast-toggle" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
                     <div class="settings-row" id="setting-skipsub-row">
                         <div class="settings-label">
                             <div>Skip subscription rewards</div>
@@ -953,7 +960,7 @@
             logs: [],
             wantedGames: [],
             claimed: [], // received-drops history, see "Received" tab
-            settings: { auto_claim: true, skip_badge_emote: false, skip_sub_rewards: false },
+            settings: { auto_claim: true, skip_badge_emote: false, badge_emote_last: false, skip_sub_rewards: false },
             suggestions: [],
             sugCursor: -1,
             sugQuery: '',
@@ -1618,6 +1625,7 @@
         const settingRenderers = [
             bindSetting('#setting-autoclaim-toggle', 'auto_claim'),
             bindSetting('#setting-skipbadge-toggle', 'skip_badge_emote'),
+            bindSetting('#setting-badgelast-toggle', 'badge_emote_last'),
             bindSetting('#setting-skipsub-toggle', 'skip_sub_rewards'),
         ];
         function renderSettings() { settingRenderers.forEach(r => r()); }

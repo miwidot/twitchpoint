@@ -434,6 +434,7 @@ func (s *Server) handleCampaignPin(w http.ResponseWriter, r *http.Request, campa
 type SettingsResponse struct {
 	AutoClaim      bool `json:"auto_claim"`
 	SkipBadgeEmote bool `json:"skip_badge_emote"`
+	BadgeEmoteLast bool `json:"badge_emote_last"`
 	SkipSubRewards bool `json:"skip_sub_rewards"`
 }
 
@@ -443,6 +444,7 @@ type SettingsResponse struct {
 type settingsPatch struct {
 	AutoClaim      *bool `json:"auto_claim"`
 	SkipBadgeEmote *bool `json:"skip_badge_emote"`
+	BadgeEmoteLast *bool `json:"badge_emote_last"`
 	SkipSubRewards *bool `json:"skip_sub_rewards"`
 }
 
@@ -456,6 +458,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return SettingsResponse{
 			AutoClaim:      cfg.GetAutoClaim(),
 			SkipBadgeEmote: cfg.GetSkipBadgeEmote(),
+			BadgeEmoteLast: cfg.GetBadgeEmoteLast(),
 			SkipSubRewards: cfg.GetSkipSubRewards(),
 		}
 	}
@@ -473,6 +476,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.SkipBadgeEmote != nil {
 			cfg.SetSkipBadgeEmote(*req.SkipBadgeEmote)
+		}
+		if req.BadgeEmoteLast != nil {
+			cfg.SetBadgeEmoteLast(*req.BadgeEmoteLast)
 		}
 		if req.SkipSubRewards != nil {
 			cfg.SetSkipSubRewards(*req.SkipSubRewards)
