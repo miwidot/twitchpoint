@@ -428,38 +428,60 @@ func (s *Server) handleCampaignPin(w http.ResponseWriter, r *http.Request, campa
 }
 
 // SettingsResponse is the /api/settings response. Only the runtime-live
-// flags are exposed for now — boot-time flags (drops_enabled, irc_enabled,
+// flags are exposed — boot-time flags (drops_enabled, irc_enabled,
 // web_enabled) require a farmer restart and aren't toggleable from the
 // web UI.
 type SettingsResponse struct {
-	AutoClaim bool `json:"auto_claim"`
+	AutoClaim      bool `json:"auto_claim"`
+	SkipBadgeEmote bool `json:"skip_badge_emote"`
+	SkipSubRewards bool `json:"skip_sub_rewards"`
+}
+
+// settingsPatch is the PUT body. Pointer fields give patch semantics: a
+// client that sends only {"auto_claim": false} must not reset the other
+// flags to false.
+type settingsPatch struct {
+	AutoClaim      *bool `json:"auto_claim"`
+	SkipBadgeEmote *bool `json:"skip_badge_emote"`
+	SkipSubRewards *bool `json:"skip_sub_rewards"`
 }
 
 // handleSettings serves the live, runtime-toggleable config flags.
 //
-// GET  /api/settings              -> {"auto_claim": true}
-// PUT  /api/settings              -> body: {"auto_claim": false} → 200 OK
+// GET  /api/settings -> {"auto_claim": true, "skip_badge_emote": false, "skip_sub_rewards": false}
+// PUT  /api/settings -> body: any subset of the fields above → 200 + full settings
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	cfg := s.farmer.Config()
+	current := func() SettingsResponse {
+		return SettingsResponse{
+			AutoClaim:      cfg.GetAutoClaim(),
+			SkipBadgeEmote: cfg.GetSkipBadgeEmote(),
+			SkipSubRewards: cfg.GetSkipSubRewards(),
+		}
+	}
 	switch r.Method {
 	case http.MethodGet:
-		jsonResponse(w, SettingsResponse{
-			AutoClaim: cfg.GetAutoClaim(),
-		})
+		jsonResponse(w, current())
 	case http.MethodPut:
-		var req SettingsResponse
+		var req settingsPatch
 		if err := decodeJSONBody(w, r, &req); err != nil {
 			jsonError(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		cfg.SetAutoClaim(req.AutoClaim)
+		if req.AutoClaim != nil {
+			cfg.SetAutoClaim(*req.AutoClaim)
+		}
+		if req.SkipBadgeEmote != nil {
+			cfg.SetSkipBadgeEmote(*req.SkipBadgeEmote)
+		}
+		if req.SkipSubRewards != nil {
+			cfg.SetSkipSubRewards(*req.SkipSubRewards)
+		}
 		if err := cfg.Save(); err != nil {
 			jsonError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		jsonResponse(w, SettingsResponse{
-			AutoClaim: cfg.GetAutoClaim(),
-		})
+		jsonResponse(w, current())
 	default:
 		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

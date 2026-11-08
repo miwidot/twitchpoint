@@ -44,6 +44,18 @@ func dropsSettings(_ *config.Config) []dropsSetting {
 			restart: false,
 		},
 		{
+			label:   "Skip badge & emote campaigns",
+			get:     func(c *config.Config) bool { return c.GetSkipBadgeEmote() },
+			toggle:  func(c *config.Config) { c.SetSkipBadgeEmote(!c.GetSkipBadgeEmote()) },
+			restart: false,
+		},
+		{
+			label:   "Skip subscription rewards",
+			get:     func(c *config.Config) bool { return c.GetSkipSubRewards() },
+			toggle:  func(c *config.Config) { c.SetSkipSubRewards(!c.GetSkipSubRewards()) },
+			restart: false,
+		},
+		{
 			label:   "IRC viewer presence",
 			get:     func(c *config.Config) bool { return c.GetIrcEnabled() },
 			toggle:  func(c *config.Config) { c.SetIrcEnabled(!c.GetIrcEnabled()) },
