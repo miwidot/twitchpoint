@@ -6,3 +6,5 @@ config/config.json
 *.log
 debug.log
 .DS_Store
+
+installer/windows/*.exe
