@@ -67,9 +67,10 @@ type Config struct {
 	// this off unless you cannot log in. EXPERIMENTAL.
 	TVClientMode bool `json:"tv_client_mode,omitempty"`
 
-	path   string       // file path, not serialized
-	mu     sync.RWMutex // guards all mutable fields above; not serialized
-	saveMu sync.Mutex   // serializes Save() — separate from mu so concurrent reads aren't blocked during marshal+rename
+	path    string       // file path, not serialized
+	created bool         // true when Load found no file and wrote a fresh default; not serialized
+	mu      sync.RWMutex // guards all mutable fields above; not serialized
+	saveMu  sync.Mutex   // serializes Save() — separate from mu so concurrent reads aren't blocked during marshal+rename
 }
 
 // Load reads the config from the given path. If path is empty, uses the default.
@@ -109,6 +110,7 @@ func Load(path string) (*Config, error) {
 		// First run: write the defaults now so the file exists even if the
 		// user never completes login. Best effort — an unwritable location
 		// must not stop the app (the login Save() will surface the error).
+		cfg.created = true
 		if serr := cfg.Save(); serr != nil {
 			log.Printf("[Config] could not create %s: %v", path, serr)
 		}
@@ -261,6 +263,10 @@ func (c *Config) Save() error {
 
 // Path returns the config file path. Path is set once at Load and never
 // mutated afterwards — no lock needed.
+// WasCreated reports whether Load had to create this config because no file
+// existed (i.e. this is a fresh install with no prior login).
+func (c *Config) WasCreated() bool { return c.created }
+
 func (c *Config) Path() string {
 	return c.path
 }
