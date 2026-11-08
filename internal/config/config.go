@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,9 +83,14 @@ func Load(path string) (*Config, error) {
 		} else {
 			path = filepath.Join(filepath.Dir(exe), defaultConfigFile)
 		}
-		// If executable-relative doesn't exist, fall back to CWD
+		// If executable-relative doesn't exist, fall back to CWD, and if that
+		// doesn't exist either, to the platform's default creation path
+		// (%APPDATA%\twitchpoint on Windows, CWD elsewhere).
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			path = defaultConfigFile
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				path = newConfigPath()
+			}
 		}
 	}
 
@@ -100,6 +106,12 @@ func Load(path string) (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
+		// First run: write the defaults now so the file exists even if the
+		// user never completes login. Best effort — an unwritable location
+		// must not stop the app (the login Save() will surface the error).
+		if serr := cfg.Save(); serr != nil {
+			log.Printf("[Config] could not create %s: %v", path, serr)
+		}
 		return cfg, nil
 	}
 	if err != nil {
@@ -215,6 +227,9 @@ func (c *Config) Save() error {
 	// Write to a temp file in the same directory (so rename stays
 	// atomic across the same filesystem) then rename over the target.
 	dir := filepath.Dir(c.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
 	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)

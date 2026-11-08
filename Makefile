@@ -54,3 +54,9 @@ run:
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Windows installer (needs `makensis`; apt install nsis). Builds the exe first.
+installer-windows:
+	GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o twitchpoint-windows.exe ./cmd/twitchpoint
+	makensis -DVERSION=$$(grep -o 'appVersion = "[^"]*"' cmd/twitchpoint/main.go | cut -d'"' -f2) -DEXE=../../twitchpoint-windows.exe installer/windows/twitchpoint.nsi
+.PHONY: installer-windows

@@ -32,6 +32,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	log.Printf("Using config file: %s", cfg.Path())
 
 	// Select the Twitch identity BEFORE any request, including the login
 	// flow. Client-Id and User-Agent must match the client that minted the

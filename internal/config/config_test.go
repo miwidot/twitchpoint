@@ -205,3 +205,21 @@ func TestConcurrent_NoRaces(t *testing.T) {
 		t.Fatalf("expected at least 3 channels (alpha/beta/gamma), got %d", len(c.GetChannelEntries()))
 	}
 }
+
+func TestLoadCreatesMissingConfigAndDirs(t *testing.T) {
+	path := t.TempDir() + "/nested/dir/config.json"
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Path() != path {
+		t.Fatalf("path = %q", cfg.Path())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+	again, err := Load(path)
+	if err != nil || !again.GetWebEnabled() || again.WebPort != 8080 {
+		t.Fatalf("reload defaults wrong: %v %+v", err, again)
+	}
+}
