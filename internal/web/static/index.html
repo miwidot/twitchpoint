@@ -852,6 +852,20 @@
                         </div>
                         <div class="toggle" id="setting-autoclaim-toggle" role="switch" aria-checked="true" tabindex="0"></div>
                     </div>
+                    <div class="settings-row" id="setting-skipbadge-row">
+                        <div class="settings-label">
+                            <div>Skip badge &amp; emote campaigns</div>
+                            <div class="dim" style="font-size:12px">Ignore campaigns whose rewards are only badges or emotes. Campaigns that also award in-game items are kept.</div>
+                        </div>
+                        <div class="toggle" id="setting-skipbadge-toggle" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                    <div class="settings-row" id="setting-skipsub-row">
+                        <div class="settings-label">
+                            <div>Skip subscription rewards</div>
+                            <div class="dim" style="font-size:12px">Ignore campaigns that contain a reward requiring a subscription.</div>
+                        </div>
+                        <div class="toggle" id="setting-skipsub-toggle" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
                 </div>
             </section>
 
@@ -939,7 +953,7 @@
             logs: [],
             wantedGames: [],
             claimed: [], // received-drops history, see "Received" tab
-            settings: { auto_claim: true },
+            settings: { auto_claim: true, skip_badge_emote: false, skip_sub_rewards: false },
             suggestions: [],
             sugCursor: -1,
             sugQuery: '',
@@ -1567,39 +1581,46 @@
             hideSuggestions();
         }
 
-        // ─── Settings: auto-claim toggle ─────────────────────────
-        const autoclaimToggle = $('#setting-autoclaim-toggle');
-        function renderAutoClaim() {
-            const on = !!state.settings.auto_claim;
-            autoclaimToggle.classList.toggle('on', on);
-            autoclaimToggle.setAttribute('aria-checked', on ? 'true' : 'false');
+        // ─── Settings toggles ─────────────────────────────────────
+        // Each toggle PUTs only its own key (the server patches), so toggles
+        // never clobber each other.
+        function bindSetting(toggleId, key) {
+            const el = $(toggleId);
+            const render = () => {
+                const on = !!state.settings[key];
+                el.classList.toggle('on', on);
+                el.setAttribute('aria-checked', on ? 'true' : 'false');
+            };
+            const toggle = async () => {
+                if (el.classList.contains('disabled-ui')) return;
+                el.classList.add('disabled-ui');
+                try {
+                    const r = await fetch('/api/settings', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ [key]: !state.settings[key] }),
+                    });
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    state.settings = await r.json();
+                    renderSettings();
+                } catch (e) {
+                    console.error('toggle ' + key + ' failed', e);
+                } finally {
+                    el.classList.remove('disabled-ui');
+                }
+            };
+            el.addEventListener('click', toggle);
+            el.addEventListener('keydown', e => {
+                if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); }
+            });
+            return render;
         }
-        async function toggleAutoClaim() {
-            if (autoclaimToggle.classList.contains('disabled-ui')) return;
-            autoclaimToggle.classList.add('disabled-ui');
-            const next = !state.settings.auto_claim;
-            try {
-                const r = await fetch('/api/settings', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ auto_claim: next }),
-                });
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                state.settings = await r.json();
-                renderAutoClaim();
-            } catch (e) {
-                console.error('toggle auto_claim failed', e);
-            } finally {
-                autoclaimToggle.classList.remove('disabled-ui');
-            }
-        }
-        autoclaimToggle.addEventListener('click', toggleAutoClaim);
-        autoclaimToggle.addEventListener('keydown', e => {
-            if (e.key === ' ' || e.key === 'Enter') {
-                e.preventDefault();
-                toggleAutoClaim();
-            }
-        });
+        const settingRenderers = [
+            bindSetting('#setting-autoclaim-toggle', 'auto_claim'),
+            bindSetting('#setting-skipbadge-toggle', 'skip_badge_emote'),
+            bindSetting('#setting-skipsub-toggle', 'skip_sub_rewards'),
+        ];
+        function renderSettings() { settingRenderers.forEach(r => r()); }
 
         // ─── "Received" tab ───────────────────────────────────
         // Filtering and grouping happen here in the browser: the list is
@@ -1706,7 +1727,7 @@
                 renderDrops();
                 renderLogs();
                 renderWantedGames();
-                renderAutoClaim();
+                renderSettings();
                 renderClaimed();
             } catch (e) {
                 console.error('refresh failed', e);

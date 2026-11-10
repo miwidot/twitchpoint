@@ -55,6 +55,7 @@ type RowsConfig interface {
 	IsCampaignDisabled(campaignID string) bool
 	IsCampaignCompleted(campaignID string) bool
 	GetGamesToWatch() []string
+	RewardFilterConfig
 }
 
 // BuildRows produces the per-campaign UI rows for the web API. It
@@ -141,7 +142,9 @@ func BuildRows(
 		// hidden — surfacing those would just be noise. Disabled and
 		// completed campaigns keep their own status.
 		blockStatus, blockReason := "", ""
-		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
+		if reason := rewardSkipReason(cfg, c); reason != "" {
+			blockStatus, blockReason = "IDLE", "skipped: "+reason
+		} else if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
 			blockStatus, blockReason = "BLOCKED", "account not linked"
 		} else if !hasWatchable {
 			blockStatus, blockReason = "IDLE", "nothing open"
