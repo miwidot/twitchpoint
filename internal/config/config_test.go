@@ -223,3 +223,26 @@ func TestLoadCreatesMissingConfigAndDirs(t *testing.T) {
 		t.Fatalf("reload defaults wrong: %v %+v", err, again)
 	}
 }
+
+func TestSkipFlagsRoundTripAndDefaultOff(t *testing.T) {
+	path := t.TempDir() + "/config.json"
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GetSkipBadgeEmote() || cfg.GetSkipSubRewards() {
+		t.Fatal("skip flags must default to false")
+	}
+	cfg.SetSkipBadgeEmote(true)
+	cfg.SetSkipSubRewards(true)
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GetSkipBadgeEmote() || !got.GetSkipSubRewards() {
+		t.Fatal("skip flags did not persist")
+	}
+}

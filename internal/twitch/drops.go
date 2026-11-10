@@ -26,6 +26,10 @@ type DropCampaign struct {
 	InInventory        bool // true if campaign appeared in Inventory (has/had progress)
 	Drops              []TimeBasedDrop
 	Channels           []DropChannel // allowed channels (empty = any channel with the game)
+	// HasSubReward is true when the campaign contains at least one reward
+	// gated behind a subscription (requiredSubs > 0). Set by the parsers and
+	// preserved across the discovery -> inventory/details merge.
+	HasSubReward bool
 }
 
 // TimeBasedDrop represents a single drop within a campaign.
@@ -42,6 +46,7 @@ type TimeBasedDrop struct {
 	StartAt                time.Time // per-drop time window — drop only earnable from StartAt
 	EndAt                  time.Time // per-drop time window — drop only earnable until EndAt
 	PreconditionDrops      []string  // IDs of drops that must be claimed before this one is earnable
+	RequiredSubs           int       // subscriptions needed to earn this drop (0 = watch-time only)
 }
 
 // IsEarnable returns true when the drop is currently earnable on Twitch's
@@ -297,6 +302,7 @@ func (g *GQLClient) GetDropsInventory(wantedGames []string) ([]DropCampaign, err
 	for i := range dashboardCampaigns {
 		id := dashboardCampaigns[i].ID
 
+		prevHasSub := dashboardCampaigns[i].HasSubReward
 		if inventoryCampaignIDs[id] {
 			dashboardCampaigns[i].InInventory = true
 			// Inventory entries have full detail AND progress. Replace the
@@ -312,6 +318,16 @@ func (g *GQLClient) GetDropsInventory(wantedGames []string) ([]DropCampaign, err
 			// Details query returned full detail; replace summary. No progress
 			// to merge (the campaign isn't in inventory).
 			dashboardCampaigns[i] = details
+		}
+
+		if prevHasSub {
+			dashboardCampaigns[i].HasSubReward = true
+		}
+		for _, d := range dashboardCampaigns[i].Drops {
+			if d.RequiredSubs > 0 {
+				dashboardCampaigns[i].HasSubReward = true
+				break
+			}
 		}
 
 		// Step 3b: Merge per-drop progress from inventory (handles the case
@@ -705,6 +721,7 @@ func parseCampaignList(campaignList []interface{}) []DropCampaign {
 						ID:                    getString(dMap, "id"),
 						Name:                  getString(dMap, "name"),
 						RequiredMinutesWatched: getInt(dMap, "requiredMinutesWatched"),
+						RequiredSubs:           getInt(dMap, "requiredSubs"),
 					}
 
 					// Parse per-drop time window (TDM parity — a drop's

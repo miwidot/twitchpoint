@@ -40,6 +40,8 @@ type Config struct {
 	IrcEnabled         bool           `json:"irc_enabled"`                   // enable IRC for viewer presence (default true)
 	DropsEnabled       bool           `json:"drops_enabled"`                 // enable drop mining (default true)
 	AutoClaim          bool           `json:"auto_claim"`                    // claim 100%-complete drops automatically (default true)
+	SkipBadgeEmote     bool           `json:"skip_badge_emote"`              // ignore campaigns that award badges or emotes (default false)
+	SkipSubRewards     bool           `json:"skip_sub_rewards"`              // ignore campaigns containing subscription-gated rewards (default false)
 	DisabledCampaigns  []string       `json:"disabled_campaigns,omitempty"`  // campaign IDs to skip
 	CompletedCampaigns []string       `json:"completed_campaigns,omitempty"` // campaign IDs already fully claimed
 	PinnedCampaignID   string         `json:"pinned_campaign_id,omitempty"`  // v1.7.0 (deprecated v1.8.0; ignored by selector but kept for backward compat)
@@ -587,6 +589,35 @@ func (c *Config) SetDropsEnabled(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.DropsEnabled = v
+}
+
+// GetSkipBadgeEmote reports whether badge/emote campaigns are skipped.
+func (c *Config) GetSkipBadgeEmote() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SkipBadgeEmote
+}
+
+// SetSkipBadgeEmote toggles skipping of badge/emote campaigns. Live: the
+// selector reads it every cycle.
+func (c *Config) SetSkipBadgeEmote(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.SkipBadgeEmote = v
+}
+
+// GetSkipSubRewards reports whether subscription-gated campaigns are skipped.
+func (c *Config) GetSkipSubRewards() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SkipSubRewards
+}
+
+// SetSkipSubRewards toggles skipping of subscription-gated campaigns.
+func (c *Config) SetSkipSubRewards(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.SkipSubRewards = v
 }
 
 // GetAutoClaim returns the auto-claim-enabled flag. When false, the

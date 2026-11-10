@@ -54,6 +54,7 @@ type FilterStats struct {
 	NotConnected    int // isAccountConnected=false AND no badge/emote benefit
 	Disabled        int // user-disabled
 	Completed       int // user-marked completed
+	RewardFiltered  int // skipped by skip_badge_emote / skip_sub_rewards
 	NoEarnableDrops int // no IsEarnable drop right now (claimed / out-of-window / precondition gated)
 	Eligible        int
 }
@@ -168,6 +169,10 @@ func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []tw
 		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(c) {
 			logWantedReject(c, "not_connected")
 			stats.NotConnected++
+			continue
+		}
+		if rewardSkipReason(s.cfg, c) != "" {
+			stats.RewardFiltered++
 			continue
 		}
 		if s.cfg.IsCampaignDisabled(c.ID) {

@@ -195,6 +195,9 @@ func parseAvailableDropCampaign(m map[string]interface{}) *DropCampaign {
 			continue
 		}
 		required := getInt(dm, "requiredMinutesWatched")
+		if getInt(dm, "requiredSubs") > 0 {
+			c.HasSubReward = true
+		}
 		if required <= 0 {
 			continue // sub-only or malformed drop — nothing to watch for
 		}
