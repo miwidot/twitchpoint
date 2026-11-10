@@ -4,6 +4,11 @@ import "github.com/miwi/twitchpoint/internal/twitch"
 
 // RewardFilterConfig is the slice of config the reward-type filters need.
 // *config.Config satisfies it.
+//
+// badge_emote_last is deliberately NOT part of this interface: it changes
+// pool ORDER, not which campaigns are filtered out, and sortPool reads it
+// straight off the concrete config. Keeping it out means an implementation
+// of this interface only has to answer what rewardSkipReason actually asks.
 type RewardFilterConfig interface {
 	GetSkipBadgeEmote() bool
 	GetSkipSubRewards() bool

@@ -85,3 +85,35 @@ func TestBuildRowsRewardFilterParity(t *testing.T) {
 		}
 	}
 }
+
+func TestSortPool_BadgeEmoteLast(t *testing.T) {
+	badge := rfCampaign("badge", rfDrop("BADGE", 0))
+	badge.EndAt = testNow.Add(1 * time.Hour) // ends sooner: would win without the flag
+	item := rfCampaign("item", rfDrop("DIRECT_ENTITLEMENT", 0))
+	item.EndAt = testNow.Add(5 * time.Hour)
+	ref := func(c twitch.DropCampaign) CampaignRef {
+		return CampaignRef{ID: c.ID, GameName: "g", EndAt: c.EndAt, BadgeEmoteOnly: isBadgeEmoteOnly(c)}
+	}
+	mk := func() []*PoolEntry {
+		return []*PoolEntry{
+			{ChannelID: "b", ViewerCount: 900, Campaigns: []CampaignRef{ref(badge)}},
+			{ChannelID: "i", ViewerCount: 10, Campaigns: []CampaignRef{ref(item)}},
+		}
+	}
+	off := mk()
+	newTestSelector(&config.Config{}).sortPool(off)
+	if off[0].ChannelID != "b" {
+		t.Fatalf("baseline expected badge first, got %s", off[0].ChannelID)
+	}
+	on := mk()
+	newTestSelector(&config.Config{BadgeEmoteLast: true}).sortPool(on)
+	if on[0].ChannelID != "i" || on[1].ChannelID != "b" {
+		t.Fatalf("badge-last: got %s,%s", on[0].ChannelID, on[1].ChannelID)
+	}
+	// Only badge channels available -> still picked (fallback works).
+	only := []*PoolEntry{mk()[0]}
+	newTestSelector(&config.Config{BadgeEmoteLast: true}).sortPool(only)
+	if len(only) != 1 || only[0].ChannelID != "b" {
+		t.Fatal("fallback to badge channel lost")
+	}
+}

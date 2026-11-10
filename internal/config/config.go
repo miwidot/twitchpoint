@@ -41,6 +41,7 @@ type Config struct {
 	DropsEnabled       bool           `json:"drops_enabled"`                 // enable drop mining (default true)
 	AutoClaim          bool           `json:"auto_claim"`                    // claim 100%-complete drops automatically (default true)
 	SkipBadgeEmote     bool           `json:"skip_badge_emote"`              // ignore campaigns that award badges or emotes (default false)
+	BadgeEmoteLast     bool           `json:"badge_emote_last"`              // farm badge/emote-only campaigns only when no normal campaign has a live channel (default false; ignored when skip_badge_emote is on)
 	SkipSubRewards     bool           `json:"skip_sub_rewards"`              // ignore campaigns containing subscription-gated rewards (default false)
 	DisabledCampaigns  []string       `json:"disabled_campaigns,omitempty"`  // campaign IDs to skip
 	CompletedCampaigns []string       `json:"completed_campaigns,omitempty"` // campaign IDs already fully claimed
@@ -605,6 +606,20 @@ func (c *Config) SetSkipBadgeEmote(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.SkipBadgeEmote = v
+}
+
+// GetBadgeEmoteLast reports whether badge/emote-only campaigns are deprioritised.
+func (c *Config) GetBadgeEmoteLast() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.BadgeEmoteLast
+}
+
+// SetBadgeEmoteLast toggles badge/emote deprioritisation. Live.
+func (c *Config) SetBadgeEmoteLast(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.BadgeEmoteLast = v
 }
 
 // GetSkipSubRewards reports whether subscription-gated campaigns are skipped.

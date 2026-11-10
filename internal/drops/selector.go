@@ -20,12 +20,13 @@ type streamSource interface {
 
 // CampaignRef is a lightweight reference to a campaign that a pool entry serves.
 type CampaignRef struct {
-	ID            string
-	Name          string
-	GameName      string
-	EndAt         time.Time
-	RemainingTime time.Duration
-	IsPinned      bool
+	ID             string
+	Name           string
+	GameName       string
+	EndAt          time.Time
+	RemainingTime  time.Duration
+	IsPinned       bool
+	BadgeEmoteOnly bool // every reward is a badge/emote (used by the badge_emote_last ordering)
 }
 
 // PoolEntry represents one candidate channel in the selector's pool.
@@ -35,8 +36,8 @@ type CampaignRef struct {
 // BroadcastID is intentionally NOT carried here — addTemporaryChannel fetches
 // the live broadcast ID via GetChannelInfo when it registers the channel.
 type PoolEntry struct {
-	ChannelID    string        // Twitch broadcaster user ID
-	ChannelLogin string        // lowercase login
+	ChannelID    string // Twitch broadcaster user ID
+	ChannelLogin string // lowercase login
 	DisplayName  string
 	ViewerCount  int
 	Campaigns    []CampaignRef // 1+ eligible campaigns this channel serves; sorted with highest priority first
@@ -261,12 +262,13 @@ func (s *Selector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 
 	for _, c := range eligible {
 		ref := CampaignRef{
-			ID:            c.ID,
-			Name:          c.Name,
-			GameName:      c.GameName,
-			EndAt:         c.EndAt,
-			RemainingTime: time.Until(c.EndAt),
-			IsPinned:      c.ID == pinnedID,
+			ID:             c.ID,
+			Name:           c.Name,
+			GameName:       c.GameName,
+			EndAt:          c.EndAt,
+			RemainingTime:  time.Until(c.EndAt),
+			IsPinned:       c.ID == pinnedID,
+			BadgeEmoteOnly: isBadgeEmoteOnly(c),
 		}
 		if c.GameName == "" {
 			continue // can't pick without a game
@@ -351,9 +353,9 @@ func (s *Selector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 }
 
 // sortPool sorts entries in priority order:
-//   1. wanted_games rank (lower index = higher priority; channels not in wanted go to end)
-//   2. earliest endAt across the channel's campaigns
-//   3. viewer count desc (tie-break)
+//  1. wanted_games rank (lower index = higher priority; channels not in wanted go to end)
+//  2. earliest endAt across the channel's campaigns
+//  3. viewer count desc (tie-break)
 //
 // Empty wanted_games falls back to the v1.7.0 (endAt, viewers) ordering — fully
 // backward compatible. Pin (v1.7.0 PinnedCampaignID) is silently ignored in v1.8.0.
@@ -366,15 +368,30 @@ func (s *Selector) sortPool(pool []*PoolEntry) {
 	useGameSort := len(wanted) > 0
 	notWantedRank := len(wanted)
 
+	badgeLast := s.cfg.GetBadgeEmoteLast()
+
 	type cached struct {
 		gameRank int
 		minEnd   time.Time
+		// lowPrio: every campaign this channel can credit is badge/emote-only
+		// and the user wants those only as a fallback. Outranks game order so
+		// normal drops win whenever any normal campaign has a live channel.
+		lowPrio bool
 	}
 	keys := make(map[*PoolEntry]cached, len(pool))
 	for _, e := range pool {
 		var c cached
 		c.gameRank = notWantedRank
 		first := true
+		if badgeLast && len(e.Campaigns) > 0 {
+			c.lowPrio = true
+			for _, ref := range e.Campaigns {
+				if !ref.BadgeEmoteOnly {
+					c.lowPrio = false
+					break
+				}
+			}
+		}
 		for _, ref := range e.Campaigns {
 			if useGameSort {
 				if r, ok := gameRanks[strings.ToLower(ref.GameName)]; ok && r < c.gameRank {
@@ -391,6 +408,9 @@ func (s *Selector) sortPool(pool []*PoolEntry) {
 
 	sort.SliceStable(pool, func(i, j int) bool {
 		ki, kj := keys[pool[i]], keys[pool[j]]
+		if ki.lowPrio != kj.lowPrio {
+			return !ki.lowPrio
+		}
 		if useGameSort && ki.gameRank != kj.gameRank {
 			return ki.gameRank < kj.gameRank
 		}
