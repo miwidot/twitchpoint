@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -30,8 +32,9 @@ func main() {
 	// Load config
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		fatalf("Failed to load config: %v", err)
 	}
+	log.Printf("Using config file: %s", cfg.Path())
 
 	// Select the Twitch identity BEFORE any request, including the login
 	// flow. Client-Id and User-Agent must match the client that minted the
@@ -47,7 +50,7 @@ func main() {
 	if *setToken != "" {
 		cfg.SetAuthToken(*setToken)
 		if err := cfg.Save(); err != nil {
-			log.Fatalf("Failed to save config: %v", err)
+			fatalf("Failed to save config: %v", err)
 		}
 		fmt.Printf("Auth token saved to %s\n", cfg.Path())
 		return
@@ -62,17 +65,17 @@ func main() {
 		channel := strings.ToLower(*addChannel)
 		token := cfg.GetAuthToken()
 		if token == "" {
-			log.Fatalf("Cannot add channel: no auth token. Run --login first or set --token.")
+			fatalf("Cannot add channel: no auth token. Run --login first or set --token.")
 		}
 		gql := twitch.NewGQLClient(token)
 		info, err := gql.GetChannelInfo(channel)
 		if err != nil {
-			log.Fatalf("Channel %q not found on Twitch: %v", channel, err)
+			fatalf("Channel %q not found on Twitch: %v", channel, err)
 		}
 		added := cfg.AddChannel(info.Login)
 		cfg.SetChannelID(info.Login, info.ID)
 		if err := cfg.Save(); err != nil {
-			log.Fatalf("Failed to save config: %v", err)
+			fatalf("Failed to save config: %v", err)
 		}
 		if added {
 			fmt.Printf("Added channel %s (id=%s) to config\n", info.Login, info.ID)
@@ -91,7 +94,7 @@ func main() {
 		channel := strings.ToLower(*removeChannel)
 		if cfg.RemoveChannel(channel) {
 			if err := cfg.Save(); err != nil {
-				log.Fatalf("Failed to save config: %v", err)
+				fatalf("Failed to save config: %v", err)
 			}
 			fmt.Printf("Removed channel %q from config\n", channel)
 		} else {
@@ -104,11 +107,11 @@ func main() {
 	if *forceLogin {
 		token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
 		if err != nil {
-			log.Fatalf("Login failed: %v", err)
+			fatalf("Login failed: %v", err)
 		}
 		cfg.SetAuthToken(token)
 		if err := cfg.Save(); err != nil {
-			log.Fatalf("Failed to save config: %v", err)
+			fatalf("Failed to save config: %v", err)
 		}
 		fmt.Printf("Token saved to %s\n", cfg.Path())
 		return
@@ -118,13 +121,23 @@ func main() {
 	if cfg.GetAuthToken() == "" {
 		fmt.Println("Welcome to TwitchPoint Farmer!")
 		fmt.Println()
+		if cfg.WasCreated() {
+			fmt.Println("No existing config found - creating a new login.")
+			fmt.Printf("A new config was created at: %s\n", cfg.Path())
+		} else {
+			fmt.Printf("Config found at %s but it has no login token - starting a fresh login.\n", cfg.Path())
+		}
+		if runtime.GOOS == "windows" {
+			fmt.Println("(Config is searched in: the exe's folder, the current folder, then %APPDATA%\\twitchpoint)")
+		}
+		fmt.Println()
 		token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
 		if err != nil {
-			log.Fatalf("Login failed: %v", err)
+			fatalf("Login failed: %v", err)
 		}
 		cfg.SetAuthToken(token)
 		if err := cfg.Save(); err != nil {
-			log.Fatalf("Failed to save config: %v", err)
+			fatalf("Failed to save config: %v", err)
 		}
 		fmt.Printf("Token saved to %s\n", cfg.Path())
 		fmt.Println()
@@ -140,12 +153,12 @@ func main() {
 			token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Re-login failed: %v\n", err)
-				os.Exit(1)
+				exitWithPause(1)
 			}
 			cfg.SetAuthToken(token)
 			if err := cfg.Save(); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to save config: %v\n", err)
-				os.Exit(1)
+				exitWithPause(1)
 			}
 			fmt.Printf("New token saved to %s\n", cfg.Path())
 			fmt.Println()
@@ -154,11 +167,11 @@ func main() {
 			f = farmer.New(cfg, appVersion)
 			if err := f.Start(); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to start farmer: %v\n", err)
-				os.Exit(1)
+				exitWithPause(1)
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "Failed to start farmer: %v\n", err)
-			os.Exit(1)
+			exitWithPause(1)
 		}
 	}
 	defer f.Stop()
@@ -196,4 +209,19 @@ func runHeadless(f *farmer.Farmer, cfg *config.Config) {
 	<-sig
 
 	fmt.Println("\nShutting down...")
+}
+
+// fatalf prints the error and exits. On Windows it first waits for Enter so a
+// double-clicked exe does not close the console before the message is read.
+func fatalf(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	exitWithPause(1)
+}
+
+func exitWithPause(code int) {
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(os.Stderr, "\nPress Enter to close...")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+	os.Exit(code)
 }

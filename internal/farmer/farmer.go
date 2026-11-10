@@ -3,6 +3,7 @@ package farmer
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +51,7 @@ type Farmer struct {
 	// drop late writes silently after shutdown.
 	fileLogMu sync.Mutex
 	logFile   *os.File
+	logDir    string // directory holding logFile (see openDebugLog)
 	logDate   string // current log file date (YYYY-MM-DD) for rotation
 
 	startTime time.Time
@@ -88,18 +90,16 @@ func (f *Farmer) Start() error {
 	f.startTime = time.Now()
 
 	// Open daily debug log file (append mode)
-	if err := os.MkdirAll("logs", 0755); err != nil {
-		return fmt.Errorf("create logs dir: %w", err)
+	// A debug log is nice to have but must never stop the farmer from
+	// starting (e.g. a Windows exe launched from a read-only working dir).
+	f.logDir, f.logFile = openDebugLog(f.cfg.Path())
+	if f.logFile != nil {
+		f.logDate = time.Now().Format("2006-01-02")
+		f.writeLogFile("=== TwitchPoint Farmer started ===")
+		pruneOldLogsIn(f.logDir, f.writeLogFile)
+	} else {
+		fmt.Fprintln(os.Stderr, "Warning: could not create a debug log directory; continuing without a debug log file.")
 	}
-	logPath := fmt.Sprintf("logs/debug-%s.log", time.Now().Format("2006-01-02"))
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", logPath, err)
-	}
-	f.logFile = logFile
-	f.logDate = time.Now().Format("2006-01-02")
-	f.writeLogFile("=== TwitchPoint Farmer started ===")
-	pruneOldLogs(f.writeLogFile)
 
 	// Initialize GQL client. Reads through accessors — even though
 	// Start() is single-goroutine before any other goroutine spawns,
@@ -898,7 +898,7 @@ func (f *Farmer) writeLogFile(msg string) {
 	// Daily rotation: check if we've crossed midnight.
 	today := time.Now().Format("2006-01-02")
 	if today != f.logDate {
-		newPath := fmt.Sprintf("logs/debug-%s.log", today)
+		newPath := filepath.Join(f.logDir, fmt.Sprintf("debug-%s.log", today))
 		newFile, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
 			f.logFile.Close()
@@ -910,7 +910,7 @@ func (f *Farmer) writeLogFile(msg string) {
 			// hosts the whole home server. Runs under fileLogMu, so
 			// deliberately not routed through writeLogFile (that would
 			// try to acquire the same mutex again).
-			pruneOldLogs(nil)
+			pruneOldLogsIn(f.logDir, nil)
 		}
 	}
 
@@ -992,4 +992,27 @@ func (f *Farmer) GetStats() Stats {
 	stats.ActiveDrops = f.drops.ActiveDropsCount()
 
 	return stats
+}
+
+// openDebugLog opens today's debug log. It tries ./logs first (the historical
+// location, unchanged for existing Linux/Pi setups) and falls back to a logs
+// folder next to the config file, which is known to be writable-ish and does
+// not depend on the working directory. Returns (dir, nil) if neither works.
+func openDebugLog(configPath string) (string, *os.File) {
+	candidates := []string{"logs"}
+	if configPath != "" {
+		candidates = append(candidates, filepath.Join(filepath.Dir(configPath), "logs"))
+	}
+	name := fmt.Sprintf("debug-%s.log", time.Now().Format("2006-01-02"))
+	for _, dir := range candidates {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			continue
+		}
+		file, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			continue
+		}
+		return dir, file
+	}
+	return "", nil
 }

@@ -31,8 +31,11 @@ var debugLogPattern = regexp.MustCompile(`^debug-\d{4}-\d{2}-\d{2}\.log$`)
 //
 // logf may be nil — on day rollover the call already runs under the log
 // mutex, so a write attempt would deadlock itself.
-func pruneOldLogs(logf func(string)) {
-	entries, err := os.ReadDir("logs")
+func pruneOldLogs(logf func(string)) { pruneOldLogsIn("logs", logf) }
+
+// pruneOldLogsIn is pruneOldLogs for an explicit log directory.
+func pruneOldLogsIn(dir string, logf func(string)) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return // no logs directory: nothing to do
 	}
@@ -55,7 +58,7 @@ func pruneOldLogs(logf func(string)) {
 		if err != nil || !day.Before(cutoff) {
 			continue
 		}
-		path := filepath.Join("logs", e.Name())
+		path := filepath.Join(dir, e.Name())
 		var size int64
 		if info, err := e.Info(); err == nil {
 			size = info.Size()
