@@ -1,3 +1,44 @@
+== 2026-11-11 02:52 == Bump: v2.5.0 → v2.5.1 ==
+
+badge_emote_last (#28). Thanks to FadingToJosh.
+
+New config flag, default off, live (no restart): badge_emote_last farms
+badge/emote-only campaigns only as a fallback. When no normal campaign
+has a live channel, badges are still farmed instead of a slot sitting
+idle; as soon as a normal campaign has one, the normal campaign wins.
+
+Implemented as a SORT KEY, not a filter — this is the part that matters.
+Badge/emote-only entries stay in the pool and merely lose every
+comparison, so with maxSpadeSlots = 2 they fill leftover capacity rather
+than being discarded. A filter would have thrown away free drops whenever
+fewer than two normal channels were live.
+
+  - PoolEntry campaigns carry BadgeEmoteOnly, computed once in buildPool.
+  - sortPool marks an entry lowPrio when EVERY campaign it can credit is
+    badge/emote-only, and compares lowPrio ABOVE the wanted_games rank,
+    so a normal drop in a low-ranked game still beats a badge in the
+    user's top game.
+  - No effect while skip_badge_emote is on — those campaigns are already
+    filtered out before sorting, so the two flags cannot contradict each
+    other.
+  - Toggle in the TUI (Drops tab) and the web UI (Settings); the existing
+    patch semantics on PUT /api/settings carry it.
+
+Follow-up fix on top of the merge (this release)
+  - GetBadgeEmoteLast is out of the RewardFilterConfig interface again.
+    rewardSkipReason never called it — sortPool reads it off the concrete
+    *config.Config. An ordering flag in a filter interface forces every
+    implementation to answer a question the filter does not ask. The doc
+    comment now records why it is deliberately absent.
+
+Housekeeping: #27 was closed as superseded by #28 — it carried no commits
+of its own, so merging it would have applied the same changes twice.
+Verified with git diff pr27...pr28 before closing.
+
+Files: cmd/twitchpoint/main.go, internal/config/config.go,
+internal/drops/{rewardfilter.go,rewardfilter_test.go,selector.go},
+internal/ui/drops_tab.go, internal/web/{server.go,static/index.html}
+
 == 2026-11-11 02:43 == Bump: v2.4.1 → v2.5.0 ==
 
 Three community features plus follow-up hardening. Thanks to FadingToJosh
