@@ -45,6 +45,9 @@ Section "Install"
   ; file exist right after install.
   CreateDirectory "$APPDATA\twitchpoint"
   IfFileExists "$APPDATA\twitchpoint\config.json" skipconfig
+    ; ClearErrors first: CreateDirectory above may have left the error flag
+    ; set, which would make the IfErrors below skip seeding for no reason.
+    ClearErrors
     FileOpen $0 "$APPDATA\twitchpoint\config.json" w
     IfErrors skipconfig
     FileWrite $0 '{$\r$\n'

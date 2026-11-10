@@ -1,3 +1,90 @@
+== 2026-11-11 02:43 == Bump: v2.4.1 → v2.5.0 ==
+
+Three community features plus follow-up hardening. Thanks to FadingToJosh
+for all three (#25, #26).
+
+Reward-type filters (#26)
+  Two new config flags, both default off, both live (no restart):
+  - skip_badge_emote: ignore campaigns whose rewards are ONLY badges or
+    emotes. A campaign that also awards an in-game item is kept — the
+    check fails open on mixed AND on unknown benefit types, so an
+    unrecognised reward can never cost a real drop.
+  - skip_sub_rewards: ignore campaigns containing a reward gated behind a
+    subscription (requiredSubs > 0).
+  rewardSkipReason() is shared by the selector and BuildRows, so the
+  picker and the UI can never disagree about what is being skipped.
+  Skipped campaigns show as IDLE with "skipped: <reason>" instead of
+  vanishing silently, and the selector's filter stats gained a
+  RewardFiltered counter.
+
+  Verified before merge that this is not a silent no-op: the drop queries
+  are persisted queries, so the field selection is fixed server-side and
+  a missing requiredSubs would always read 0. Probed DropCampaignDetails
+  live against 20 ACTIVE campaigns (69 drops) — requiredSubs is in the
+  selection set.
+
+  PUT /api/settings switched to patch semantics (pointer fields). Without
+  it, each toggle would have reset the others to false, because the
+  handler wrote every field of the decoded body.
+
+Windows installer and first-run config (#25)
+  - config.Load now writes the defaults when no config file exists,
+    instead of depending on a completed login to create one. Save()
+    creates the parent directory.
+  - New configs on Windows go to %APPDATA%\twitchpoint\config.json;
+    Program Files is not user-writable. An existing config in the exe
+    directory or the working directory still wins. Linux/macOS behaviour
+    is unchanged.
+  - Startup logs which config file is in use, and first-run output says
+    whether the config was just created or found without a token.
+  - A debug log is now nice-to-have instead of fatal: ./logs is tried
+    first (unchanged for existing Linux/Pi setups), then a logs folder
+    next to the config, and the farmer starts either way. An exe launched
+    from a read-only working directory used to fail at startup.
+  - installer/windows/twitchpoint.nsi: per-user install, no admin rights,
+    Start Menu shortcuts, seeds a default config only when absent, and
+    keeps the config on uninstall. `make installer-windows` builds it.
+
+Follow-up fixes on top of the merges (this release)
+  - exitWithPause only waits for Enter when stdin is an actual console
+    (GetConsoleMode succeeds). The pause is right for a double-clicked
+    exe, but unattended runs — a service, a scheduled task, a redirected
+    or absent stdin — would have blocked there forever on a fatal error
+    instead of exiting, so no restart mechanism could take over.
+    New platform-split helper: shouldPauseOnExit (pause_windows.go /
+    pause_other.go).
+  - Split the doc comments on Config.WasCreated and Config.Path — the
+    merge had left Path's comment attached to WasCreated, so godoc
+    described the wrong function and Path was undocumented.
+  - Removed the pruneOldLogs("logs") wrapper, which had no production
+    callers left after the log-directory change; the tests now call
+    pruneOldLogsIn directly.
+  - NSIS: ClearErrors before FileOpen. CreateDirectory can leave the
+    error flag set, which would have made the following IfErrors skip
+    config seeding for no reason.
+  - .gitignore: cover /twitchpoint-windows.exe and
+    /twitchpoint-setup-*.exe. makensis resolves File and OutFile against
+    its own working directory (the repo root, since make runs there), not
+    against the .nsi, so both build outputs landed untracked in the repo
+    root — a ~20 MB binary one `git add -A` away from being committed.
+    The pre-existing installer/windows/*.exe rule covered a directory
+    nothing is written to.
+
+Not in this release: badge_emote_last (#28) is reviewed and sound — it
+deprioritises badge/emote-only campaigns as a sort key rather than
+filtering them, so they stay in the pool as a genuine fallback — but it
+needs a rebase onto the two squash merges above first. #27 was closed as
+superseded by #28; it contained no commits of its own.
+
+Files: cmd/twitchpoint/{main.go,pause_windows.go,pause_other.go},
+internal/config/{config.go,config_test.go,defaultpath_windows.go,
+defaultpath_other.go}, internal/drops/{rewardfilter.go,
+rewardfilter_test.go,rows.go,selector.go}, internal/farmer/{farmer.go,
+logprune.go,logprune_test.go,openlog_test.go}, internal/twitch/{drops.go,
+tvdiscovery.go}, internal/ui/drops_tab.go, internal/web/{server.go,
+static/index.html}, installer/windows/twitchpoint.nsi, Makefile,
+.gitignore
+
 == 2026-10-09 21:30 == Bump: v2.4.0 → v2.4.1 ==
 
 Drops still did not credit after v2.4.0 — the prober consumed only one

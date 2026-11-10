@@ -49,7 +49,7 @@ func TestPruneOldLogs(t *testing.T) {
 		}
 	}
 
-	pruneOldLogs(nil)
+	pruneOldLogsIn("logs", nil)
 
 	for name, shouldSurvive := range files {
 		_, err := os.Stat(filepath.Join("logs", name))
@@ -77,5 +77,5 @@ func TestPruneOldLogs_NoLogsDir(t *testing.T) {
 	}
 	defer os.Chdir(old)
 
-	pruneOldLogs(nil) // must not panic
+	pruneOldLogsIn("logs", nil) // must not panic
 }

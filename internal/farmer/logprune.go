@@ -23,7 +23,10 @@ const logRetentionDays = 14
 // the logs directory should disappear.
 var debugLogPattern = regexp.MustCompile(`^debug-\d{4}-\d{2}-\d{2}\.log$`)
 
-// pruneOldLogs deletes daily debug logs older than logRetentionDays.
+// pruneOldLogsIn deletes daily debug logs older than logRetentionDays from
+// dir. The log directory is resolved at startup (see openDebugLog) and passed
+// in, because it is not always ./logs — an exe launched from a read-only
+// working directory falls back to a logs folder next to the config.
 //
 // The decision is based on the DATE IN THE FILENAME, not the modification
 // time: a file copy or a restore from backup resets the modification time,
@@ -31,9 +34,6 @@ var debugLogPattern = regexp.MustCompile(`^debug-\d{4}-\d{2}-\d{2}\.log$`)
 //
 // logf may be nil — on day rollover the call already runs under the log
 // mutex, so a write attempt would deadlock itself.
-func pruneOldLogs(logf func(string)) { pruneOldLogsIn("logs", logf) }
-
-// pruneOldLogsIn is pruneOldLogs for an explicit log directory.
 func pruneOldLogsIn(dir string, logf func(string)) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

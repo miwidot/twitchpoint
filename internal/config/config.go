@@ -263,12 +263,13 @@ func (c *Config) Save() error {
 	return nil
 }
 
-// Path returns the config file path. Path is set once at Load and never
-// mutated afterwards — no lock needed.
 // WasCreated reports whether Load had to create this config because no file
-// existed (i.e. this is a fresh install with no prior login).
+// existed (i.e. this is a fresh install with no prior login). Set once at
+// Load and never mutated afterwards — no lock needed.
 func (c *Config) WasCreated() bool { return c.created }
 
+// Path returns the config file path. Path is set once at Load and never
+// mutated afterwards — no lock needed.
 func (c *Config) Path() string {
 	return c.path
 }

@@ -8,3 +8,10 @@ debug.log
 .DS_Store
 
 installer/windows/*.exe
+
+# `make installer-windows` output. makensis resolves File/OutFile against its
+# own working directory (the repo root, since make runs there), not against
+# the .nsi — so both the app exe and the setup exe land here, not in
+# installer/windows/.
+/twitchpoint-windows.exe
+/twitchpoint-setup-*.exe

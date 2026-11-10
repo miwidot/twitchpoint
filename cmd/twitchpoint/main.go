@@ -17,7 +17,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/web"
 )
 
-const appVersion = "2.4.1"
+const appVersion = "2.5.0"
 
 func main() {
 	web.Version = appVersion
@@ -218,8 +218,14 @@ func fatalf(format string, args ...interface{}) {
 	exitWithPause(1)
 }
 
+// exitWithPause exits with the given code. On Windows it first waits for
+// Enter so a double-clicked exe does not close its console before the error
+// can be read — but ONLY when stdin is an interactive console. Unattended
+// runs (a Windows service, a scheduled task, a redirected or absent stdin)
+// would otherwise block here forever instead of exiting, and no restart
+// mechanism could take over. See shouldPauseOnExit.
 func exitWithPause(code int) {
-	if runtime.GOOS == "windows" {
+	if shouldPauseOnExit() {
 		fmt.Fprintln(os.Stderr, "\nPress Enter to close...")
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 	}
