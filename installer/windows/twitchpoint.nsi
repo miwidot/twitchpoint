@@ -25,7 +25,8 @@ SetCompressor /SOLID lzma
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\twitchpoint.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Start ${APPNAME} now (first start asks you to log in to Twitch)"
+!define MUI_FINISHPAGE_RUN_TEXT "Start ${APPNAME} now"
+!define MUI_FINISHPAGE_TEXT "${APPNAME} ${VERSION} has been installed on your computer.$\r$\n$\r$\nThe first start asks you to log in to Twitch.$\r$\n$\r$\nClick Finish to close Setup."
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
