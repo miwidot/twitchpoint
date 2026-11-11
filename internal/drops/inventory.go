@@ -62,7 +62,7 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 		if c.Status != "" && c.Status != "ACTIVE" {
 			continue
 		}
-		if !c.IsAccountConnected {
+		if !c.IsAccountConnected && !hasBadgeOrEmoteBenefit(*c) {
 			continue
 		}
 		if s.cfg.IsCampaignCompleted(c.ID) {
