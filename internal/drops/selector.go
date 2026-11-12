@@ -469,10 +469,25 @@ func (s *Selector) LastFilterStats() FilterStats { return s.lastFilter }
 // a publisher account.
 func hasBadgeOrEmoteBenefit(c twitch.DropCampaign) bool {
 	for _, d := range c.Drops {
-		switch d.BenefitType {
-		case "BADGE", "EMOTE":
+		if isBadgeOrEmoteDrop(d) {
 			return true
 		}
+	}
+	return false
+}
+
+// isBadgeOrEmoteDrop reports whether a SINGLE drop awards a Twitch-side
+// reward (badge or emote) rather than a publisher game item. Twitch grants
+// these on the Twitch account itself, so they need no publisher account
+// link — see the BenefitType field comment in internal/twitch/drops.go.
+//
+// Campaign-level checks ask "does this campaign contain one?"
+// (hasBadgeOrEmoteBenefit) or "are they all?" (isBadgeEmoteOnly); the claim
+// path needs the per-drop answer, because a campaign can mix the two.
+func isBadgeOrEmoteDrop(d twitch.TimeBasedDrop) bool {
+	switch d.BenefitType {
+	case "BADGE", "EMOTE":
+		return true
 	}
 	return false
 }

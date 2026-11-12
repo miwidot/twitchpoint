@@ -82,6 +82,17 @@ func (s *Service) autoClaimWith(campaigns []twitch.DropCampaign, claimer dropCla
 				claimedSeen++
 				continue
 			}
+			// The campaign gate above is an ANY-match: a campaign mixing a
+			// badge with a game item passes it even while unlinked. The game
+			// item still needs the publisher account link, so skip just that
+			// drop and keep the campaign open. Claiming it would risk Twitch
+			// accepting the call without granting anything, after which the
+			// campaign could be marked completed carrying a reward the user
+			// never received.
+			if !c.IsAccountConnected && !isBadgeOrEmoteDrop(*d) {
+				allClaimed = false
+				continue
+			}
 			if d.IsComplete() && d.DropInstanceID != "" {
 				if !autoClaim {
 					// Drop is claimable but auto-claim is off —

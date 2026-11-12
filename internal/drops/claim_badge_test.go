@@ -44,3 +44,32 @@ func TestAutoClaim_GameRewardStillNeedsAccountLink(t *testing.T) {
 		t.Fatalf("unlinked game-reward campaign was claimed (calls=%v)", claimer.calls)
 	}
 }
+
+// A campaign mixing a badge with a game item, still unlinked, is the case the
+// campaign-level gate alone gets wrong: hasBadgeOrEmoteBenefit is an ANY-match,
+// so the campaign passes it. Only the badge may be claimed, the game item has
+// to wait for the account link, and the campaign must stay open.
+func TestAutoClaim_MixedUnlinkedCampaignClaimsOnlyTheBadge(t *testing.T) {
+	cfg := &config.Config{AutoClaim: true}
+	s := newServiceForClaimTest(cfg)
+	claimer := &stubClaimer{}
+	campaigns := []twitch.DropCampaign{{
+		ID: "mixed", Status: "ACTIVE", IsAccountConnected: false,
+		EndAt: time.Now().Add(time.Hour),
+		Drops: []twitch.TimeBasedDrop{
+			{ID: "d-badge", Name: "Badge", BenefitType: "BADGE",
+				RequiredMinutesWatched: 15, CurrentMinutesWatched: 15, DropInstanceID: "i-badge"},
+			{ID: "d-game", Name: "Game Item", BenefitType: "DIRECT_ENTITLEMENT",
+				RequiredMinutesWatched: 30, CurrentMinutesWatched: 30, DropInstanceID: "i-game"},
+		},
+	}}
+
+	s.autoClaimWith(campaigns, claimer)
+
+	if len(claimer.calls) != 1 || claimer.calls[0] != "i-badge" {
+		t.Fatalf("expected only the badge to be claimed, got calls=%v", claimer.calls)
+	}
+	if cfg.IsCampaignCompleted("mixed") {
+		t.Fatal("campaign marked completed while the game item is still unclaimed")
+	}
+}
