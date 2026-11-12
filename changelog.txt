@@ -1,3 +1,66 @@
+== 2026-11-13 03:23 == Bump: v2.5.1 → v2.5.2 ==
+
+Badge and emote drops are claimed again on campaigns without an account
+link (#29). Thanks to 1p0d.
+
+The bug: autoClaimWith() skipped every campaign with
+IsAccountConnected == false. A badge or emote has no game account to
+connect — Twitch grants it on the Twitch account itself — so such
+campaigns were farmed to 100% and then never claimed.
+
+This was an inconsistency, not a deliberate gate. The same exemption
+already existed twice, via the same helper:
+  - selector.go:170   filterEligibleCampaigns keeps unlinked badge/emote
+                      campaigns in the pool
+  - rows.go:147       BuildRows shows them in the UI
+So the selector picked the campaign, the dashboard listed it, the watcher
+earned the minutes, and the claim path alone still demanded a link. The
+BenefitType field comment in internal/twitch/drops.go:45 had already
+documented the rationale ("badges/emotes are Twitch-side rewards, no
+publisher account needed"); the claim path was simply the third site and
+never got it.
+
+Verified rather than assumed: the contributor's test file, dropped onto
+the previous main unchanged, fails with
+"badge drop of an unlinked campaign not claimed (calls=[])", while the
+companion test asserting that game rewards still require a link passes
+there — a real regression guard. BenefitType comes from distributionType,
+confirmed present in live Twitch responses during the v2.5.0 review.
+
+Tightened before merge: gate per drop, not per campaign
+  hasBadgeOrEmoteBenefit is an ANY-match and the submitted gate sat at
+  campaign level, so a campaign MIXING a badge with a game item passed it
+  while unlinked — and the claim loop had no per-drop check. A probe
+  confirmed both were claimed (ClaimDrop calls = [i-badge i-game]).
+
+  Harmless when Twitch rejects the call: it is logged and allClaimed
+  stays false, so no completion. But if Twitch accepts it without
+  granting anything, the drop is marked claimed and the campaign can be
+  marked completed carrying a reward the user never received — the
+  v2.1.5 / v2.3.1 failure class. The !c.InInventory guard from v2.3.1
+  blocks the common path, which is why this was narrow rather than
+  urgent, but it was still open.
+
+  The exemption now lives in the drop loop:
+      if !c.IsAccountConnected && !isBadgeOrEmoteDrop(*d) {
+          allClaimed = false
+          continue
+      }
+  Only badge/emote drops are claimed on an unlinked campaign, and the
+  campaign stays open while a game item is unclaimed.
+
+  New helper isBadgeOrEmoteDrop is now the single place that knows which
+  benefit types are Twitch-side rewards. hasBadgeOrEmoteBenefit and
+  isBadgeEmoteOnly both delegate to it instead of repeating the "BADGE" /
+  "EMOTE" literals in three separate switches.
+
+  Third test added for the mixed case: only the badge is claimed, and the
+  campaign is not marked completed. All of the contributor's original
+  tests pass unchanged.
+
+Files: cmd/twitchpoint/main.go, internal/drops/{inventory.go,selector.go,
+rewardfilter.go,claim_badge_test.go}
+
 == 2026-11-11 02:52 == Bump: v2.5.0 → v2.5.1 ==
 
 badge_emote_last (#28). Thanks to FadingToJosh.
