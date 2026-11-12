@@ -26,12 +26,10 @@ const (
 func isBadgeEmoteOnly(c twitch.DropCampaign) bool {
 	seen := false
 	for _, d := range c.Drops {
-		switch d.BenefitType {
-		case "BADGE", "EMOTE":
-			seen = true
-		default:
+		if !isBadgeOrEmoteDrop(d) {
 			return false
 		}
+		seen = true
 	}
 	return seen
 }
