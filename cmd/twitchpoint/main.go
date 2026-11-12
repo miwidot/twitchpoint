@@ -17,7 +17,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/web"
 )
 
-const appVersion = "2.5.2"
+const appVersion = "2.6.0-beta.1"
 
 func main() {
 	web.Version = appVersion
@@ -25,7 +25,7 @@ func main() {
 	addChannel := flag.String("add-channel", "", "Add a channel to config (validates against Twitch + persists ID) and exit")
 	removeChannel := flag.String("remove-channel", "", "Remove a channel from config and exit (use for renamed/deleted channels)")
 	setToken := flag.String("token", "", "Set auth token and exit")
-	forceLogin := flag.Bool("login", false, "Force re-login via Twitch Device Code OAuth")
+	forceLogin := flag.Bool("login", false, "Force re-login via Twitch OAuth in your browser")
 	headless := flag.Bool("headless", false, "Run without TUI (for Docker/servers)")
 	flag.Parse()
 
@@ -42,8 +42,23 @@ func main() {
 	// time. See internal/twitch/clienttype.go.
 	if cfg.GetTVClientMode() {
 		twitch.SetActiveClient(twitch.ClientTV)
-		fmt.Println("EXPERIMENTAL: using the Smart-TV Twitch client (tv_client_mode).")
-		fmt.Println("Campaign discovery is limited to games listed in games_to_watch.")
+		fmt.Println("WARNING: tv_client_mode is DEPRECATED and does not work.")
+		fmt.Println("Smart-TV tokens log in, but Twitch returns an empty campaign list for")
+		fmt.Println("them and credits no watch time — it farms nothing. It only existed")
+		fmt.Println("because the Android device-code login had broken; --login now uses the")
+		fmt.Println("browser OAuth flow instead, which mints a working Android token.")
+		fmt.Println("Set tv_client_mode to false and run with --login.")
+		fmt.Println()
+	}
+
+	// TWITCH_TOKEN wins over the stored token. This is the supported way to
+	// run headless or in a container: the browser login cannot happen inside
+	// a container, so the user logs in anywhere and passes the token in. It
+	// is deliberately NOT written to the config — an env-supplied secret
+	// should stay in the environment.
+	if envToken := os.Getenv("TWITCH_TOKEN"); envToken != "" {
+		cfg.SetAuthToken(envToken)
+		fmt.Println("Using the auth token from the TWITCH_TOKEN environment variable (not saved to config).")
 	}
 
 	// Handle --token flag (manual token override)
@@ -105,10 +120,11 @@ func main() {
 
 	// Handle --login flag (force re-login via Device Code OAuth)
 	if *forceLogin {
-		token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
+		token, err := twitch.BrowserLogin(twitch.ActiveClient().ClientID, os.Stdin, os.Stdout)
 		if err != nil {
 			fatalf("Login failed: %v", err)
 		}
+		reportTokenIdentity(token)
 		cfg.SetAuthToken(token)
 		if err := cfg.Save(); err != nil {
 			fatalf("Failed to save config: %v", err)
@@ -131,10 +147,11 @@ func main() {
 			fmt.Println("(Config is searched in: the exe's folder, the current folder, then %APPDATA%\\twitchpoint)")
 		}
 		fmt.Println()
-		token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
+		token, err := twitch.BrowserLogin(twitch.ActiveClient().ClientID, os.Stdin, os.Stdout)
 		if err != nil {
 			fatalf("Login failed: %v", err)
 		}
+		reportTokenIdentity(token)
 		cfg.SetAuthToken(token)
 		if err := cfg.Save(); err != nil {
 			fatalf("Failed to save config: %v", err)
@@ -143,6 +160,13 @@ func main() {
 		fmt.Println()
 	}
 
+	// Check the stored token's identity before starting. This matters most
+	// for a token that predates this build: anyone who logged in via the
+	// Smart-TV route has a token that is accepted everywhere and credits
+	// nothing, and without this line there is no hint why the miner farms
+	// all night for zero drops (issue #21). One HTTP call, once per start.
+	warnOnTokenMismatch(cfg.GetAuthToken())
+
 	// Start farmer
 	f := farmer.New(cfg, appVersion)
 	if err := f.Start(); err != nil {
@@ -150,11 +174,12 @@ func main() {
 		if strings.Contains(err.Error(), "auth validation failed") {
 			fmt.Println("Auth token expired or invalid (Client-ID changed). Re-authenticating...")
 			fmt.Println()
-			token, err := twitch.DeviceCodeLogin(twitch.ActiveClient().ClientID)
+			token, err := twitch.BrowserLogin(twitch.ActiveClient().ClientID, os.Stdin, os.Stdout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Re-login failed: %v\n", err)
 				exitWithPause(1)
 			}
+			reportTokenIdentity(token)
 			cfg.SetAuthToken(token)
 			if err := cfg.Save(); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to save config: %v\n", err)
@@ -230,4 +255,51 @@ func exitWithPause(code int) {
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 	}
 	os.Exit(code)
+}
+
+// reportTokenIdentity tells the user what the token they just obtained
+// actually is, and warns when its minting client does not match the identity
+// we send on every request.
+//
+// This check exists because that mismatch has no other symptom: Twitch
+// accepts the token, serves campaigns and inventory, and simply never
+// credits watch time. The miner then runs all night and collects nothing,
+// with nothing in the logs to explain it. A validation failure here is only
+// reported, never fatal — the token may still be fine and the farmer's own
+// startup check is the authoritative one.
+func reportTokenIdentity(token string) {
+	info, err := twitch.ValidateToken(token)
+	if err != nil {
+		fmt.Printf("Note: could not verify the new token with Twitch: %v\n", err)
+		return
+	}
+	fmt.Printf("Logged in as %s (user ID %s).\n", info.Login, info.UserID)
+	if warning := twitch.ClientMismatchWarning(info, twitch.ActiveClient()); warning != "" {
+		fmt.Println()
+		fmt.Println("WARNING: " + warning)
+		fmt.Println()
+	}
+}
+
+// warnOnTokenMismatch reports a stored token whose minting client does not
+// match the identity we send, and stays silent otherwise.
+//
+// Deliberately non-fatal and quiet on error: a network blip at startup must
+// not stop the miner, and the farmer's own GetUserInfo check right after
+// this is the authoritative test of whether the token works at all. This
+// only answers the question that check cannot — WHICH client the token
+// belongs to.
+func warnOnTokenMismatch(token string) {
+	if token == "" {
+		return
+	}
+	info, err := twitch.ValidateToken(token)
+	if err != nil {
+		return // farmer.Start reports a genuinely dead token with context
+	}
+	if warning := twitch.ClientMismatchWarning(info, twitch.ActiveClient()); warning != "" {
+		fmt.Println()
+		fmt.Println("WARNING: " + warning)
+		fmt.Println()
+	}
 }

@@ -16,19 +16,32 @@ type ClientType struct {
 // ClientAndroid is the Twitch Android app. It bypasses the integrity-token
 // requirement and is the only client whose tokens see the full campaign
 // catalogue through ViewerDropsDashboard — which is why it stays the
-// default. Twitch disabled its device-code login in September 2026, so new
-// tokens can no longer be minted this way; existing ones keep working.
+// default.
+//
+// Twitch disabled this client's DEVICE-CODE grant in September 2026
+// (POST /oauth2/device answers 400 "invalid client", still true on
+// 2026-11-13). Its IMPLICIT grant kept working, so fresh tokens are minted
+// through the browser flow instead — see BrowserLogin in browserlogin.go.
 var ClientAndroid = ClientType{
 	Name:      "android",
 	ClientID:  "kd1unb4b3q4t58fwlpcbzcbnm76a8fp",
 	UserAgent: "Dalvik/2.1.0 (Linux; U; Android 16; SM-S911B Build/TP1A.220624.014) tv.twitch.android.app/25.3.0/2503006",
 }
 
-// ClientTV is the Twitch Smart-TV/console client. Its device-code login
-// still works, which makes it the only way to obtain a fresh token after
-// the September 2026 change — but tokens it mints get `dropCampaigns: null`
-// from ViewerDropsDashboard, so campaign discovery has to go the per-game
-// route instead (see discoverCampaignsByGame).
+// ClientTV is the Twitch Smart-TV/console client. DEPRECATED: it does not
+// work and should not be used.
+//
+// Its device-code login still succeeds, which is why it looked like a way
+// back in after the September 2026 change. But tokens it mints get
+// `dropCampaigns: null` from ViewerDropsDashboard AND earn no watch time,
+// so the miner runs and collects nothing — confirmed by field reports on
+// issue #21 (24 hours, zero drops) and by upstream reaching the same
+// conclusion. The per-game discovery path it needs
+// (discoverCampaignsByGame) is kept so existing configs keep starting, but
+// BrowserLogin is the supported way to get a token now.
+//
+// Retained rather than removed so a config with tv_client_mode set still
+// loads; main.go prints a deprecation warning when it is active.
 var ClientTV = ClientType{
 	Name:      "tv",
 	ClientID:  "ue6666qo983tsx6so1t0vnawi233wa",

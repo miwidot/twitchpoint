@@ -1,3 +1,105 @@
+== 2026-11-13 03:39 == Bump: v2.5.2 → v2.6.0-beta.1 ==
+
+BETA: fresh Twitch login works again. Browser OAuth (implicit grant)
+replaces the dead device-code flow. Addresses issue #21.
+
+Background
+  Twitch disabled the device-code grant for the Android client in
+  September 2026; POST /oauth2/device has answered
+  {"status":400,"message":"invalid client"} ever since (re-verified
+  2026-11-13 — still 400). That left anyone whose token was revoked, for
+  example by a password change, with no way back in.
+
+  Upstream closed the equivalent report on 2026-10-25 by switching to the
+  IMPLICIT grant with the SAME Android client ID, driving a browser to get
+  through the bot-protected login page.
+
+  The key realisation for us: the browser does not have to be one WE
+  drive. The user's own browser is a real browser and is usually already
+  signed in to Twitch. So no browser automation and no new dependency —
+  print the URL, the user opens it, Twitch parks the token in the
+  address-bar fragment, the user pastes it back.
+
+  Verified against live Twitch before writing any code:
+    - /oauth2/authorize with the Android client ID, redirect_uri
+      https://www.twitch.tv/ and response_type=token answers HTTP 302 to
+      the login page. The flow is live.
+    - Our scope list is accepted. Control: a deliberately bogus scope
+      answers HTTP 400 "invalid scope requested", so scopes really are
+      validated at that endpoint and ours passing is meaningful. This
+      matters because dropping the scopes would still log in and silently
+      cost channel points and chat.
+    - POST /oauth2/device still 400. Device code is not coming back on its
+      own.
+
+Browser login (internal/twitch/browserlogin.go)
+  - BrowserLoginURL builds the authorize URL. redirect_uri must be exactly
+    "https://www.twitch.tv/" INCLUDING the trailing slash — that is what
+    the Android client has registered, and anything else fails after the
+    user has already signed in.
+  - ExtractAccessToken accepts the whole redirected URL (what selecting
+    the address bar gives you), the fragment alone, or a bare token. The
+    login URL pasted back by mistake is correctly rejected.
+  - Blank input is re-prompted rather than treated as failure: pressing
+    Enter before the browser finished redirecting is the most likely
+    mistake, and aborting would mean redoing the whole flow. Unrecognised
+    input is reported and re-prompted too.
+  - EOF (a pipe, a container with no TTY) fails with an error that points
+    at TWITCH_TOKEN instead of looping forever.
+  - The browser is opened automatically where possible; failure is
+    reported and the flow continues by hand. On Windows via
+    rundll32 url.dll,FileProtocolHandler rather than `cmd /c start`,
+    because the URL's & separators would be parsed as command separators.
+  - browserOpener is a package var so tests exercise the flow without
+    launching a browser on the machine running them.
+
+Token identity check (internal/twitch/validate.go)
+  ValidateToken calls /oauth2/validate, which is the only endpoint that
+  reveals which client MINTED a token. ClientMismatchWarning compares that
+  against the identity we send.
+
+  This exists because the mismatch has no other symptom: Twitch accepts
+  the token, serves campaigns and inventory normally, and never credits
+  watch time. The miner then runs all night and collects nothing, with
+  nothing in the logs to explain it — exactly what the two reporters on
+  issue #21 experienced. Checked after every login AND at startup, since
+  the startup case covers tokens that predate this build. Non-fatal by
+  design; the farmer's own GetUserInfo check remains authoritative for
+  whether a token works at all.
+
+TWITCH_TOKEN environment variable
+  Now the supported way to run headless or in a container, where a browser
+  login cannot happen: log in anywhere, pass the token in. It overrides
+  the stored token and is deliberately NOT written to the config — an
+  env-supplied secret stays in the environment.
+
+tv_client_mode is DEPRECATED
+  It does not work. Smart-TV tokens log in, but Twitch returns an empty
+  campaign list for them and credits no watch time. Two users on issue #21
+  confirmed this in the field (24 hours, zero drops, listed campaigns not
+  matching their inventory), and upstream reached the same conclusion —
+  the maintainer said the SmartBox switch "won't actually fix the issue".
+  The earlier assessment here, that it was merely worse but functional,
+  was wrong.
+
+  Kept, not removed, so existing configs still load; main.go prints a
+  deprecation warning when the flag is active and points at --login.
+
+DeviceCodeLogin is kept too, unused, with a note. The flow itself is
+correct and still works for clients Twitch has not restricted, so it is
+ready if this changes back.
+
+BETA because the one step that cannot be tested without a real Twitch
+login is the login itself. Everything around it is verified: the authorize
+endpoint, the scope list, token extraction, the re-prompt paths, the env
+var, both warnings. What needs field confirmation is that a token obtained
+this way CREDITS WATCH TIME — not merely that login succeeds. A
+mismatched client logs in fine and earns nothing, which is the whole
+reason the identity check was added.
+
+Files: cmd/twitchpoint/main.go, internal/twitch/{browserlogin.go,
+browserlogin_test.go,validate.go,clienttype.go,auth.go}
+
 == 2026-11-13 03:23 == Bump: v2.5.1 → v2.5.2 ==
 
 Badge and emote drops are claimed again on campaigns without an account

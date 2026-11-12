@@ -45,6 +45,12 @@ type tokenErrorResponse struct {
 // DeviceCodeLogin orchestrates the full TV Device Code OAuth flow.
 // It requests a device code, prints instructions for the user, and polls
 // until the user authorizes or the code expires.
+//
+// NO LONGER USED for the Android client: Twitch disabled that client's
+// device-code grant in September 2026 and requestDeviceCode now fails with
+// 400 "invalid client" (re-verified 2026-11-13). BrowserLogin replaced it.
+// Kept because the flow itself is correct and still works for clients
+// Twitch has not restricted, so this is ready if that changes back.
 func DeviceCodeLogin(clientID string) (string, error) {
 	dcr, err := requestDeviceCode(clientID)
 	if err != nil {
