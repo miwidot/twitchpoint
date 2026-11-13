@@ -1,3 +1,27 @@
+== 2026-11-14 00:14 == Bump: v2.6.0-beta.1 → v2.6.0-beta.2 ==
+
+Second beta of the browser-login line. Everything from beta.1 is
+unchanged; this adds the two items below.
+
+  1. Channel-points balance is fetched again. It had been failing on
+     every call since Twitch removed the `community` root field from its
+     GraphQL schema, and both callers discarded the error, so nothing was
+     ever logged. Balances only moved when a PubSub points event happened
+     to carry a new one — which hid the breakage and left every channel
+     that was not actively earning sitting at 0.
+
+  2. Watch-streak column in the TUI and the web dashboard. Shows whether
+     a channel is hunting the current broadcast's WATCH_STREAK bonus,
+     waiting for a slot, already got it, or passed the target without
+     one.
+
+Why a beta and not 2.6.0: the thing this line exists for — logging in
+with a browser-obtained token and having Twitch actually credit watch
+minutes — is still unconfirmed by anyone. Issue #21 stays open until a
+reporter says the minutes move. The two additions here are verified
+(see the entries below), the login path is not.
+
+Upgrade note: nothing to do. No config change, no new flags.
 == 2026-11-13 23:59 == Feature: watch-streak column in the TUI and the web dashboard ==
 
 Both front-ends now show where each channel stands in the hunt for the
