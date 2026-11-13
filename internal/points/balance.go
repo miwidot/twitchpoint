@@ -35,9 +35,24 @@ func (s *Service) BalanceRefreshLoop(stopCh <-chan struct{}) {
 // the GQL endpoint enforces — we'd otherwise burst N requests in
 // roughly the same millisecond and risk a 429.
 func (s *Service) RefreshBalances() {
-	for _, ch := range s.channels.States() {
+	states := s.channels.States()
+
+	// Balance failures are counted and reported once per pass instead of
+	// per channel. With ~40 channels the per-channel line would bury
+	// everything else in the log, and the cause is nearly always shared by
+	// all of them (dead token, schema change, endpoint down) — so one
+	// summary carries the same information.
+	var failed int
+	var lastErr error
+
+	for _, ch := range states {
 		balance, err := s.gql.GetChannelPointsBalance(ch.Login)
-		if err == nil && balance > 0 {
+		if err != nil {
+			failed++
+			lastErr = err
+			s.debugLog("balance refresh failed for %s: %v", ch.Login, err)
+		} else {
+			// Set even when zero — a genuine zero is a fact worth showing.
 			ch.SetBalance(balance)
 		}
 
@@ -50,5 +65,10 @@ func (s *Service) RefreshBalances() {
 		}
 
 		time.Sleep(500 * time.Millisecond)
+	}
+
+	if failed > 0 {
+		s.log("Balance refresh: %d of %d channels failed, last error: %v",
+			failed, len(states), lastErr)
 	}
 }

@@ -450,14 +450,19 @@ func (f *Farmer) addChannelWithInfo(info *twitch.ChannelInfo) error {
 		f.addLog("%s is offline", info.DisplayName)
 	}
 
-	// Fetch initial balance
+	// Fetch initial balance. A failure is logged, not swallowed: without
+	// it the balance stays at zero until the channel happens to earn
+	// points, which looks like a channel that simply has none.
 	channelLogin := info.Login
 	go func() {
 		balance, err := f.gql.GetChannelPointsBalance(channelLogin)
-		if err == nil && balance > 0 {
-			state.SetBalance(balance)
-			f.addLog("%s balance: %d points", info.DisplayName, balance)
+		if err != nil {
+			f.addLog("Could not fetch %s balance: %v", info.DisplayName, err)
+			return
 		}
+		// Set even when zero — a genuine zero is a fact worth showing.
+		state.SetBalance(balance)
+		f.addLog("%s balance: %d points", info.DisplayName, balance)
 	}()
 
 	return nil

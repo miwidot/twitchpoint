@@ -44,11 +44,18 @@ const (
 		}
 	}`
 
+	// queryChannelPointsBalance reads the viewer's own points balance for
+	// one channel.
+	//
+	// The root field is `channel(name:)`. It used to be `community(name:)`,
+	// which Twitch has since removed from the schema: that version answered
+	// `Cannot query field "community" on type "Query"` on EVERY call, so the
+	// balance fetch had been failing continuously (verified 2026-11-13).
+	// The result shape differs as well — `communityPoints.balance` is the
+	// integer itself here, not an object carrying availablePoints.
 	queryChannelPointsBalance = `query ChannelPointsContext($channelLogin: String!) {
-		community(name: $channelLogin) {
-			channel {
-				self { communityPoints { balance { availablePoints } } }
-			}
+		channel(name: $channelLogin) {
+			self { communityPoints { balance } }
 		}
 	}`
 )
@@ -657,7 +664,12 @@ func (g *GQLClient) JoinRaid(raidID string) error {
 	return nil
 }
 
-// GetChannelPointsBalance returns the current points balance for a channel.
+// GetChannelPointsBalance returns the viewer's current points balance for
+// a channel.
+//
+// Every failure is returned rather than reported as a zero balance: this
+// number is what the TUI and the web dashboard display, and a silent zero
+// is indistinguishable from a real one. Callers are expected to log it.
 func (g *GQLClient) GetChannelPointsBalance(channelLogin string) (int, error) {
 	req := &GQLRequest{
 		Query: queryChannelPointsBalance,
@@ -668,45 +680,49 @@ func (g *GQLClient) GetChannelPointsBalance(channelLogin string) (int, error) {
 
 	resp, err := g.do(req)
 	if err != nil {
-		return 0, fmt.Errorf("get points balance: %w", err)
+		return 0, fmt.Errorf("get points balance for %s: %w", channelLogin, err)
 	}
 
-	community, ok := resp.Data["community"]
-	if !ok || community == nil {
-		// Try alternative path
-		if ch, ok := resp.Data["channel"]; ok && ch != nil {
-			if chMap, ok := ch.(map[string]interface{}); ok {
-				if self, ok := chMap["self"]; ok && self != nil {
-					if selfMap, ok := self.(map[string]interface{}); ok {
-						if cp, ok := selfMap["communityPoints"]; ok && cp != nil {
-							if cpMap, ok := cp.(map[string]interface{}); ok {
-								return getInt(cpMap, "balance"), nil
-							}
-						}
-					}
-				}
-			}
-		}
-		return 0, nil
+	balance, err := parsePointsBalance(resp.Data)
+	if err != nil {
+		return 0, fmt.Errorf("get points balance for %s: %w", channelLogin, err)
 	}
+	return balance, nil
+}
 
-	if communityMap, ok := community.(map[string]interface{}); ok {
-		if channel, ok := communityMap["channel"]; ok && channel != nil {
-			if channelMap, ok := channel.(map[string]interface{}); ok {
-				if self, ok := channelMap["self"]; ok && self != nil {
-					if selfMap, ok := self.(map[string]interface{}); ok {
-						if balance, ok := selfMap["balance"]; ok && balance != nil {
-							if balMap, ok := balance.(map[string]interface{}); ok {
-								return getInt(balMap, "availablePoints"), nil
-							}
-						}
-					}
-				}
-			}
-		}
+// parsePointsBalance walks the ChannelPointsContext response. Split out from
+// the request so the response shape — the part Twitch changes without
+// warning — is testable without a network call.
+//
+// Each level is reported separately because the levels mean different
+// things: a missing `channel` is a bad login or a schema change, while a
+// null `self` is a viewer-context problem (no auth, or no access to that
+// channel) and a null `communityPoints` means the channel has points
+// switched off. Collapsing them into one message would throw away the only
+// clue to which it was.
+func parsePointsBalance(data map[string]interface{}) (int, error) {
+	ch, ok := data["channel"].(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("no channel object in response (unknown login, or the schema moved)")
 	}
-
-	return 0, nil
+	self, ok := ch["self"].(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("channel has no viewer context (self is null — token not accepted for this channel?)")
+	}
+	cp, ok := self["communityPoints"].(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("no communityPoints for this channel (channel points disabled?)")
+	}
+	// JSON numbers decode to float64. An int case is accepted too so a
+	// future decoder change cannot turn a good balance into an error.
+	switch n := cp["balance"].(type) {
+	case float64:
+		return int(n), nil
+	case int:
+		return n, nil
+	default:
+		return 0, fmt.Errorf("balance missing or not a number (%T)", cp["balance"])
+	}
 }
 
 // GetGameStreams queries the game directory for live streams.

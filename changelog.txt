@@ -1,3 +1,61 @@
+== 2026-11-13 23:51 == Fix: channel-points balance was never fetched ==
+
+GetChannelPointsBalance has been failing on every single call. Twitch
+removed the `community` root field from its GraphQL schema, and the query
+still asked for it:
+
+  query ChannelPointsContext($channelLogin: String!) {
+    community(name: $channelLogin) { ... }
+  }
+  -> gql error: Cannot query field "community" on type "Query"
+
+Both callers threw the error away (`if err == nil && balance > 0`), so
+nothing was ever logged. Evidence: across the whole of November the debug
+logs contain ZERO "<channel> balance: N points" lines, while 662
+"Balance:" lines arrived from PubSub points events on 2026-11-13 alone.
+
+That is why it went unnoticed: PubSub points-earned events carry the new
+balance and kept filling the column in. The visible cost was a balance of
+0 at startup, and a stale or zero balance for every channel that happened
+not to earn points.
+
+Found while probing the schema for a watch-streak field: the probe
+rebuilt our own query by hand and Twitch rejected it.
+
+Fixed
+  - Query now uses the current path, verified live on 2026-11-13:
+      channel(name: $channelLogin) { self { communityPoints { balance } } }
+    Note the shape changed too: balance is the integer itself, no longer
+    an object with availablePoints.
+  - Response parsing moved into parsePointsBalance, so the part Twitch
+    changes without warning is testable without a network call. Each
+    level reports its own diagnosis — a missing `channel` is a bad login
+    or another schema move, a null `self` is a viewer-context problem, a
+    null `communityPoints` means the channel has points switched off.
+  - No more silent zero: every failure is returned and logged. A genuine
+    zero balance is now stored as zero instead of being skipped by the
+    `balance > 0` guard, because a real zero is a fact worth showing.
+  - Startup fetch logs the failure per channel. The 5-minute refresh pass
+    counts failures and logs ONE summary line, since with ~40 channels a
+    per-channel line would bury the log and the cause is nearly always
+    shared by all of them.
+
+Verified
+  - Unit tests on the live response shape, a genuine zero, and five
+    failure modes, including the old nested-balance shape, which must
+    fail loudly rather than report zero.
+  - A test asserts the query selects exactly what the parser reads. These
+    two had drifted apart once already, which is the whole bug.
+  - End to end through the real GQL client against live Twitch: five
+    channels, five real balances (159830, 321424, 139750, 226320,
+    386071). Before the fix all five returned the schema error.
+
+Files
+  internal/twitch/gql.go              query + parsePointsBalance
+  internal/twitch/pointsbalance_test.go  NEW
+  internal/farmer/farmer.go           startup fetch logs failures
+  internal/points/balance.go          refresh pass logs a summary
+
 == 2026-11-13 03:39 == Bump: v2.5.2 → v2.6.0-beta.1 ==
 
 BETA: fresh Twitch login works again. Browser OAuth (implicit grant)
