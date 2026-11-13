@@ -693,7 +693,7 @@ func (m Model) viewChannelsTab(stats farmer.Stats) string {
 		scroll = maxScroll
 	}
 
-	sections = append(sections, renderChannelTableScrollable(visibleChannels, m.width, channelRows, scroll))
+	sections = append(sections, renderChannelTableScrollable(visibleChannels, m.farmer.StreakStatus, m.width, channelRows, scroll))
 	sections = append(sections, "")
 	sections = append(sections, renderStatsBar(stats, m.width))
 	sections = append(sections, "")

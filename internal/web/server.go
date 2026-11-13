@@ -186,6 +186,19 @@ type ChannelResponse struct {
 	DropProgress  int    `json:"drop_progress"`
 	DropRequired  int    `json:"drop_required"`
 	IsTemporary   bool   `json:"is_temporary"`
+
+	// Watch-streak status for the CURRENT broadcast. StreakPhase is the
+	// stable key the dashboard styles on ("hunting", "queued", "claimed",
+	// "no_bonus", or empty for nothing to show) and StreakLabel the text
+	// to print — produced server-side so the dashboard and the TUI cannot
+	// drift into different wording. The two second counts are included so
+	// the dashboard can draw a progress bar without hardcoding the
+	// rotation's target. Note this is NOT a count of consecutive streams:
+	// Twitch does not expose that (see internal/points/streak.go).
+	StreakPhase      string `json:"streak_phase"`
+	StreakLabel      string `json:"streak_label"`
+	StreakWatchedSec int    `json:"streak_watched_sec"`
+	StreakTargetSec  int    `json:"streak_target_sec"`
 }
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +207,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		channels := s.farmer.GetChannels()
 		resp := make([]ChannelResponse, len(channels))
 		for i, ch := range channels {
+			streak := s.farmer.StreakStatus(ch)
 			resp[i] = ChannelResponse{
 				Login:         ch.Login,
 				DisplayName:   ch.DisplayName,
@@ -211,6 +225,11 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 				DropProgress:  ch.DropProgress,
 				DropRequired:  ch.DropRequired,
 				IsTemporary:   ch.IsTemporary,
+
+				StreakPhase:      streak.Phase.String(),
+				StreakLabel:      streak.Label(),
+				StreakWatchedSec: int(streak.Watched.Seconds()),
+				StreakTargetSec:  int(streak.Target.Seconds()),
 			}
 		}
 		jsonResponse(w, resp)

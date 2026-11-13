@@ -955,6 +955,14 @@ func (f *Farmer) GetChannels() []channels.Snapshot {
 	return snapshots
 }
 
+// StreakStatus reports where a channel stands in the hunt for the current
+// broadcast's WATCH_STREAK bonus, for display by the TUI and the web UI.
+// Delegated to the points service because the answer depends on which
+// channel the drops watcher currently owns.
+func (f *Farmer) StreakStatus(snap channels.Snapshot) points.StreakStatus {
+	return f.points.StreakStatus(snap)
+}
+
 // GetLogs returns the recent log entries.
 func (f *Farmer) GetLogs() []LogEntry {
 	f.logMu.RLock()

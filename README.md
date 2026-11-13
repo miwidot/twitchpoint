@@ -119,6 +119,27 @@ Three tabs: **Channels** / **Drops** / **Help**.
 | `Home` | Jump to top of channel table |
 | `End` | Jump to bottom of channel table |
 
+#### Streak Column
+
+The `Streak` column (TUI and Web Dashboard) shows where each channel
+stands in the hunt for the **current broadcast's** `WATCH_STREAK` bonus.
+Twitch pays that bonus once a broadcast has been watched long enough, so
+the miner holds a watch slot for a candidate until it gets there.
+
+| Cell | Meaning |
+|------|---------|
+| `8:12/12:00` | Holding a watch slot, accumulating the time the bonus needs |
+| `queued` | Streak candidate, waiting for a free watch slot |
+| `✓ claimed` | Bonus credited for this broadcast |
+| `no bonus` | Watched past the target and no bonus arrived — normal unless a streak was running |
+| `-` | Nothing to show: offline, or the channel is being watched for drops |
+
+This is **not** a count of consecutive streams. Twitch does not expose
+that number: it is absent from the channel-points data the API returns,
+and schema introspection is disabled, so the "N streams in a row" figure
+on the website cannot be read by any client. What Twitch does send is the
+bonus event itself, which is where `✓ claimed` comes from.
+
 ### Drops Tab
 
 A unified `j`/`k` cursor moves through three stacked panels (Drop Campaigns → Wanted Games → Settings). The cursor overflows panel boundaries — pressing `j` past the last campaign jumps to the first wanted game, and so on.

@@ -295,6 +295,24 @@
         }
         .game-cell.has-drop { color: var(--accent); }
 
+        /* Watch-streak cell. Only the two states worth acting on get a
+           colour — hunting (in progress) and claimed (done) — so a table
+           full of idle channels stays quiet. */
+        .streak {
+            display: inline-flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 76px;
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
+        }
+        .streak .streak-text { color: var(--text-dim); white-space: nowrap; }
+        .streak.hunting .streak-text { color: var(--accent); }
+        .streak.claimed .streak-text { color: var(--live); }
+        /* The rail is drawn only while hunting, where it actually moves. */
+        .streak-rail { height: 2px; background: var(--rule); overflow: hidden; }
+        .streak-rail > i { display: block; height: 100%; background: var(--accent); }
+
         .num { font-variant-numeric: tabular-nums; color: var(--text); }
         .num.pos { color: var(--live); }
         .num.muted { color: var(--text-dim); }
@@ -780,6 +798,7 @@
                                     <th>Channel</th>
                                     <th style="width:100px">Status</th>
                                     <th>Game</th>
+                                    <th style="width:110px">Streak</th>
                                     <th class="r" style="width:90px">Balance</th>
                                     <th class="r" style="width:80px">Earned</th>
                                     <th class="r" style="width:60px">Claims</th>
@@ -1127,7 +1146,7 @@
 
             if (list.length === 0) {
                 const tr = el('tr', null,
-                    el('td', { colspan: '8', style: 'padding:24px;text-align:center;color:var(--text-dim)', text: 'no channels — press N to add one' })
+                    el('td', { colspan: '9', style: 'padding:24px;text-align:center;color:var(--text-dim)', text: 'no channels — press N to add one' })
                 );
                 body.appendChild(tr);
                 $('#streams-meta').textContent = '0';
@@ -1151,6 +1170,33 @@
                     gameTd.appendChild(el('span', { class: 'game-cell', style: 'color:var(--text-dim)', text: '—' }));
                 }
 
+                // Watch-streak cell. streak_label comes from the server so
+                // this and the TUI always print the same wording; the phase
+                // key only drives colour. The tooltips explain each state,
+                // because "no bonus" is usually normal — Twitch pays the
+                // bonus only when a streak is actually being continued.
+                const streakTitles = {
+                    hunting:  "Hunting this broadcast's watch-streak bonus",
+                    queued:   'Streak candidate, waiting for a free watch slot',
+                    claimed:  'Watch-streak bonus credited for this broadcast',
+                    no_bonus: 'Watched past the streak target and no bonus arrived — normal unless a streak was running',
+                };
+                const streakTd = el('td');
+                const phase = c.streak_phase || '';
+                const streakWrap = el('span', {
+                    class: 'streak' + (phase ? ' ' + phase : ''),
+                    title: streakTitles[phase] || '',
+                });
+                streakWrap.appendChild(el('span', {
+                    class: 'streak-text',
+                    text: phase === 'claimed' ? '\u2713 claimed' : (c.streak_label || '\u2014'),
+                }));
+                if (phase === 'hunting' && c.streak_target_sec > 0) {
+                    const pct = Math.min(100, Math.round(c.streak_watched_sec * 100 / c.streak_target_sec));
+                    streakWrap.appendChild(el('span', { class: 'streak-rail' }, el('i', { style: 'width:' + pct + '%' })));
+                }
+                streakTd.appendChild(streakWrap);
+
                 const numCell = (val, posClass) => {
                     if (!val || val <= 0) return el('span', { class: 'num muted', text: '—' });
                     const s = el('span', { class: 'num' + (posClass ? ' pos' : ''), text: (posClass ? '+' : '') + fmtNumber(val) });
@@ -1167,6 +1213,7 @@
                         el('span', { class: 'status-text', text: statusLabel })
                     )),
                     gameTd,
+                    streakTd,
                     el('td', { class: 'r' }, numCell(c.balance, false)),
                     el('td', { class: 'r' }, numCell(c.earned, true)),
                     el('td', { class: 'r' }, c.claims > 0

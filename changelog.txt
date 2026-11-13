@@ -1,3 +1,82 @@
+== 2026-11-13 23:59 == Feature: watch-streak column in the TUI and the web dashboard ==
+
+Both front-ends now show where each channel stands in the hunt for the
+CURRENT broadcast's WATCH_STREAK bonus:
+
+  Cell          Meaning
+  8:12/12:00    holding a watch slot, accumulating the time the bonus needs
+  queued        streak candidate, waiting for a free watch slot
+  ✓ claimed     bonus credited for this broadcast
+  no bonus      watched past the target, no bonus arrived
+  -             nothing to show (offline, or owned by the drops watcher)
+
+What Twitch does and does not give us
+  The number the website shows — "N streams in a row" — is NOT available.
+  Probed live on 2026-11-13 against the type that carries the viewer's
+  points data (CommunityPointsProperties): watchStreak, watchStreaks,
+  streak, streaks, currentStreak, streakCount, watchStreakCount and
+  currentWatchStreak are all rejected by the schema. Introspection is
+  disabled, so there is no way to enumerate what does exist. The fields
+  that ARE there: balance, activeMultipliers, availableClaim,
+  lastViewedContent. Nothing streak-shaped.
+
+  What Twitch does send is the bonus EVENT, over PubSub with reason code
+  WATCH_STREAK — which the miner has consumed since the Streak-Hunt
+  rotation landed. So the display reports the hunt, not a counter. While
+  the miner is running that is the more useful of the two anyway: it
+  answers whether a streak is being chased and whether it will make it.
+
+Implementation
+  - internal/points/streak.go: StreakPhase, StreakStatus and the pure
+    describeStreak. Nothing here costs a request — every value comes from
+    state already kept. The target is the rotation's own
+    streakWatchTarget, carried in the status, so the display cannot use a
+    different 12 minutes than the allocator does.
+  - The phases mirror isStreakCandidate deliberately, and a test asserts
+    it: anything the rotation treats as a candidate shows as hunting or
+    queued, anything else shows as neither. If the UI and the allocator
+    ever disagree, the UI is lying about what the miner is doing.
+  - Label() lives in the points package, and the web API sends the
+    rendered label, so the TUI and the dashboard cannot drift into
+    different wording.
+  - Farmer.StreakStatus resolves the drops-owned channel, which the view
+    layer has no business knowing about. A drops channel reads "-"
+    rather than "queued", because the points rotation never gives it a
+    streak slot and promising one would be a lie.
+  - TUI: new 10-wide Streak column between Game and Balance. Only the two
+    states worth acting on get colour (hunting, claimed); the rest is
+    dim, so a table full of idle channels stays quiet.
+  - Web: four fields on /api/channels (streak_phase, streak_label,
+    streak_watched_sec, streak_target_sec), rendered with a 2px progress
+    rail that is drawn only while hunting, plus a tooltip per state —
+    "no bonus" needs the explanation that it is usually normal.
+
+Verified
+  - Unit tests for all five phases, including the two traps: a claim that
+    predates the current broadcast must NOT count (getting that wrong
+    would skip the hunt for every channel that ever earned a streak), and
+    a claimed drops channel still reports claimed.
+  - TUI test renders through the real row renderer, so a label too wide
+    for the column would be caught, and asserts the header and a row have
+    equal visible width — otherwise every column after the new one sits
+    under the wrong heading.
+  - Live run against Twitch with 6 channels: the two online channels
+    reported phase "hunting" with label "0:38/12:00", the four offline
+    ones reported empty. Same run confirmed the balance fix below: all
+    six channels showed real balances, including the four offline ones,
+    which under the old code would have stayed at 0.
+
+Files
+  internal/points/streak.go        NEW
+  internal/points/streak_test.go   NEW
+  internal/ui/components_test.go   NEW
+  internal/farmer/farmer.go        StreakStatus accessor
+  internal/ui/components.go        Streak column
+  internal/ui/app.go               passes the lookup
+  internal/web/server.go           four JSON fields
+  internal/web/static/index.html   cell, rail, tooltips
+  README.md                        Streak Column section
+
 == 2026-11-13 23:51 == Fix: channel-points balance was never fetched ==
 
 GetChannelPointsBalance has been failing on every single call. Twitch

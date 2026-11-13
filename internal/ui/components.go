@@ -9,6 +9,7 @@ import (
 	"github.com/miwi/twitchpoint/internal/channels"
 	"github.com/miwi/twitchpoint/internal/drops"
 	"github.com/miwi/twitchpoint/internal/farmer"
+	"github.com/miwi/twitchpoint/internal/points"
 )
 
 // renderTabBar renders the top-level tab navigation strip. The active tab
@@ -45,11 +46,14 @@ func renderHeader(username string, uptime time.Duration) string {
 
 // Channel-table column widths. Used by both the header and row renderers.
 const (
-	chColPri       = 4
-	chColName      = 16
-	chColStatus    = 10
-	chColWatch     = 10
-	chColGame      = 18
+	chColPri    = 4
+	chColName   = 16
+	chColStatus = 10
+	chColWatch  = 10
+	chColGame   = 18
+	// chColStreak fits the widest cell the streak column can hold,
+	// "8:12/12:00" — see points.StreakStatus.Label.
+	chColStreak    = 10
 	chColBalance   = 12
 	chColEarned    = 10
 	chColClaims    = 7
@@ -82,21 +86,24 @@ func padCell(content string, width int, alignRight bool) string {
 // row at the end.
 func channelTableHeader() string {
 	cells := []string{
-		padCell("Pri",        chColPri,       false),
-		padCell("Channel",    chColName,      false),
-		padCell("Status",     chColStatus,    false),
-		padCell("Watching",   chColWatch,     false),
-		padCell("Game",       chColGame,      false),
-		padCell("Balance",    chColBalance,   true),
-		padCell("Earned",     chColEarned,    true),
-		padCell("Claims",     chColClaims,    true),
+		padCell("Pri", chColPri, false),
+		padCell("Channel", chColName, false),
+		padCell("Status", chColStatus, false),
+		padCell("Watching", chColWatch, false),
+		padCell("Game", chColGame, false),
+		padCell("Streak", chColStreak, false),
+		padCell("Balance", chColBalance, true),
+		padCell("Earned", chColEarned, true),
+		padCell("Claims", chColClaims, true),
 		padCell("Last Claim", chColLastClaim, false),
 	}
 	return tableHeaderStyle.Render("  " + strings.Join(cells, " "))
 }
 
-// renderChannelRow renders a single channel row.
-func renderChannelRow(ch channels.Snapshot) string {
+// renderChannelRow renders a single channel row. The streak status is
+// passed in rather than derived here because it depends on which channel
+// the drops watcher owns, which is the farmer's knowledge, not the view's.
+func renderChannelRow(ch channels.Snapshot, streak points.StreakStatus) string {
 	pri := subtitleStyle.Render("P2")
 	if ch.HasActiveDrop {
 		pri = dropStyle.Render("P0")
@@ -154,22 +161,39 @@ func renderChannelRow(ch channels.Snapshot) string {
 		lastClaim = formatTimeAgo(ch.LastClaimTime)
 	}
 
+	// Streak column. Dim for everything that is merely informational, so
+	// the two states worth acting on — hunting and claimed — are the ones
+	// that catch the eye.
+	streakCell := subtitleStyle.Render("-")
+	switch streak.Phase {
+	case points.StreakHunting:
+		streakCell = watchingStyle.Render(streak.Label())
+	case points.StreakClaimed:
+		streakCell = onlineStyle.Render("\u2713 claimed")
+	case points.StreakQueued, points.StreakNoBonus:
+		streakCell = subtitleStyle.Render(streak.Label())
+	}
+
 	cells := []string{
-		padCell(pri,       chColPri,       false),
-		padCell(name,      chColName,      false),
-		padCell(status,    chColStatus,    false),
-		padCell(watching,  chColWatch,     false),
-		padCell(game,      chColGame,      false),
-		padCell(balance,   chColBalance,   true),
-		padCell(earned,    chColEarned,    true),
-		padCell(claims,    chColClaims,    true),
+		padCell(pri, chColPri, false),
+		padCell(name, chColName, false),
+		padCell(status, chColStatus, false),
+		padCell(watching, chColWatch, false),
+		padCell(game, chColGame, false),
+		padCell(streakCell, chColStreak, false),
+		padCell(balance, chColBalance, true),
+		padCell(earned, chColEarned, true),
+		padCell(claims, chColClaims, true),
 		padCell(lastClaim, chColLastClaim, false),
 	}
 	return "  " + strings.Join(cells, " ")
 }
 
-// renderChannelTableScrollable renders the channel table with scroll support.
-func renderChannelTableScrollable(channels []channels.Snapshot, width, maxRows, scroll int) string {
+// renderChannelTableScrollable renders the channel table with scroll
+// support. streakOf resolves one channel's watch-streak status; it is a
+// function rather than a precomputed slice so only the visible rows are
+// asked for.
+func renderChannelTableScrollable(channels []channels.Snapshot, streakOf func(channels.Snapshot) points.StreakStatus, width, maxRows, scroll int) string {
 	if len(channels) == 0 {
 		return subtitleStyle.Render("  No channels configured. Press 'a' to add a channel.")
 	}
@@ -188,7 +212,7 @@ func renderChannelTableScrollable(channels []channels.Snapshot, width, maxRows, 
 		end = len(channels)
 	}
 	for _, ch := range channels[scroll:end] {
-		parts = append(parts, renderChannelRow(ch))
+		parts = append(parts, renderChannelRow(ch, streakOf(ch)))
 	}
 
 	// Scroll indicator bottom
@@ -217,10 +241,10 @@ func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 
 	headerCells := []string{
 		padCell("Campaign", dColCampaign, false),
-		padCell("Game",     dColGame,     false),
+		padCell("Game", dColGame, false),
 		padCell("Progress", dColProgress, false),
-		padCell("Channel",  dColChannel,  false),
-		padCell("Status",   dColStatus,   false),
+		padCell("Channel", dColChannel, false),
+		padCell("Status", dColStatus, false),
 	}
 	headerLine := tableHeaderStyle.Render("  " + strings.Join(headerCells, " "))
 
@@ -273,10 +297,10 @@ func renderDropsTable(drops []drops.ActiveDrop, width int) string {
 
 		cells := []string{
 			padCell(campaign, dColCampaign, false),
-			padCell(game,     dColGame,     false),
+			padCell(game, dColGame, false),
 			padCell(progress, dColProgress, false),
-			padCell(channel,  dColChannel,  false),
-			padCell(status,   dColStatus,   false),
+			padCell(channel, dColChannel, false),
+			padCell(status, dColStatus, false),
 		}
 		rendered := "  " + strings.Join(cells, " ")
 		if drop.IsAutoDiscovered {
@@ -346,7 +370,7 @@ func renderEventLog(logs []farmer.LogEntry, height, width int) string {
 	content := strings.Join(lines, "\n")
 	title := titleStyle.Render(" Event Log ")
 
-	return title + "\n" + logBorderStyle.Width(width - 2).Height(visibleLines).Render(content)
+	return title + "\n" + logBorderStyle.Width(width-2).Height(visibleLines).Render(content)
 }
 
 // renderHelpBar renders the Channels-tab footer help line. Drops-tab
@@ -423,4 +447,3 @@ func renderUpdateBanner(info farmer.UpdateInfo) string {
 	text := fmt.Sprintf("  New version available: %s", strings.Join(parts, " and "))
 	return updateBannerStyle.Render(text)
 }
-
