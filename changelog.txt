@@ -1,3 +1,66 @@
+== 2026-11-16 23:27 == Fix: empty drop pool now says WHY ==
+
+Symptom that prompted this: a Tarkov campaign started at 23:00, the
+miner recognised it in the 23:08 cycle, and then logged
+
+  [Drops/Pool] empty pool ... eligible=1 | poolSize=0
+
+with nothing else. One campaign passed every filter and produced zero
+channel candidates, and the log gave no way to tell why. Verified from
+outside at that moment that the directory DID have 93 live drops-enabled
+Tarkov streams, through the exact function the miner calls. The next
+cycle (23:23) picked clayton_57 and farming started normally, so the
+lookup had come back empty for one cycle only — but reconstructing that
+took a live probe and a 15-minute wait, which is the actual defect.
+
+Two causes, both in how the result was reported, not in the farming:
+
+  1. The game-directory lookup threw its outcome away. On error it
+     negative-cached nil and returned, with no log line anywhere:
+
+         streams, err := s.streams.GetGameStreamsDropsEnabled(slug, 100)
+         if err != nil {
+             dirCache[slug] = nil
+             return nil          // silent
+         }
+
+     One level down, fetchGameStreams answers `nil, nil` for a null
+     `game` object — not an error. So a failed lookup, an unknown slug
+     and a genuinely quiet category were indistinguishable: all three
+     produced no candidates and said nothing.
+
+  2. poolSize in the log was stale. Select returns early when nothing is
+     eligible, BEFORE lastPoolSize is assigned, so the field kept the
+     previous cycle's value. The 22:38–22:53 cycles reported
+     "eligible=0 | poolSize=3" having built no pool at all. The 3
+     belonged to an earlier run.
+
+Fixed
+  - Every directory lookup is recorded as "slug=N" or
+    "slug=ERROR(...)", and the summary is appended to the empty-pool log
+    line as `dir: ...`. The line that reports the symptom now carries the
+    diagnosis: whether the directory was consulted at all, what it
+    returned, and whether it failed.
+  - Failures additionally go to the diag sink with the game, the slug
+    and the underlying error. An empty (but successful) directory is
+    logged too, worded as the different thing it is.
+  - lastPoolSize and the directory notes are reset on the
+    nothing-eligible path, so no cycle is ever reported with another
+    cycle's numbers.
+
+Verified
+  - Four tests: a failing lookup must surface in both the summary and
+    the diag sink and must not produce a pick; an empty directory must
+    read as "=0", never as an error; a populated one must count; and a
+    nothing-eligible cycle must clear both stale fields.
+  - The fake stream source gained an optional per-slug error. Existing
+    tests are untouched and still pass.
+
+Files
+  internal/drops/selector.go       dir notes, diag, stale-state reset
+  internal/drops/process.go        dir summary in the empty-pool line
+  internal/drops/selector_test.go  four tests + per-slug error in the fake
+
 == 2026-11-14 00:14 == Bump: v2.6.0-beta.1 → v2.6.0-beta.2 ==
 
 Second beta of the browser-login line. Everything from beta.1 is
