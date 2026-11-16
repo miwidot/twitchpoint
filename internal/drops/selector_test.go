@@ -1,6 +1,9 @@
 package drops
 
 import (
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,8 +134,11 @@ func TestFilterEligibleCampaigns(t *testing.T) {
 // fakeStreamSource is a deterministic in-memory stream source for tests.
 type fakeStreamSource struct {
 	byGame  map[string][]twitch.GameStream
-	calls   map[string]int                     // fixture key (display name) → how often queried
-	byLogin map[string]*twitch.ChannelInfo     // login → ChannelInfo for ACL lookups
+	calls   map[string]int                 // fixture key (display name) → how often queried
+	byLogin map[string]*twitch.ChannelInfo // login → ChannelInfo for ACL lookups
+	// errBySlug makes a directory lookup fail for one slug, so tests can
+	// tell "the lookup broke" apart from "nobody is streaming".
+	errBySlug map[string]error
 }
 
 // GetGameStreamsDropsEnabled receives the game's URL slug — since the v2.0
@@ -143,6 +149,10 @@ type fakeStreamSource struct {
 func (f *fakeStreamSource) GetGameStreamsDropsEnabled(gameSlug string, limit int) ([]twitch.GameStream, error) {
 	if f.calls == nil {
 		f.calls = make(map[string]int)
+	}
+	if err, ok := f.errBySlug[gameSlug]; ok {
+		f.calls[gameSlug]++
+		return nil, err
 	}
 	key := gameSlug
 	streams, ok := f.byGame[key]
@@ -237,8 +247,8 @@ func TestBuildPool_UnrestrictedCampaign(t *testing.T) {
 
 	camp := twitch.DropCampaign{
 		ID: "rivals-s7", Status: "ACTIVE", IsAccountConnected: true, GameName: "Marvel Rivals",
-		EndAt: testNow.Add(5 * time.Hour),
-		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
+		EndAt:    testNow.Add(5 * time.Hour),
+		Drops:    []twitch.TimeBasedDrop{makeWatchableDrop()},
 		Channels: nil, // unrestricted
 	}
 
@@ -262,14 +272,14 @@ func TestBuildPool_DedupesAcrossCampaigns(t *testing.T) {
 
 	c1 := twitch.DropCampaign{
 		ID: "abi-1", Name: "Partner-Only", Status: "ACTIVE", IsAccountConnected: true, GameName: "ABI",
-		EndAt: testNow.Add(4 * time.Hour),
-		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
+		EndAt:    testNow.Add(4 * time.Hour),
+		Drops:    []twitch.TimeBasedDrop{makeWatchableDrop()},
 		Channels: []twitch.DropChannel{{ID: "1", Name: "buggy"}},
 	}
 	c2 := twitch.DropCampaign{
 		ID: "abi-2", Name: "Support Partners", Status: "ACTIVE", IsAccountConnected: true, GameName: "ABI",
-		EndAt: testNow.Add(20 * 24 * time.Hour),
-		Drops: []twitch.TimeBasedDrop{makeWatchableDrop()},
+		EndAt:    testNow.Add(20 * 24 * time.Hour),
+		Drops:    []twitch.TimeBasedDrop{makeWatchableDrop()},
 		Channels: []twitch.DropChannel{{ID: "1", Name: "buggy"}},
 	}
 
@@ -483,5 +493,117 @@ func TestSelect_SkipChannelsExcludesFromPool(t *testing.T) {
 	pick, _ = sel.Select([]twitch.DropCampaign{camp}, skipBoth)
 	if pick != nil {
 		t.Fatalf("skipping every channel should yield nil pick, got %v", pick)
+	}
+}
+
+// --- directory diagnostics -------------------------------------------
+//
+// An empty pool used to be unreadable: a failed directory lookup, a game
+// nobody is streaming and a campaign that restricts its channels all
+// produced poolSize=0 and nothing else. These tests pin the difference,
+// because the first case is the one that silently costs drops.
+
+func unrestrictedCampaign(game string) twitch.DropCampaign {
+	return twitch.DropCampaign{
+		ID: "c-" + game, Status: "ACTIVE", IsAccountConnected: true, GameName: game,
+		EndAt:    testNow.Add(5 * time.Hour),
+		Drops:    []twitch.TimeBasedDrop{makeWatchableDrop()},
+		Channels: nil,
+	}
+}
+
+func TestSelect_DirectoryFailureIsReportedNotSwallowed(t *testing.T) {
+	cfg := &config.Config{}
+	src := &fakeStreamSource{errBySlug: map[string]error{
+		"escape-from-tarkov": errors.New("gql error: service unavailable"),
+	}}
+	sel := newSelectorWithStreams(cfg, src)
+
+	var diags []string
+	sel.SetDiagSink(func(format string, args ...interface{}) {
+		diags = append(diags, fmt.Sprintf(format, args...))
+	})
+
+	pick, _ := sel.Select([]twitch.DropCampaign{unrestrictedCampaign("Escape from Tarkov")}, nil)
+	if pick != nil {
+		t.Fatal("a failed directory lookup must not produce a pick")
+	}
+	summary := sel.LastDirSummary()
+	if !strings.Contains(summary, "escape-from-tarkov=ERROR") {
+		t.Errorf("summary must name the failing lookup, got %q", summary)
+	}
+	if !strings.Contains(summary, "service unavailable") {
+		t.Errorf("summary must carry the underlying error, got %q", summary)
+	}
+	joined := strings.Join(diags, "\n")
+	if !strings.Contains(joined, "directory lookup failed") {
+		t.Errorf("the failure must reach the diag sink, got: %s", joined)
+	}
+}
+
+func TestSelect_EmptyDirectoryIsNotAnError(t *testing.T) {
+	cfg := &config.Config{}
+	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{"Escape from Tarkov": {}}}
+	sel := newSelectorWithStreams(cfg, src)
+
+	pick, _ := sel.Select([]twitch.DropCampaign{unrestrictedCampaign("Escape from Tarkov")}, nil)
+	if pick != nil {
+		t.Fatal("no live streams means no pick")
+	}
+	if got, want := sel.LastDirSummary(), "escape-from-tarkov=0"; got != want {
+		t.Errorf("summary = %q, want %q — a quiet directory must read as 0, not as an error", got, want)
+	}
+}
+
+func TestSelect_DirectorySummaryCountsLiveStreams(t *testing.T) {
+	cfg := &config.Config{}
+	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
+		"Escape from Tarkov": {
+			{BroadcasterID: "1", BroadcasterLogin: "a", ViewerCount: 10},
+			{BroadcasterID: "2", BroadcasterLogin: "b", ViewerCount: 5},
+		},
+	}}
+	sel := newSelectorWithStreams(cfg, src)
+
+	pick, pool := sel.Select([]twitch.DropCampaign{unrestrictedCampaign("Escape from Tarkov")}, nil)
+	if pick == nil || len(pool) != 2 {
+		t.Fatalf("expected a pick from 2 candidates, got pick=%v pool=%d", pick, len(pool))
+	}
+	if got, want := sel.LastDirSummary(), "escape-from-tarkov=2"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+// With nothing eligible the pool is never built, so the previous cycle's
+// numbers must not be reported against this one. They were: the log showed
+// a stale poolSize=3 for cycles that built no pool at all.
+func TestSelect_StaleStatsClearedWhenNothingEligible(t *testing.T) {
+	cfg := &config.Config{}
+	src := &fakeStreamSource{byGame: map[string][]twitch.GameStream{
+		"Escape from Tarkov": {
+			{BroadcasterID: "1", BroadcasterLogin: "a", ViewerCount: 10},
+			{BroadcasterID: "2", BroadcasterLogin: "b", ViewerCount: 5},
+			{BroadcasterID: "3", BroadcasterLogin: "c", ViewerCount: 1},
+		},
+	}}
+	sel := newSelectorWithStreams(cfg, src)
+
+	if _, pool := sel.Select([]twitch.DropCampaign{unrestrictedCampaign("Escape from Tarkov")}, nil); len(pool) != 3 {
+		t.Fatalf("setup: expected 3 candidates, got %d", len(pool))
+	}
+	if sel.LastPoolSize() != 3 {
+		t.Fatalf("setup: LastPoolSize = %d, want 3", sel.LastPoolSize())
+	}
+
+	// Second cycle: the campaign has expired, so nothing is eligible.
+	expired := unrestrictedCampaign("Escape from Tarkov")
+	expired.EndAt = testNow.Add(-time.Hour)
+	sel.Select([]twitch.DropCampaign{expired}, nil)
+
+	if got := sel.LastPoolSize(); got != 0 {
+		t.Errorf("LastPoolSize = %d after a cycle that built no pool, want 0", got)
+	}
+	if got := sel.LastDirSummary(); got != "-" {
+		t.Errorf("LastDirSummary = %q after a cycle that queried no directory, want %q", got, "-")
 	}
 }

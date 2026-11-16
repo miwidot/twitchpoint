@@ -1,6 +1,7 @@
 package drops
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -69,6 +70,12 @@ type Selector struct {
 	lastFilter   FilterStats      // populated by every Select(); LastFilterStats() reads it
 	lastPoolSize int              // candidates after buildPool, before skip-set
 	diagFn       func(format string, args ...interface{})
+
+	// lastDirNotes records, per game directory lookup, what the lookup
+	// actually returned during the most recent buildPool. Without it an
+	// empty pool is indistinguishable from a failed lookup: both simply
+	// produce no candidates, and the caller only sees poolSize=0.
+	lastDirNotes []string
 }
 
 // SetDiagSink wires a logger for filter-reject diagnostics. Without it,
@@ -233,6 +240,7 @@ func (s *Selector) filterEligibleCampaigns(campaigns []twitch.DropCampaign) []tw
 // carries all the campaigns it serves.
 func (s *Selector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 	pinnedID := s.cfg.GetPinnedCampaign()
+	s.lastDirNotes = nil
 
 	// Game-slug → cached directory result, so we hit GQL at most once per game per cycle.
 	// Slug (URL form) is required by the persisted-hash GameDirectory query; if a campaign
@@ -251,8 +259,18 @@ func (s *Selector) buildPool(eligible []twitch.DropCampaign) []*PoolEntry {
 		}
 		streams, err := s.streams.GetGameStreamsDropsEnabled(slug, 100)
 		if err != nil {
+			// A failed lookup is NOT "no streams". Recording the difference
+			// is the whole point: a campaign with live channels that we
+			// simply could not reach looks identical to a campaign nobody
+			// is streaming, and the first one costs drops.
+			s.noteDir("%s=ERROR(%v)", slug, err)
+			s.diag("[Drops/Dir] %s (slug %q): directory lookup failed: %v", gameName, slug, err)
 			dirCache[slug] = nil // negative cache for the cycle
 			return nil
+		}
+		s.noteDir("%s=%d", slug, len(streams))
+		if len(streams) == 0 {
+			s.diag("[Drops/Dir] %s (slug %q): no live drops-enabled streams right now", gameName, slug)
 		}
 		dirCache[slug] = streams
 		return streams
@@ -437,6 +455,11 @@ func (s *Selector) sortPool(pool []*PoolEntry) {
 func (s *Selector) Select(campaigns []twitch.DropCampaign, skipChannels map[string]bool) (*PoolEntry, []*PoolEntry) {
 	eligible := s.filterEligibleCampaigns(campaigns)
 	if len(eligible) == 0 {
+		// Reset explicitly: without this the previous cycle's pool size
+		// stays on the field and gets logged against a cycle that never
+		// built a pool at all.
+		s.lastPoolSize = 0
+		s.lastDirNotes = nil
 		return nil, nil
 	}
 	pool := s.buildPool(eligible)
@@ -496,6 +519,29 @@ func isBadgeOrEmoteDrop(d twitch.TimeBasedDrop) bool {
 // from the most recent Select. 0 with Eligible>0 means the filter passed
 // campaigns but no live drops-enabled streamer was found for any of them.
 func (s *Selector) LastPoolSize() int { return s.lastPoolSize }
+
+// LastDirSummary reports what each game-directory lookup returned during
+// the most recent Select, as "slug=count" or "slug=ERROR(...)". Empty when
+// no lookup ran, which itself is informative: every eligible campaign
+// restricted its channels, so the directory was never consulted.
+func (s *Selector) LastDirSummary() string {
+	if len(s.lastDirNotes) == 0 {
+		return "-"
+	}
+	return strings.Join(s.lastDirNotes, " ")
+}
+
+// noteDir appends one directory outcome for the current buildPool.
+func (s *Selector) noteDir(format string, args ...interface{}) {
+	s.lastDirNotes = append(s.lastDirNotes, fmt.Sprintf(format, args...))
+}
+
+// diag forwards to the diagnostics sink when one is wired.
+func (s *Selector) diag(format string, args ...interface{}) {
+	if s.diagFn != nil {
+		s.diagFn(format, args...)
+	}
+}
 
 // shortIDs maps a list of drop IDs to their 8-char prefixes for log lines.
 func shortIDs(ids []string) []string {
