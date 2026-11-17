@@ -1,3 +1,53 @@
+== 2026-11-17 23:53 == Release v2.6.0 (stable, out of beta) ==
+
+Promotes the 2.6.0 beta line to a stable release. Version string
+2.6.0-beta.2 -> 2.6.0 in cmd/twitchpoint/main.go, which is also the
+single source the Windows installer reads its -DVERSION from, so no
+second place needs touching.
+
+What this release contains, relative to v2.5.2:
+
+  * feat(auth) 235b33c — fresh login works again. Twitch disabled the
+    device-code grant for the Android client in September 2026; the
+    implicit grant for the same client ID was never disabled. The miner
+    prints an authorize URL, the user completes the sign-in in their own
+    (already-logged-in, bot-check-passing) browser and pastes the
+    redirect address back. The resulting token is a real Android token,
+    so watch minutes credit normally. A client/token mismatch is now
+    detected and reported at every start instead of failing silently.
+
+  * fix(points) ceab7bc — the channel-points balance had never been
+    fetched successfully. Twitch removed the community(name:) root field
+    from its schema, so every call answered "Cannot query field
+    community on type Query" and both call sites discarded the error.
+    Query moved to channel(name:){self{communityPoints{balance}}} and
+    failures are now logged instead of silently reported as zero.
+
+  * feat(ui) 637cd6a — streak column in the TUI and the web dashboard.
+    Twitch exposes no consecutive-stream counter (confirmed against the
+    live schema, see README), so the column reports hunt status for the
+    current broadcast: progress toward the 12-minute watch target,
+    queued, claimed, or no bonus available.
+
+  * fix(drops) 18a2e92 — an empty drop pool now reports why. A failed
+    game-directory lookup, an unknown slug and a genuinely empty
+    category used to be indistinguishable: all three produced
+    poolSize=0 and nothing else. The log line now carries a per-slug
+    "dir:" summary, and a dash there means no lookup was reached at all
+    (nothing was eligible), which is itself the answer.
+
+Verified before tagging: go vet and the full ./internal/... suite green;
+the fix has run on two live instances for 24 hours. Observed the Tarkov
+City day 1 -> day 2 campaign rotation at 23:00 local: the new campaign
+was picked 33 seconds after it started, against 15 minutes on the
+previous build, and watch minutes credited continuously (46/60 at the
+time of writing, prober confirming 14/14 HEAD ok per cycle).
+
+Not exercised in the wild yet: the "dir: <slug>=ERROR(...)" branch. It
+needs a campaign that is eligible while the pool still comes up empty,
+which did not recur during the observation window. The branch is unit
+tested, not field tested.
+
 == 2026-11-16 23:27 == Fix: empty drop pool now says WHY ==
 
 Symptom that prompted this: a Tarkov campaign started at 23:00, the
